@@ -1,5 +1,5 @@
 """
-Agent 工具集：本地法律检索 + 元典智库 + 联网搜索
+Agent 工具集：本地法律检索 + 元典智库 + 联网搜索 + 幻觉校验
 """
 import json, httpx
 from langchain_core.tools import tool
@@ -10,7 +10,6 @@ from app.agent.retriever import get_retriever
 from app.core.config import get_settings
 
 settings = get_settings()
-
 
 # ============================================================
 # Tool 1: 本地法律条文检索（ChromaDB RAG）
@@ -24,73 +23,152 @@ def search_laws(query: str) -> str:
 
 
 # ============================================================
-# Tool 2: 元典智库专业法律检索
+# Tool 2: 元典智库专业法律检索（语义 + 关键词双路召回）
 # ============================================================
 
-YUANDIAN_URL = "https://open.chineselaw.com/mcp/law/stream"
+YUANDIAN_MCP = "https://open.chineselaw.com/mcp/law/stream"
+YUANDIAN_REST = "https://open.chineselaw.com/open"
 
 
-def _call_yuandian(method: str, arguments: dict) -> dict:
-    """Call 元典智库 MCP endpoint via JSON-RPC."""
+def _yd_rest(endpoint: str, body: dict) -> dict:
+    """Call 元典 REST API."""
+    r = httpx.post(
+        f"{YUANDIAN_REST}/{endpoint}",
+        json=body,
+        headers={
+            "X-API-Key": settings.yuandian_api_key,
+            "Accept": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def _yd_mcp(tool_name: str, arguments: dict) -> dict:
+    """Call 元典 MCP JSON-RPC."""
     import uuid
-    headers = {
-        "Authorization": f"Bearer {settings.yuandian_api_key}",
-        "Accept": "application/json, text/event-stream",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "jsonrpc": "2.0",
-        "method": "tools/call",
-        "params": {"name": method, "arguments": arguments},
-        "id": str(uuid.uuid4())[:8],
-    }
-    resp = httpx.post(YUANDIAN_URL, json=body, headers=headers, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+    r = httpx.post(
+        YUANDIAN_MCP,
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments},
+            "id": str(uuid.uuid4())[:8],
+        },
+        headers={
+            "Authorization": f"Bearer {settings.yuandian_api_key}",
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def _format_fatiao(items: list, max_items: int = 5) -> str:
+    """Format fatiao results into readable text."""
+    parts = []
+    for i, f in enumerate(items[:max_items], 1):
+        title = f.get("fgtitle", f.get("fgmc", ""))
+        if isinstance(title, list):
+            title = title[0] if title else ""
+        num = f.get("num", f.get("ft_num", ""))
+        content = f.get("content", f.get("llm_content", ""))[:300]
+        sxx = f.get("sxx", "")
+        effect = f.get("effect1", f.get("xljb_1", ""))
+        url = f.get("url", "")
+        meta = f" | 时效性:{sxx}" if sxx else ""
+        meta += f" | 效力:{effect}" if effect else ""
+        line = f"[{i}] {title} {num}{meta}"
+        if content:
+            line += f"\n{content}"
+        if url:
+            line += f"\n来源: {url}"
+        parts.append(line)
+    return "\n\n".join(parts)
 
 
 @tool
 def search_legal(query: str) -> str:
-    """搜索元典智库专业法律数据库，获取法律法规原文和司法解释。
-    当本地知识库覆盖不足、或需要更权威的法律数据库检索时使用。
-    返回匹配的法条内容、所属法规和效力级别。"""
+    """搜索元典智库专业法律数据库。先语义检索，不足时补充关键词检索。"""
+    if not settings.yuandian_api_key or "your-api-key" in settings.yuandian_api_key:
+        return "元典智库 API Key 未配置。"
+
+    results = []
+    try:
+        resp = _yd_rest("law_vector_search", {
+            "query": query,
+            "rewrite_flag": True,
+            "return_num": 5,
+        })
+        if resp.get("code") == 201:
+            results = resp.get("extra", {}).get("fatiao", [])
+    except Exception:
+        pass
+
+    if len(results) < 3:
+        try:
+            resp = _yd_mcp("yuandian_rh_ft_search", {
+                "keyword": query,
+                "top_k": 5,
+                "sxx": "现行有效",
+            })
+            content = resp.get("result", {}).get("content", [])
+            if content:
+                data = json.loads(content[0]["text"])
+                extra = data.get("dataPreview", {}).get("data", [])
+                existing = {f.get("ftid", "") for f in results}
+                for item in extra:
+                    if item.get("id", "") not in existing:
+                        results.append(item)
+        except Exception:
+            pass
+
+    if not results:
+        return "元典智库未检索到相关结果。"
+    return _format_fatiao(results)
+
+
+# ============================================================
+# Tool 3: 法律幻觉校验
+# ============================================================
+
+@tool
+def verify_legal(text: str) -> str:
+    """校验一段法律文本中的法条引用是否真实、时效性是否正确。
+    当 LLM 生成法律建议后，可用此工具自查引用准确性。"""
     if not settings.yuandian_api_key or "your-api-key" in settings.yuandian_api_key:
         return "元典智库 API Key 未配置。"
 
     try:
-        result = _call_yuandian("yuandian_rh_ft_search", {
-            "keyword": query,
-            "top_k": 5,
-            "sxx": "现行有效",
-        })
-        content = result.get("result", {}).get("content", [])
-        if not content:
-            return "元典智库未检索到相关结果。"
-
-        # Parse first content item
-        data = json.loads(content[0]["text"])
-        items = data.get("dataPreview", {}).get("data", [])
-        if not items:
-            return "元典智库未检索到相关结果。"
+        resp = _yd_rest("hall_detect", {"text": text[:2000]})
+        regs = resp.get("regulations", [])
+        if not regs:
+            return "未检测到法条引用，或校验服务暂不可用。"
 
         parts = []
-        for i, item in enumerate(items[:5], 1):
-            title = item.get("title", "")
-            content_text = item.get("llm_content", item.get("content", ""))[:300]
-            url = item.get("url", "")
-            line = f"[{i}] {title}"
-            if content_text:
-                line += f"\n{content_text}"
-            if url:
-                line += f"\n来源: {url}"
+        for r in regs[:10]:
+            name = r.get("name", "")
+            clause = r.get("clause", "")
+            sc = r.get("semantic_compare", {})
+            conclusion = sc.get("结论", "?")
+            valid = r.get("validity_status", "")
+            line = f"- {name} {clause}: 语义={conclusion}"
+            if valid:
+                line += f" 时效性={valid}"
+            if r.get("source_no_specific_clause"):
+                line += " [仅法规名，无具体条号]"
             parts.append(line)
-        return "\n\n".join(parts)
+        return "法律引用校验结果:\n" + "\n".join(parts)
     except Exception as e:
-        return f"元典智库检索失败: {str(e)}"
+        return f"法律校验服务异常: {str(e)}"
 
 
 # ============================================================
-# Tool 3: 联网搜索（Tavily API）
+# Tool 4: 联网搜索（Tavily API）
 # ============================================================
 
 tavily_wrapper = TavilySearchAPIWrapper(tavily_api_key=settings.tavily_api_key)
@@ -108,5 +186,5 @@ search_web = TavilySearch(
 # 工具集汇总
 # ============================================================
 
-AGENT_TOOLS = [search_laws, search_legal, search_web]
+AGENT_TOOLS = [search_laws, search_legal, verify_legal, search_web]
 
