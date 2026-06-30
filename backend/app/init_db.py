@@ -1,130 +1,213 @@
-﻿"""
-初始化 ChromaDB 向量库
-从 data/ 目录读取法律 Markdown 文件，切片后灌入 ChromaDB
-
-用法：
-    cd backend
-    python app/init_db.py
-
-前置条件：
-    - 已从 https://github.com/lawtext/laws 下载法律文本放入 data/ 目录
-    - 已设置 DEEPSEEK_API_KEY 于 .env 文件
 """
-import os
-import sys
+Initialize ChromaDB from law markdown files in data/
+Usage: cd backend && python -m app.init_db
+"""
+import os, re, hashlib, shutil, sys
 from pathlib import Path
-
-from langchain.text_splitter import MarkdownHeaderTextSplitter
-from langchain_openai import OpenAIEmbeddings
-from langchain_community.vectorstores import Chroma
-
-from app.core.config import get_settings
-
-settings = get_settings()
-
-# ============================================================
-# 配置
-# ============================================================
+from collections import OrderedDict
+import httpx
+import chromadb
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 CHROMA_DIR = Path(__file__).resolve().parent.parent / "chroma_db"
-
-# 切片策略：按 Markdown 标题层级切分，保留章节上下文
-HEADERS_TO_SPLIT = [
-    ("#", "编"),       # 如 "第一编 总则"
-    ("##", "章"),      # 如 "第一章 基本规定"
-    ("###", "节"),     # 如 "第一节 一般规定"
-    ("####", "条"),    # 如 "第五百八十五条"
-]
-
-# 要处理的法律文件（支持 glob 匹配）
-LAW_FILES = [
-    "民法典.md",
-    "劳动法.md",
-    "劳动合同法.md",
-    "公司法.md",
-]
+OLLAMA_URL = "http://localhost:11434"
+EMBED_MODEL = "qwen3-embedding"
 
 
-def load_and_split(filepath: Path) -> list:
-    """读取单个 Markdown 文件并按章节切片"""
-    text = filepath.read_text(encoding="utf-8")
-    splitter = MarkdownHeaderTextSplitter(
-        headers_to_split_on=HEADERS_TO_SPLIT,
-        strip_headers=False,   # 保留标题在 chunk 中
-    )
-    return splitter.split_text(text)
+def ollama_embed_batch(texts, model=EMBED_MODEL):
+    import time
+    inputs = [t[:4000] for t in texts]
+    with httpx.Client(timeout=300) as client:
+        for attempt in range(5):
+            try:
+                resp = client.post(f"{OLLAMA_URL}/api/embed", json={"model": model, "input": inputs})
+                if resp.status_code == 500:
+                    time.sleep(3); continue
+                resp.raise_for_status()
+                return resp.json()["embeddings"]
+            except Exception:
+                time.sleep(3)
+    raise RuntimeError(f"Embedding failed. Is Ollama running?")
 
 
-def init_chroma(docs: list):
-    """将文档切片灌入 ChromaDB"""
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-small",
-        openai_api_key=settings.deepseek_api_key,
-        openai_api_base=settings.deepseek_base_url,
-    )
-
-    # 如果已有数据库，先清空（避免重复灌入）
-    if CHROMA_DIR.exists():
-        import shutil
-        shutil.rmtree(CHROMA_DIR)
-
-    vectorstore = Chroma.from_documents(
-        documents=docs,
-        embedding=embeddings,
-        persist_directory=str(CHROMA_DIR),
-        collection_name="laws",
-    )
-
-    print(f"✅ 向量库初始化完成")
-    print(f"   文档分块数: {len(docs)}")
-    print(f"   持久化路径: {CHROMA_DIR}")
-    return vectorstore
+def clean_markdown(text):
+    text = re.sub(r"\{\{%[^}]*%\}\}", "", text)
+    text = re.sub(r"\{\{<[^>]*>\}\}", "", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"!\[.*?\]\(.*?\)", "", text)
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"\*([^*]+)\*", r"\1", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    return text.strip()
 
 
-def verify(vectorstore):
-    """验证向量库可用性"""
-    results = vectorstore.similarity_search("违约金过高怎么办", k=3)
-    print(f"\n🔍 验证查询: '违约金过高怎么办'")
-    for i, doc in enumerate(results, 1):
-        preview = doc.page_content[:80].replace("\n", " ")
-        print(f"   {i}. [{doc.metadata}] {preview}...")
+def build_article_hierarchy(body):
+    lines = body.split(chr(10))
+    current = {"h2": "", "h3": "", "h4": ""}
+    article_map = OrderedDict()
+    for line in lines:
+        s = line.strip()
+        if s.startswith("## "):
+            h = re.sub(r"^##\s*", "", s); h = re.sub("[\u3000 ]+", "", h).strip()
+            if h and "\u76ee" not in h:
+                current["h2"] = h; current["h3"] = ""; current["h4"] = ""
+        elif s.startswith("### "):
+            h = re.sub(r"^###\s*", "", s); h = re.sub("[\u3000 ]+", "", h).strip()
+            if h: current["h3"] = h; current["h4"] = ""
+        elif s.startswith("#### "):
+            h = re.sub(r"^####\s*", "", s); h = re.sub("[\u3000 ]+", "", h).strip()
+            if h: current["h4"] = h
+        m = re.match(r"^-?\s*\*?\*?\u7b2c([\u4e00-\u9fa5\d]+)\u6761\*?\*?\s*(.*)", s)
+        if m:
+            path = " > ".join(p for p in [current["h2"], current["h3"], current["h4"]] if p)
+            article_map[m.group(1)] = path
+    return article_map
+
+
+def split_by_article(body, law_name, hierarchy_map):
+    chunks = []
+    pat = re.compile(r"(?:^|\n)-?\s*\*?\*?\u7b2c([\u4e00-\u9fa5\d]+)\u6761\*?\*?\s*(.*?)(?=\n-?\s*\*?\*?\u7b2c[\u4e00-\u9fa5\d]+\u6761|\Z)", re.DOTALL)
+    matches = list(pat.finditer(body))
+    if len(matches) <= 1:
+        cpat = re.compile(r"(?:^|\n)(?:#{2,4}\s*)?\u7b2c[\u4e00-\u9fa5\d]+\u7ae0\s*.*?(?=\n(?:#{2,4}\s*)?\u7b2c[\u4e00-\u9fa5\d]+\u7ae0|\Z)", re.DOTALL)
+        cm = list(cpat.finditer(body))
+        if len(cm) > 1:
+            for m in cm:
+                t = m.group().strip()
+                if len(t) > 50: chunks.append({"content": t, "article": "-", "law": law_name, "hierarchy": ""})
+            return chunks
+        paras = [p.strip() for p in body.split(chr(10)+chr(10)) if p.strip()]
+        buf = ""
+        for p in paras:
+            if len(buf)+len(p) < 800: buf += (chr(10) if buf else "") + p
+            else:
+                if buf: chunks.append({"content": buf, "article": "-", "law": law_name, "hierarchy": ""})
+                buf = p
+        if buf: chunks.append({"content": buf, "article": "-", "law": law_name, "hierarchy": ""})
+        return chunks
+    for m in matches:
+        num = m.group(1); ab = m.group(2).strip()
+        ft = "\u7b2c" + num + "\u6761 " + ab.strip()
+        hier = hierarchy_map.get(num, "")
+        hdr = "\u3010" + law_name + "\u3011"
+        if hier: hdr += " " + hier
+        chunk_content = hdr + chr(10) + chr(10) + ft
+        chunks.append({"content": chunk_content, "article": "\u7b2c" + num + "\u6761", "law": law_name, "hierarchy": hier})
+    return chunks
+
+
+
+class OllamaEmbeddingFunction:
+    """Custom ChromaDB embedding function wrapping Ollama API"""
+    def __init__(self, model="qwen3-embedding", base_url="http://localhost:11434"):
+        self._model = model
+        self._url = base_url
+
+    def __call__(self, input):
+        import time
+        texts = [t[:4000] for t in input] if isinstance(input, list) else [input[:4000]]
+        for attempt in range(5):
+            try:
+                resp = httpx.post(
+                    f"{self._url}/api/embed",
+                    json={"model": self._model, "input": texts},
+                    timeout=120,
+                )
+                if resp.status_code == 500:
+                    time.sleep(3); continue
+                resp.raise_for_status()
+                return resp.json()["embeddings"]
+            except Exception as e:
+                time.sleep(3)
+        raise RuntimeError(f"Embedding failed: {e}")
+
+    def embed_query(self, input):
+        if isinstance(input, list):
+            return self(input)[0]
+        return self([input])[0]
+
 
 
 def main():
-    print("⚙️  开始初始化法律知识库...\n")
+    print("Checking Ollama...")
+    try:
+        with httpx.Client(timeout=5) as c: c.get(OLLAMA_URL + "/api/tags").raise_for_status()
+        print("  Ollama running, model: " + EMBED_MODEL)
+    except Exception:
+        print("  ERROR: Ollama not responding"); sys.exit(1)
+    md_files = sorted(DATA_DIR.glob("*.md"))
+    if not md_files: print("ERROR: No .md files"); sys.exit(1)
+    print("\nFound " + str(len(md_files)) + " laws:")
+    for fp in md_files: print("  " + fp.name)
+    all_chunks = []
+    for fp in md_files:
+        print("\nProcessing: " + fp.name)
+        with open(fp, encoding="utf-8") as f: raw = f.read()
+        if len(raw) < 200: print("  Skip"); continue
+        law_name = fp.stem; body = raw
+        if raw.startswith("---"):
+            idx = raw.find("---", 4)
+            if idx > 0:
+                for line in raw[4:idx].strip().split(chr(10)):
+                    if line.strip().startswith("title:"):
+                        law_name = line.strip()[6:].strip().strip(chr(39)+chr(34))
+                body = raw[idx+3:].strip()
+        body = clean_markdown(body)
+        hm = build_article_hierarchy(body)
+        print("  Hierarchy: " + str(len(hm)) + " articles")
+        chunks = split_by_article(body, law_name, hm)
+        print("  Chunks: " + str(len(chunks)))
+        all_chunks.extend(chunks)
+    print("\nTotal chunks: " + str(len(all_chunks)))
+    print("\nBuilding ChromaDB...")
+    if CHROMA_DIR.exists():
+        print("ChromaDB already exists. Use --force to rebuild.")
+        print(f"Path: {CHROMA_DIR}")
+        collection = client.get_collection("laws", embedding_function=OllamaEmbeddingFunction(model=EMBED_MODEL))
+        print(f"Existing vectors: {collection.count()}")
+        verify_query(collection)
+        return
+    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    ef = OllamaEmbeddingFunction(model=EMBED_MODEL)
+    collection = client.create_collection(name="laws", metadata={"hnsw:space": "cosine"}, embedding_function=ef)
+    bs = 32; ci = 0
+    for i in range(0, len(all_chunks), bs):
+        batch = all_chunks[i:i+bs]
+        texts = [c["content"] for c in batch]
+        ids = [hashlib.md5(("law_"+str(ci+j)+":"+t[:30]).encode()).hexdigest()[:24] for j, t in enumerate(texts)]
+        metas = [{"law": c["law"], "article": c["article"], "hierarchy": c["hierarchy"]} for c in batch]
+        print("  Embedding " + str(i//bs+1) + "/" + str((len(all_chunks)-1)//bs+1) + " ...")
+        try: embs = ollama_embed_batch(texts)
+        except RuntimeError as e: print("  ERROR: " + str(e)); sys.exit(1)
+        valid = [(t, e, mid, m) for t, e, mid, m in zip(texts, embs, ids, metas) if e is not None]
+        if valid:
+            vt, ve, vi, vm = zip(*valid)
+            collection.add(ids=list(vi), documents=list(vt), embeddings=list(ve), metadatas=list(vm))
+            import time; time.sleep(0.5)
+        ci += len(batch)
+    print("\nDone! Vectors: " + str(collection.count()))
+    verify_query(collection)
+    print("\nDone!")
 
-    # 收集所有法律文本
-    filepaths = []
-    for pattern in LAW_FILES:
-        matches = list(DATA_DIR.glob(pattern))
-        if matches:
-            filepaths.extend(matches)
-            print(f"   📄 找到: {matches[0].name}")
-        else:
-            print(f"   ⚠️  未找到: {pattern}（请先放入 data/ 目录）")
 
-    if not filepaths:
-        print("\n❌ 未找到任何法律文本文件，请先从 lawtext/laws 下载")
-        print("   git clone https://github.com/lawtext/laws.git 并将 .md 文件放入 data/")
-        sys.exit(1)
-
-    # 切片
-    print("\n🔄 文本切片中...")
-    all_docs = []
-    for fp in filepaths:
-        docs = load_and_split(fp)
-        all_docs.extend(docs)
-        print(f"   {fp.name}: {len(docs)} 个分块")
-
-    # 灌库
-    print("\n💾 灌入 ChromaDB...")
-    vectorstore = init_chroma(all_docs)
-
-    # 验证
-    verify(vectorstore)
-    print("\n🎉 知识库就绪！")
-
+def verify_query(collection):
+    print("\nVerify:")
+    ef = OllamaEmbeddingFunction(model=EMBED_MODEL)
+    q_emb = ef(["违约金过高怎么办"])[0]
+    results = collection.query(query_embeddings=[q_emb], n_results=3)
+    for i in range(len(results["documents"][0])):
+        d = results["documents"][0][i][:150].replace(chr(10), " ")
+        m = results["metadatas"][0][i]
+        print("  " + str(i+1) + ". [" + m["law"] + "] " + m.get("article","") + " | " + d + "...")
 
 if __name__ == "__main__":
+    import sys
+    if "--force" in sys.argv or "--rebuild" in sys.argv:
+        if CHROMA_DIR.exists():
+            shutil.rmtree(CHROMA_DIR)
+            print("Rebuilding from scratch...")
+        else:
+            print("No existing DB to rebuild.")
     main()
