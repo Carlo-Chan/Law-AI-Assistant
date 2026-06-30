@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -10,7 +10,6 @@ venv/
 .env
 
 # ChromaDB 向量数据
-backend/chroma_db/
 
 # IDE
 .idea/
