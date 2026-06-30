@@ -7,6 +7,7 @@ from pathlib import Path
 from collections import OrderedDict
 import httpx
 import chromadb
+from chromadb import EmbeddingFunction, Documents, Embeddings
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 CHROMA_DIR = Path(__file__).resolve().parent.parent / "chroma_db"
@@ -24,7 +25,7 @@ def ollama_embed_batch(texts, model=EMBED_MODEL):
                 if resp.status_code == 500:
                     time.sleep(3); continue
                 resp.raise_for_status()
-                return resp.json()["embeddings"]
+                return [e.tolist() if hasattr(e, 'tolist') else list(e) for e in resp.json()["embeddings"]]
             except Exception:
                 time.sleep(3)
     raise RuntimeError(f"Embedding failed. Is Ollama running?")
@@ -99,7 +100,7 @@ def split_by_article(body, law_name, hierarchy_map):
 
 
 
-class OllamaEmbeddingFunction:
+class OllamaEmbeddingFunction(EmbeddingFunction):
     """Custom ChromaDB embedding function wrapping Ollama API"""
     def __init__(self, model="qwen3-embedding", base_url="http://localhost:11434"):
         self._model = model
@@ -118,7 +119,7 @@ class OllamaEmbeddingFunction:
                 if resp.status_code == 500:
                     time.sleep(3); continue
                 resp.raise_for_status()
-                return resp.json()["embeddings"]
+                return [e.tolist() if hasattr(e, 'tolist') else list(e) for e in resp.json()["embeddings"]]
             except Exception as e:
                 time.sleep(3)
         raise RuntimeError(f"Embedding failed: {e}")
@@ -169,7 +170,7 @@ def main():
         print(f"Existing vectors: {collection.count()}")
         verify_query(collection)
         return
-    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    client = chromadb.PersistentClient(path=os.path.relpath(str(CHROMA_DIR)))
     ef = OllamaEmbeddingFunction(model=EMBED_MODEL)
     collection = client.create_collection(name="laws", metadata={"hnsw:space": "cosine"}, embedding_function=ef)
     bs = 32; ci = 0

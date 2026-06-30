@@ -1,40 +1,40 @@
 """
-Law knowledge base retriever - ChromaDB + Ollama, no LangChain wrapper
+Law knowledge base retriever - ChromaDB + Ollama
 """
-import httpx, chromadb
+import chromadb
+import os as _os
 from pathlib import Path
+from app.init_db import OllamaEmbeddingFunction
 
-CHROMA_DIR = Path(__file__).resolve().parent.parent.parent / "chroma_db"
-OLLAMA_URL = "http://localhost:11434"
-EMBED_MODEL = "qwen3-embedding"
+_db = Path(__file__).resolve().parent.parent.parent / "chroma_db"
+_rel = _os.path.relpath(str(_db), _os.getcwd())
+
+_client = None
+_collection = None
+_ef = None
+
+
+def _init():
+    global _client, _collection, _ef
+    if _client is not None:
+        return
+    _ef = OllamaEmbeddingFunction()
+    _client = chromadb.PersistentClient(path=_rel)
+    _collection = _client.get_or_create_collection(
+        name="laws",
+        embedding_function=_ef,
+    )
 
 
 class LawRetriever:
 
-    def __init__(self):
-        self._client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        self._collection = self._client.get_collection("laws")
-
     def _embed(self, text: str):
-        import time
-        for attempt in range(5):
-            try:
-                resp = httpx.post(
-                    f"{OLLAMA_URL}/api/embed",
-                    json={"model": EMBED_MODEL, "input": [text]},
-                    timeout=120,
-                )
-                if resp.status_code == 500:
-                    time.sleep(3); continue
-                resp.raise_for_status()
-                return resp.json()["embeddings"][0]
-            except Exception:
-                time.sleep(3)
-        raise RuntimeError("Embedding failed")
+        emb = _ef([text])[0]
+        return [float(x) for x in emb]
 
     def search(self, query: str, top_k: int = 5):
         q_emb = self._embed(query)
-        results = self._collection.query(query_embeddings=[q_emb], n_results=top_k)
+        results = _collection.query(query_embeddings=[q_emb], n_results=top_k)
         docs = []
         for i in range(len(results["documents"][0])):
             meta = results["metadatas"][0][i]
@@ -67,6 +67,11 @@ _retriever = None
 
 def get_retriever():
     global _retriever
+    _init()
     if _retriever is None:
         _retriever = LawRetriever()
     return _retriever
+
+
+# Eager init to avoid ChromaDB SharedSystemClient bug in async context
+_init()
