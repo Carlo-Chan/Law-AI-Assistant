@@ -11,8 +11,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     tavily_api_key: str = ""
-    yuandian_app_key: str = ""
-    yuandian_app_secret: str = ""
+    yuandian_api_key: str = ""
 
     # --- 应用配置 ---
     app_env: str = "development"
