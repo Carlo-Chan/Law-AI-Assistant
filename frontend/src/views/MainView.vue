@@ -121,46 +121,6 @@ const LOADING_STEPS = [
 const canSend = computed(() => (input.value.trim() || pendingFile.value) && !loading.value)
 
 // ---- Mock 降级数据 ----
-const MOCK_RAW = `房屋租赁合同
-
-甲方（出租人）：张三
-乙方（承租人）：李四
-
-第一条 租赁期限
-租赁期限为 2026 年 7 月 1 日至 2027 年 6 月 30 日。
-
-第二条 租金及支付方式
-每月租金 3000 元，乙方应于每月 1 日前支付。
-
-第三条 押金
-乙方应支付押金 6000 元。如乙方提前退租，甲方有权没收全部押金并要求额外赔偿。
-
-第四条 物业费
-租赁期间的物业费由乙方承担。
-
-第五条 违约责任
-若乙方逾期支付租金，每日按租金总额的 5% 支付违约金。`
-
-const MOCK_REPORT = `## 合同审查报告
-
-您好，我已完成对该《房屋租赁合同》的审查。
-
-### 总体评估
-该合同**风险较高**，条款明显偏向甲方（出租人），存在 **2 处高风险条款**。
-
-### 风险详情
-
-| 等级 | 条款 | 问题 |
-|------|------|------|
-| \ud83d\udd34 高危 | 提前退租没收全部押金 | 违反《民法典》第 585 条 |
-| \ud83d\udd34 高危 | 日 5% 违约金 | 年化 1825%，法律上限约为实际损失 30% |
-| \u26aa 低风险 | 物业费由乙方承担 | 常规条款，建议明确费用标准 |
-
-### 修改建议
-1. **押金条款**：改为违约金不超过一个月租金
-2. **违约金条款**：改为日 0.05%
-3. **增补条款**：补充维修责任、提前解约通知期限`
-
 const MOCK_POINTS = [
   { quote: '如乙方提前退租，甲方有权没收全部押金并要求额外赔偿', level: 'high', bubble_text: '涉嫌霸王条款。违约金过高时可请求法院适当减少。' },
   { quote: '每日按租金总额的 5% 支付违约金', level: 'high', bubble_text: '违约金比例畸高（日 5% 即月 150%），建议修改为 0.05%/日。' },
@@ -196,7 +156,11 @@ async function sendText() {
   await scrollToBottom()
 
   try {
-    const res = await chatApi(query)
+    const history = messages.value
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .slice(0, -1)
+      .map(m => ({ role: m.role, content: m.content }))
+    const res = await chatApi(query, history)
     messages.value.push({ role: 'assistant', content: res.reply })
   } catch (e) {
     messages.value.push({ role: 'assistant', content: '### \u26a0\ufe0f 请求失败\n\n请确认后端服务已启动。' })
@@ -235,11 +199,8 @@ async function sendFile() {
     const res = await analyzeContract(fileToSend)
     pushContractResult(res)
   } catch (e) {
-    pushContractResult({
-      raw_text: MOCK_RAW,
-      risk_points: MOCK_POINTS,
-      chat_reply: MOCK_REPORT,
-    })
+    const errMsg = e?.response?.data?.detail || e.message || '请确认后端服务已启动。'
+    messages.value.push({ role: 'assistant', content: '### ⚠️ 合同审查失败\n\n' + errMsg })
   } finally {
     loading.value = false
     loadingLines.value = []
