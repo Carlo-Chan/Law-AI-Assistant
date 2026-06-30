@@ -28,3 +28,6 @@ Thumbs.db
 
 # 测试合同样本（含敏感信息）
 backend/data/test_contracts/
+
+# Vite cache
+frontend/.vite/
