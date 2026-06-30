@@ -1,0 +1,30 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+venv/
+
+# 环境变量（绝对不能提交）
+.env
+
+# ChromaDB 向量数据
+backend/chroma_db/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 前端
+frontend/node_modules/
+frontend/dist/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 测试合同样本（含敏感信息）
+backend/data/test_contracts/
