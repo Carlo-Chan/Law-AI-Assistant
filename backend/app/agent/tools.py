@@ -3,7 +3,6 @@ Agent 工具集：本地法律检索 + 元典智库 + 联网搜索 + 幻觉校�
 """
 import json, httpx
 from langchain_core.tools import tool
-from langchain_tavily import TavilySearch
 from langchain_tavily._utilities import TavilySearchAPIWrapper
 
 from app.agent.retriever import get_retriever
@@ -168,21 +167,54 @@ def verify_legal(text: str) -> str:
 
 
 # ============================================================
-# Tool 4: 联网搜索（Tavily API）
+# Tool 4: 联网搜索（Tavily Search API）
 # ============================================================
 
-tavily_wrapper = TavilySearchAPIWrapper(tavily_api_key=settings.tavily_api_key)
-
-search_web = TavilySearch(
-    api_wrapper=tavily_wrapper,
-    max_results=3,
-).as_tool(
-    name="search_web",
-    description="联网搜索，获取最新法律新闻、司法解释与案例。",
-)
+_tavily = TavilySearchAPIWrapper(tavily_api_key=settings.tavily_api_key)
 
 
-# ============================================================
+@tool
+def search_web(query: str) -> str:
+    """联网搜索，获取最新法律新闻、司法解释与案例。"""
+    if not settings.tavily_api_key or "your-api-key" in settings.tavily_api_key:
+        return "Tavily Search API Key 未配置。"
+
+    try:
+        raw = _tavily.raw_results(
+            query=query,
+            max_results=3,
+            search_depth="basic",
+            include_domains=[],
+            exclude_domains=[],
+            include_answer=False,
+            include_raw_content=False,
+            include_images=False,
+            include_image_descriptions=False,
+            include_favicon=False,
+            topic="general",
+            time_range=None,
+            country="",
+            auto_parameters=True,
+            start_date=None,
+            end_date=None,
+            include_usage=False,
+            exact_match=False,
+        )
+        results = raw.get("results", [])
+        if not results:
+            return "未搜索到相关结果。"
+
+        parts = []
+        for i, r in enumerate(results, 1):
+            title = r.get("title", "")
+            url = r.get("url", "")
+            content = r.get("content", "")[:300]
+            parts.append(f"[{i}] {title}\n{content}\n来源: {url}")
+        return "\n\n".join(parts)
+    except Exception as e:
+        return f"搜索服务异常: {str(e)}"
+
+
 # 工具集汇总
 # ============================================================
 
