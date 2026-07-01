@@ -82,7 +82,6 @@ async def run_chat(query: str, history: list | None = None) -> dict:
 CONTRACT_SYSTEM_PROMPT = (
     "你是专业合同审查AI。用户会发送一份合同文本，"
     "你需要逐条分析其中的风险条款，输出严格的 JSON 格式。"
-    "输出 JSON 格式如下（不要包含其他任何内容）："
     "输出 JSON 格式如下（不要包含任何其他内容）："
     "{\"chat_reply\": \"Markdown格式的总体审查报告\", \"risk_points\": [{\"quote\": \"原句引用\", \"level\": \"high|medium|low\", \"bubble_text\": \"法律分析和修改建议\"}]}"
     "审查标准："
