@@ -7,6 +7,7 @@ from typing import List
 
 from app.agent.chain import run_chat, run_contract_analysis
 from app.services.parser import DocumentParser
+from app.services import history
 
 router = APIRouter()
 
@@ -81,4 +82,60 @@ async def analyze_contract(file: UploadFile = File(...)):
             chat_reply=result["chat_reply"],
         ),
     )
+
+
+# ============================================================
+# 会话历史
+# ============================================================
+
+class ConvResponse(BaseModel):
+    code: int = 200
+    data: dict | list
+
+
+@router.get("/conversations", response_model=ConvResponse)
+async def list_conversations():
+    convs = history.list_conversations()
+    return ConvResponse(code=200, data=convs)
+
+
+@router.post("/conversations", response_model=ConvResponse)
+async def create_conversation():
+    conv = history.create_conversation()
+    return ConvResponse(code=200, data=conv)
+
+
+@router.get("/conversations/{conv_id}", response_model=ConvResponse)
+async def get_conversation(conv_id: str):
+    conv = history.get_conversation(conv_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return ConvResponse(code=200, data=conv)
+
+
+class UpdateTitleRequest(BaseModel):
+    title: str
+
+@router.post("/conversations/{conv_id}/title", response_model=ConvResponse)
+async def update_title(conv_id: str, req: UpdateTitleRequest):
+    history.update_title(conv_id, req.title)
+    return ConvResponse(code=200, data={"ok": True})
+
+
+@router.delete("/conversations/{conv_id}", response_model=ConvResponse)
+async def delete_conversation(conv_id: str):
+    history.delete_conversation(conv_id)
+    return ConvResponse(code=200, data={"ok": True})
+
+class SaveMessagesRequest(BaseModel):
+    user_content: str
+    assistant_content: str
+    file_name: str | None = None
+    contract_data: dict | None = None
+
+@router.post("/conversations/{conv_id}/messages", response_model=ConvResponse)
+async def save_messages(conv_id: str, req: SaveMessagesRequest):
+    history.add_message(conv_id, "user", req.user_content, req.file_name, req.contract_data)
+    history.add_message(conv_id, "assistant", req.assistant_content)
+    return ConvResponse(code=200, data={"ok": True})
 

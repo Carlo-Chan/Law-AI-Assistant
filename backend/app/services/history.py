@@ -1,0 +1,107 @@
+"""
+会话历史持久化存储 — SQLite
+"""
+import sqlite3, json, os, uuid
+from datetime import datetime
+from pathlib import Path
+from functools import lru_cache
+
+DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "history.db"
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def _init_db():
+    with _get_conn() as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '新对话',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                file_name TEXT,
+                contract_data TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id);
+        """)
+    conn.close()
+
+
+_init_db()
+
+
+# ============================================================
+# CRUD
+# ============================================================
+
+def list_conversations(limit: int = 50) -> list[dict]:
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM conversations ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_conversation(title: str = "新对话") -> dict:
+    cid = uuid.uuid4().hex[:12]
+    now = datetime.now().isoformat()
+    with _get_conn() as conn:
+        conn.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?,?,?,?)",
+            (cid, title, now, now),
+        )
+    return {"id": cid, "title": title, "created_at": now, "updated_at": now}
+
+
+def get_conversation(conv_id: str) -> dict | None:
+    with _get_conn() as conn:
+        conv = conn.execute("SELECT * FROM conversations WHERE id=?", (conv_id,)).fetchone()
+        if not conv:
+            return None
+        msgs = conn.execute(
+            "SELECT role, content, file_name, contract_data FROM messages WHERE conversation_id=? ORDER BY id",
+            (conv_id,),
+        ).fetchall()
+    return {
+        **dict(conv),
+        "messages": [dict(m) for m in msgs],
+    }
+
+
+def add_message(conv_id: str, role: str, content: str = "",
+                file_name: str | None = None, contract_data: dict | None = None):
+    now = datetime.now().isoformat()
+    with _get_conn() as conn:
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, file_name, contract_data, created_at) VALUES (?,?,?,?,?,?)",
+            (conv_id, role, content, file_name,
+             json.dumps(contract_data, ensure_ascii=False) if contract_data else None,
+             now),
+        )
+        # Update conversation timestamp
+        conn.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
+
+
+def update_title(conv_id: str, title: str):
+    with _get_conn() as conn:
+        conn.execute("UPDATE conversations SET title=? WHERE id=?", (title, conv_id))
+
+
+def delete_conversation(conv_id: str):
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv_id,))
+        conn.execute("DELETE FROM conversations WHERE id=?", (conv_id,))
