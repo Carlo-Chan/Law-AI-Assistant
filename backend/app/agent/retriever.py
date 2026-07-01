@@ -29,12 +29,18 @@ def _init():
 class LawRetriever:
 
     def _embed(self, text: str):
-        emb = _ef([text])[0]
-        return [float(x) for x in emb]
+        try:
+            emb = _ef([text])[0]
+            return [float(x) for x in emb]
+        except Exception as ex:
+            raise RuntimeError(f"Ollama embedding failed (is Ollama running?): {ex}")
 
     def search(self, query: str, top_k: int = 5):
-        q_emb = self._embed(query)
-        results = _collection.query(query_embeddings=[q_emb], n_results=top_k)
+        try:
+            q_emb = self._embed(query)
+            results = _collection.query(query_embeddings=[q_emb], n_results=top_k)
+        except Exception:
+            return []
         docs = []
         for i in range(len(results["documents"][0])):
             meta = results["metadatas"][0][i]

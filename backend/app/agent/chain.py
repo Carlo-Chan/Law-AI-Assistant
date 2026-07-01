@@ -36,7 +36,7 @@ llm = ChatOpenAI(
     temperature=0.3,
     timeout=120,
     max_tokens=16384,
-    model_kwargs={"extra_body": {"thinking": {"type": "disabled"}}},
+    extra_body={"thinking": {"type": "disabled"}},
 )
 LEGAL_SYSTEM_PROMPT = (
     "你是专业法律AI助手。用户会提出法律问题，你必须先调用工具检索相关法条，再基于检索结果回答。"

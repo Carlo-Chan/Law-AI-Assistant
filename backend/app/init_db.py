@@ -121,8 +121,9 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
                 resp.raise_for_status()
                 return [e.tolist() if hasattr(e, 'tolist') else list(e) for e in resp.json()["embeddings"]]
             except Exception as e:
+                last_error = e
                 time.sleep(3)
-        raise RuntimeError(f"Embedding failed: {e}")
+        raise RuntimeError(f"Embedding failed: {last_error}")
 
     def embed_query(self, input):
         if isinstance(input, list):

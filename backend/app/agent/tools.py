@@ -10,6 +10,12 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
+# ---- 共享 httpx 客户端（连接池复用，避免端口耗尽） ----
+_httpx_client = httpx.Client(
+    timeout=30,
+    limits=httpx.Limits(max_keepalive_connections=5, max_connections=20),
+)
+
 # ============================================================
 # Tool 1: 本地法律条文检索（ChromaDB RAG）
 # ============================================================
@@ -31,7 +37,7 @@ YUANDIAN_REST = "https://open.chineselaw.com/open"
 
 def _yd_rest(endpoint: str, body: dict) -> dict:
     """Call 元典 REST API."""
-    r = httpx.post(
+    r = _httpx_client.post(
         f"{YUANDIAN_REST}/{endpoint}",
         json=body,
         headers={
@@ -39,7 +45,6 @@ def _yd_rest(endpoint: str, body: dict) -> dict:
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
         },
-        timeout=30,
     )
     r.raise_for_status()
     return r.json()
@@ -48,7 +53,7 @@ def _yd_rest(endpoint: str, body: dict) -> dict:
 def _yd_mcp(tool_name: str, arguments: dict) -> dict:
     """Call 元典 MCP JSON-RPC."""
     import uuid
-    r = httpx.post(
+    r = _httpx_client.post(
         YUANDIAN_MCP,
         json={
             "jsonrpc": "2.0",
@@ -61,7 +66,6 @@ def _yd_mcp(tool_name: str, arguments: dict) -> dict:
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
         },
-        timeout=30,
     )
     r.raise_for_status()
     return r.json()
