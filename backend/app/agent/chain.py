@@ -4,7 +4,7 @@ Agent dialog chain: legal QA + contract review
 import json, re
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 
 from app.agent.tools import AGENT_TOOLS
 from app.core.config import get_settings
@@ -45,15 +45,36 @@ async def run_chat(query: str, history: list | None = None) -> dict:
         elif h.get("role") == "assistant":
             messages.append(AIMessage(content=h["content"]))
     messages.append(HumanMessage(content=query))
+
+    print(f"\n{'='*60}")
+    print(f"[Chat] user: {query[:120]}")
+    print(f"{'='*60}")
+
     result = await chat_agent.ainvoke({"messages": messages})
     all_msgs = result["messages"]
+
+    # Log tool calls and results
+    for m in all_msgs:
+        name = getattr(m, "name", "")
+        if isinstance(m, ToolMessage):
+            snippet = str(m.content)[:200].replace(chr(10), " ")
+            print(f"  [{name}] result: {snippet}")
+        elif isinstance(m, AIMessage) and hasattr(m, "tool_calls") and m.tool_calls:
+            for tc in m.tool_calls:
+                args = tc.get("args", {})
+                q = args.get("query", args.get("text", str(args)[:80]))
+                print(f"  [LLM call -> {tc.get("name", "?")}] {q}")
+
     reply = ""
     sources = []
     for m in all_msgs:
         if isinstance(m, AIMessage) and m.content:
             reply = m.content
-        if getattr(m, "name", None) == "search_laws" and hasattr(m, "content"):
-            sources.append(m.content[:200])
+        name = getattr(m, "name", "")
+        if name and hasattr(m, "content") and m.content:
+            sources.append({"tool": name, "snippet": str(m.content)[:200]})
+
+    print(f"  [reply] {reply[:150]}...")
     return {"reply": reply, "sources": sources[:5]}
 
 
