@@ -30,3 +30,8 @@ backend/data/test_contracts/
 
 # Vite cache
 frontend/.vite/
+
+# 数据库
+*.db
+*.db-shm
+*.db-wal

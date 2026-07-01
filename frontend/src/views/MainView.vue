@@ -1,8 +1,40 @@
 <template>
   <div class="app-layout" :style="{ '--split-ratio': splitRatio }">
+    <!-- 侧边栏 -->
+    <transition name="sidebar-slide">
+      <div v-if="sidebarVisible" class="sidebar" :class="{ 'sidebar-overlay': forceSidebar }">
+        <div class="sidebar-header">
+          <el-input v-model="searchText" placeholder="搜索对话..." size="small" clearable />
+          <el-button :icon="ArrowLeft" circle size="small" @click="sidebarOpen = false; forceSidebar = false" />
+        </div>
+        <el-button type="primary" class="new-chat-btn" @click="newChat">
+          <el-icon><Plus /></el-icon> 开启新对话
+        </el-button>
+        <div class="conv-list">
+          <div
+            v-for="conv in filteredConvs"
+            :key="conv.id"
+            :class="['conv-item', { active: conv.id === currentConvId }]"
+            @click="loadConversation(conv.id)"
+          >
+            <span class="conv-title">{{ conv.title }}</span>
+            <el-button class="conv-delete" :icon="Delete" circle size="small"
+              @click.stop="handleDeleteConv(conv.id)" />
+          </div>
+          <div v-if="!filteredConvs.length" class="conv-empty">暂无历史对话</div>
+        </div>
+      </div>
+    </transition>
+    <div class="main-area">
     <!-- 左侧：对话区 -->
     <div class="chat-panel" :class="{ 'with-preview': showPreview && !isNarrow, 'hidden-narrow': showPreview && isNarrow }">
       <div class="chat-header">
+        <template v-if="!sidebarVisible">
+          <el-button :icon="Expand" circle size="small" class="toggle-btn" @click="sidebarOpen = true; forceSidebar = isNarrow" />
+          <el-button size="small" class="new-chat-header-btn" @click="newChat">
+            <el-icon><Plus /></el-icon> 新对话
+          </el-button>
+        </template>
         <h2>AI 法律助手</h2>
         <span class="subtitle">法律咨询 · 合同审查</span>
       </div>
@@ -64,6 +96,7 @@
           </el-button>
         </div>
       </div>
+      <div v-if="frostedOverlay" class="frosted-overlay" @click="sidebarOpen = false; forceSidebar = false" />
     </div>
 
     <!-- 拖拽分隔条 -->
@@ -84,15 +117,16 @@
         </div>
       </div>
     </transition>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Upload, Promotion, Document, View, Close } from '@element-plus/icons-vue'
+import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand } from '@element-plus/icons-vue'
 import { marked } from 'marked'
-import { chat as chatApi, analyzeContract } from '../utils/api'
+import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
 
 // ---- 状态 ----
@@ -107,10 +141,33 @@ const msgContainer = ref(null)
 
 const showPreview = ref(false)
 const previewData = ref(null)
+
+// ---- 侧边栏 & 历史 ----
+const sidebarOpen = ref(false)
+const conversations = ref([])
+const currentConvId = ref(null)
+const searchText = ref('')
+const forceSidebar = ref(false)
+const sidebarFits = ref(true)
+const sidebarVisible = computed(() => sidebarOpen.value && (sidebarFits.value || forceSidebar.value))
+const frostedOverlay = computed(() => isNarrow.value && forceSidebar.value && sidebarOpen.value)
+const filteredConvs = computed(() => {
+  if (!searchText.value) return conversations.value
+  const q = searchText.value.toLowerCase()
+  return conversations.value.filter(c => c.title.toLowerCase().includes(q))
+})
 const splitRatio = ref(0.55)
 const dragging = ref(false)
 const isNarrow = ref(false)
-function checkNarrow() { isNarrow.value = window.innerWidth < 700 }
+function checkNarrow() {
+  const wasNarrow = isNarrow.value
+  // Preview fullscreen threshold: 700px
+  isNarrow.value = window.innerWidth < 700
+  // Sidebar fit: need at least sidebar(260) + chat(400) + preview(280 if open)
+  const needForSidebar = 260 + 400 + (showPreview.value && !isNarrow.value ? 280 : 0)
+  sidebarFits.value = window.innerWidth >= needForSidebar
+  if (!isNarrow.value && wasNarrow) forceSidebar.value = false
+}
 let tooltipEl = null
 
 const LOADING_STEPS = [
@@ -151,6 +208,64 @@ async function scrollToBottom() {
 }
 
 // ---- 文本发送 ----
+// ---- 会话管理 ----
+async function refreshConvList() {
+  try { conversations.value = await listConversations() } catch {}
+}
+async function newChat() {
+  currentConvId.value = null
+  messages.value = [{ role: 'assistant', content: '您好！我是 AI 法律助手。您可以向我咨询法律问题，或上传合同文件进行风险审查。' }]
+  showPreview.value = false
+  previewData.value = null
+  sidebarOpen.value = false
+  forceSidebar.value = false
+}
+async function loadConversation(id) {
+  try {
+    const conv = await getConversation(id)
+    currentConvId.value = id
+    messages.value = conv.messages.map(m => {
+      const msg = { role: m.role, content: m.content }
+      if (m.file_name) msg.file = { name: m.file_name }
+      if (m.contract_data) {
+        try {
+          msg.contractData = typeof m.contract_data === 'string'
+            ? JSON.parse(m.contract_data) : m.contract_data
+          msg.hasContract = true
+        } catch {}
+      }
+      return msg
+    })
+    showPreview.value = false
+    previewData.value = null
+  } catch { /* ignore */ }
+}
+async function handleDeleteConv(id) {
+  try {
+    await deleteConversation(id)
+    if (currentConvId.value === id) {
+      currentConvId.value = null
+      messages.value = [{ role: 'assistant', content: '您好！我是 AI 法律助手。您可以向我咨询法律问题，或上传合同文件进行风险审查。' }]
+    }
+    await refreshConvList()
+  } catch {}
+}
+async function ensureConversation() {
+  if (!currentConvId.value) {
+    const conv = await createConversation()
+    currentConvId.value = conv.id
+    await refreshConvList()
+  }
+}
+async function doSaveMessages(userContent, assistantContent, fileName = null, contractData = null) {
+  if (!currentConvId.value) return
+  try {
+    await saveMessages(currentConvId.value, userContent, assistantContent, fileName, contractData)
+    await refreshConvList()
+  } catch {}
+}
+// Simple inline POST helper (avoid circular import)
+
 async function sendText() {
   const query = input.value.trim()
   if (!query || loading.value) return
@@ -161,12 +276,14 @@ async function sendText() {
   await scrollToBottom()
 
   try {
+    await ensureConversation()
     const history = messages.value
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .slice(0, -1)
       .map(m => ({ role: m.role, content: m.content }))
     const res = await chatApi(query, history)
     messages.value.push({ role: 'assistant', content: res.reply })
+    doSaveMessages(query, res.reply)
   } catch (e) {
     messages.value.push({ role: 'assistant', content: '### \u26a0\ufe0f 请求失败\n\n请确认后端服务已启动。' })
   } finally {
@@ -201,6 +318,7 @@ async function sendFile() {
   }
 
   try {
+    await ensureConversation()
     const res = await analyzeContract(fileToSend)
     pushContractResult(res)
   } catch (e) {
@@ -298,6 +416,8 @@ function onContractLeave(e) {
 onMounted(() => {
   checkNarrow()
   window.addEventListener("resize", checkNarrow)
+  watch(showPreview, () => { nextTick(checkNarrow) })
+  refreshConvList()
   tooltipEl = document.createElement('div')
   tooltipEl.className = 'contract-tooltip'
   tooltipEl.style.cssText = 'display:none;position:fixed;z-index:9999;max-width:300px;padding:10px 14px;background:#fff;color:#303133;font-size:13px;line-height:1.6;border-radius:8px;white-space:normal;word-break:break-word;pointer-events:none;box-shadow:0 4px 20px rgba(0,0,0,0.15);font-family:"Microsoft YaHei",sans-serif;'
@@ -359,6 +479,9 @@ function delay(ms) {
   gap: 12px;
   flex-shrink: 0;
 }
+
+.toggle-btn { flex-shrink: 0; }
+.new-chat-header-btn { margin-left: 6px; flex-shrink: 0; }
 .chat-header h2 {
   margin: 0;
   font-size: 18px;
@@ -566,4 +689,109 @@ function delay(ms) {
     display: none !important;
   }
 }
+
+/* ---- 侧边栏 ---- */
+.sidebar {
+  width: 260px;
+  background: #f8f9fb;
+  border-right: 1px solid #e4e7ed;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.sidebar-header {
+  padding: 12px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  border-bottom: 1px solid #ebeef5;
+}
+.sidebar-header .el-input { flex: 1; }
+.new-chat-btn {
+  margin: 12px;
+  width: calc(100% - 24px);
+}
+.conv-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px;
+}
+.conv-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-bottom: 2px;
+  transition: background 0.15s;
+}
+.conv-item:hover { background: #e8ecf1; }
+.conv-item.active { background: #d4dce8; }
+.conv-title {
+  flex: 1;
+  font-size: 13px;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conv-delete {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.conv-item:hover .conv-delete {
+  visibility: visible;
+  opacity: 1;
+}
+.conv-empty {
+  padding: 20px;
+  text-align: center;
+  color: #c0c4cc;
+  font-size: 13px;
+}
+
+/* main-area 包装 */
+.main-area {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 侧边栏滑入动画 */
+.sidebar-slide-enter-active,
+.sidebar-slide-leave-active {
+  transition: width 0.25s ease, opacity 0.25s ease;
+  overflow: hidden;
+}
+.sidebar-slide-enter-from,
+.sidebar-slide-leave-to {
+  width: 0 !important;
+  opacity: 0;
+}
+
+/* ---- 毛玻璃遮罩 ---- */
+.frosted-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  background: rgba(255,255,255,0.6);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+/* 窄屏强制侧边栏浮在对话区上方 */
+.sidebar-overlay {
+  position: absolute !important;
+  z-index: 200;
+  height: 100%;
+  box-shadow: 4px 0 20px rgba(0,0,0,0.15);
+}
+
+.chat-panel {
+  position: relative;
+}
+
 </style>
