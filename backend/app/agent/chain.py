@@ -12,14 +12,32 @@ from app.core.config import get_settings
 settings = get_settings()
 NL = chr(10)
 
+
+def _extract_chinese(s): return re.sub(r"[^一-龥]", "", s)
+
+def fuzzy_match(raw_text, key_phrase):
+    pc = _extract_chinese(key_phrase)
+    tc = _extract_chinese(raw_text)
+    idx = tc.find(pc)
+    if idx == -1: return None
+    cnt = 0; start = end = -1
+    for i, ch in enumerate(raw_text):
+        if "一" <= ch <= "龥":
+            if cnt == idx: start = i
+            if cnt == idx + len(pc) - 1: end = i + 1; break
+            cnt += 1
+    if start >= 0 and end > start: return raw_text[start:end]
+    return None
+
 llm = ChatOpenAI(
-    model="deepseek-chat",
+    model="deepseek-v4-flash",
     api_key=settings.deepseek_api_key,
     base_url=settings.deepseek_base_url,
     temperature=0.3,
     timeout=120,
+    max_tokens=16384,
+    model_kwargs={"extra_body": {"thinking": {"type": "disabled"}}},
 )
-
 LEGAL_SYSTEM_PROMPT = (
     "你是专业法律AI助手。用户会提出法律问题，你必须先调用工具检索相关法条，再基于检索结果回答。"
     "工作流程："
@@ -80,19 +98,26 @@ async def run_chat(query: str, history: list | None = None) -> dict:
 
 
 CONTRACT_SYSTEM_PROMPT = (
-    "你是专业合同审查AI。用户会发送一份合同文本，"
-    "你需要逐条分析其中的风险条款，输出严格的 JSON 格式。"
-    "输出 JSON 格式如下（不要包含任何其他内容）："
-    "{\"chat_reply\": \"Markdown格式的总体审查报告\", \"risk_points\": [{\"quote\": \"原句引用\", \"level\": \"high|medium|low\", \"bubble_text\": \"法律分析和修改建议\"}]}"
-    "审查标准："
+    "你是专业合同审查AI。用户会发送一份合同文本，你需要逐条分析风险条款。"
+    "\n\n工作流程（重要！最多2轮工具调用）："
+    "\n1. 用search_laws一次性检索合同涉及的所有法律领域（买卖、违约、仲裁等）"
+    "\n2. 若本地结果不足，可再用search_web或search_legal补充一次，不要重复搜索同一主题"
+    "\n3. 两轮工具调用后，必须直接输出JSON审查结果"
+    "\n\n输出JSON格式（不要包含任何其他内容）："
+    "{\"chat_reply\": \"Markdown格式的总体审查报告（对话区显示）\", \"risk_points\": [{\"key_phrase\": \"从合同原文中摘录的关键词句\", \"level\": \"high|medium|low\", \"bubble_text\": \"法律分析和修改建议\"}]}"
+    "\n\n重要规则："
+    "\n- key_phrase必须从合同原文中逐字摘录，5-20个汉字，用于在原文中定位标记"
+    "\n- key_phrase不得改写、润色、调整语序、增减字词"
+    "\n- 若合同中有多处相同文字，摘录时适当多取几个字以区分"
+    "\n- 如果某条款整体偏高危，key_phrase取该条款的第一句话即可"
+    "\n- bubble_text不少于30字，必须包含法条依据和具体修改建议，严禁截断"
+    "\n- 必须标注所有等级的风险条款，包括low等级，不得遗漏任何风险点"
+    "\n- chat_reply使用Markdown，包含总体评估和逐条分析，风险等级用🔴🟡⚪标记"
+    "\n\n审查标准："
     "high = 违反法律强制性规定、显失公平的霸王条款；"
     "medium = 权利义务不对等、表述模糊可能引发争议；"
     "low = 建议优化的常规条款。"
-    "chat_reply 中需包含总体评估和逐条分析，引用相关法条。"
 )
-
-
-
 contract_agent = create_agent(
     model=llm,
     tools=AGENT_TOOLS,
@@ -109,7 +134,7 @@ async def run_contract_analysis(raw_text: str) -> dict:
     print(f"{chr(61)*60}")
 
     messages = [HumanMessage(content=query)]
-    result = await contract_agent.ainvoke({"messages": messages})
+    result = await contract_agent.ainvoke({"messages": messages}, config={"recursion_limit": 12})
     all_msgs = result["messages"]
 
     # tool call trace
@@ -134,10 +159,26 @@ async def run_contract_analysis(raw_text: str) -> dict:
         raise ValueError(f"JSON not found in agent response: {reply[:300]}")
     data = json.loads(m.group())
 
-    print(f"  [contract] risks found: {len(data.get("risk_points", []))}")
+    # Post-process: match key_phrase against raw_text to find exact quote
+    risk_points = data.get("risk_points", [])
+    for rp in risk_points:
+        kp = rp.get("key_phrase", "")
+        if kp:
+            matched = fuzzy_match(raw_text, kp)
+            if matched:
+                rp["quote"] = matched
+            else:
+                print(f"  [contract] WARN: key_phrase not matched in raw_text: {kp[:50]}")
+                rp["quote"] = kp  # fallback
+        elif rp.get("quote"):
+            pass  # backward compat
+        else:
+            rp["quote"] = ""
+
+    print(f"  [contract] risks found: {len(risk_points)}")
 
     return {
         "raw_text": raw_text,
-        "risk_points": data.get("risk_points", []),
+        "risk_points": risk_points,
         "chat_reply": data.get("chat_reply", ""),
     }

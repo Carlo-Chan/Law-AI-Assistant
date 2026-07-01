@@ -65,7 +65,14 @@ export function getRiskClass(level) {
  */
 export function renderHighlightedContract(rawText, riskPoints) {
   const positions = riskPoints
-    .map(rp => ({ ...rp, pos: fuzzyFind(rawText, rp.quote) }))
+    .map(rp => {
+      const q = rp.quote || rp.key_phrase || ""
+      const pos = fuzzyFind(rawText, q)
+      if (!pos) {
+        console.warn("[highlight] match failed:", q.slice(0, 40), "| level:", rp.level)
+      }
+      return { ...rp, pos }
+    })
     .filter(rp => rp.pos !== null)
     .sort((a, b) => b.pos.start - a.pos.start)
 
@@ -75,11 +82,12 @@ export function renderHighlightedContract(rawText, riskPoints) {
     const before = result.slice(0, start)
     const match = result.slice(start, end)
     const after = result.slice(end)
-
-    result = `${before}<mark class="${getRiskClass(rp.level)}" title="${escapeHtml(rp.bubble_text)}">${match}</mark>${after}`
+    const bubble = escapeHtml(rp.bubble_text || "")
+    const level = escapeHtml(rp.level || "")
+    result = `${before}<mark class="risk-${level}" data-bubble="${bubble}" data-level="${level}">${match}</mark>${after}`
   }
 
-  return result.replace(/\n/g, '<br>')
+  return result.replace(/\n/g, "<br>")
 }
 
 function escapeHtml(str) {

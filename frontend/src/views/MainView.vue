@@ -74,7 +74,7 @@
           <el-button :icon="Close" circle size="small" @click="showPreview = false" />
         </div>
         <div class="preview-body">
-          <div class="contract-text" v-html="highlightedContract" />
+          <div class="contract-text" v-html="highlightedContract" @click="onContractClick" />
         </div>
         <div class="preview-legend">
           <span class="legend-item"><span class="legend-dot high"></span>高风险</span>
@@ -88,6 +88,7 @@
 
 <script setup>
 import { ref, computed, nextTick } from 'vue'
+import { ElMessage } from 'element-plus'
 import { Upload, Promotion, Document, View, Close } from '@element-plus/icons-vue'
 // import VMdPreview from '@kangc/v-md-editor/lib/preview'
 // import vuepressTheme from '@kangc/v-md-editor/lib/theme/vuepress.js'
@@ -205,6 +206,20 @@ async function sendFile() {
     loading.value = false
     loadingLines.value = []
     await scrollToBottom()
+  }
+}
+
+function onContractClick(e) {
+  const mark = e.target.closest('mark')
+  if (!mark) return
+  const bubble = mark.dataset.bubble
+  if (bubble) {
+    ElMessage({
+      message: bubble,
+      type: mark.dataset.level === 'high' ? 'error' : mark.dataset.level === 'medium' ? 'warning' : 'info',
+      duration: 8000,
+      showClose: true,
+    })
   }
 }
 
@@ -399,9 +414,9 @@ function delay(ms) {
   cursor: pointer;
   transition: background 0.2s;
 }
-.contract-text :deep(mark.risk-high)   { background: rgba(245, 108, 108, 0.35); }
-.contract-text :deep(mark.risk-medium) { background: rgba(230, 162, 60, 0.35); }
-.contract-text :deep(mark.risk-low)    { background: rgba(144, 147, 153, 0.2); }
+.contract-text :deep(mark.risk-high)   { background: rgba(220, 80, 80, 0.55); }
+.contract-text :deep(mark.risk-medium) { background: rgba(245, 195, 50, 0.50); }
+.contract-text :deep(mark.risk-low)    { background: rgba(144, 147, 153, 0.35); }
 .contract-text :deep(mark:hover)       { filter: brightness(0.88); }
 .preview-legend {
   padding: 10px 16px;
@@ -414,9 +429,9 @@ function delay(ms) {
 }
 .legend-item { display: flex; align-items: center; gap: 4px; }
 .legend-dot { width: 10px; height: 10px; border-radius: 2px; }
-.legend-dot.high   { background: rgba(245, 108, 108, 0.6); }
-.legend-dot.medium { background: rgba(230, 162, 60, 0.6); }
-.legend-dot.low    { background: rgba(144, 147, 153, 0.4); }
+.legend-dot.high   { background: rgba(220, 80, 80, 0.85); }
+.legend-dot.medium { background: rgba(245, 195, 50, 0.85); }
+.legend-dot.low    { background: rgba(144, 147, 153, 0.65); }
 
 /* 右侧滑入动画 */
 .slide-enter-active, .slide-leave-active { transition: all 0.3s ease; }
