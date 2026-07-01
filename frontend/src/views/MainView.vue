@@ -1,7 +1,7 @@
 <template>
-  <div class="app-layout">
+  <div class="app-layout" :style="{ '--split-ratio': splitRatio }">
     <!-- 左侧：对话区 -->
-    <div class="chat-panel" :class="{ 'with-preview': showPreview }">
+    <div class="chat-panel" :class="{ 'with-preview': showPreview && !isNarrow, 'hidden-narrow': showPreview && isNarrow }">
       <div class="chat-header">
         <h2>AI 法律助手</h2>
         <span class="subtitle">法律咨询 · 合同审查</span>
@@ -66,15 +66,16 @@
       </div>
     </div>
 
-    <!-- 右侧：合同预览抽屉 -->
+    <!-- 拖拽分隔条 -->
+    <div v-if="showPreview" class="split-divider" :class="{ active: dragging }" @mousedown="onDividerDragStart"></div>
     <transition name="slide">
-      <div v-if="showPreview" class="preview-panel">
+      <div v-if="showPreview" :class="['preview-panel', { 'preview-fullscreen': isNarrow }]">
         <div class="preview-header">
           <span>合同原文 · 风险标注</span>
           <el-button :icon="Close" circle size="small" @click="showPreview = false" />
         </div>
         <div class="preview-body">
-          <div class="contract-text" v-html="highlightedContract" @click="onContractClick" />
+          <div class="contract-text" v-html="highlightedContract" @click="onContractClick" @mouseover="onContractHover" @mouseout="onContractLeave" />
         </div>
         <div class="preview-legend">
           <span class="legend-item"><span class="legend-dot high"></span>高风险</span>
@@ -87,7 +88,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Upload, Promotion, Document, View, Close } from '@element-plus/icons-vue'
 import { marked } from 'marked'
@@ -106,6 +107,11 @@ const msgContainer = ref(null)
 
 const showPreview = ref(false)
 const previewData = ref(null)
+const splitRatio = ref(0.55)
+const dragging = ref(false)
+const isNarrow = ref(false)
+function checkNarrow() { isNarrow.value = window.innerWidth < 700 }
+let tooltipEl = null
 
 const LOADING_STEPS = [
   '正在提取合同文本...',
@@ -221,6 +227,91 @@ function onContractClick(e) {
   }
 }
 
+// ---- 分隔条拖拽 ----
+function onDividerDragStart(e) {
+  e.preventDefault()
+  dragging.value = true
+  const appLayout = document.querySelector('.app-layout')
+  if (!appLayout) return
+  const startX = e.clientX
+  const startRatio = splitRatio.value
+  const totalW = appLayout.offsetWidth
+  let rafId = null
+
+  // Disable text selection during drag
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'col-resize'
+
+  function onMove(ev) {
+    if (rafId) return
+    rafId = requestAnimationFrame(() => {
+      rafId = null
+      const dx = ev.clientX - startX
+      const newRatio = startRatio + dx / totalW
+      splitRatio.value = Math.max(0.25, Math.min(0.75, newRatio))
+    })
+  }
+
+  function onUp() {
+    if (rafId) cancelAnimationFrame(rafId)
+    dragging.value = false
+    document.body.style.userSelect = ''
+    document.body.style.cursor = ''
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+  }
+
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
+function onContractHover(e) {
+  const mark = e.target.closest('mark')
+  if (!mark || !tooltipEl) return
+  const bubble = mark.dataset.bubble
+  if (!bubble) return
+  tooltipEl.textContent = bubble
+  tooltipEl.style.display = 'block'
+  const rect = mark.getBoundingClientRect()
+  // Use preview-panel bounds as the visible area
+  const panel = document.querySelector('.preview-panel')
+  const panelRect = panel ? panel.getBoundingClientRect() : { left: 0, right: window.innerWidth }
+  const tipW = tooltipEl.offsetWidth
+  const tipH = tooltipEl.offsetHeight
+  const gap = 8
+  // Center over mark, clamp within preview panel
+  let left = rect.left + rect.width / 2 - tipW / 2
+  left = Math.max(panelRect.left + 8, Math.min(left, panelRect.right - tipW - 8))
+  let top = rect.top - tipH - gap
+  if (top < panelRect.top + 8) {
+    top = rect.bottom + gap
+  }
+  tooltipEl.style.left = left + 'px'
+  tooltipEl.style.top = top + 'px'
+}
+
+function onContractLeave(e) {
+  if (!tooltipEl) return
+  tooltipEl.style.display = 'none'
+}
+
+onMounted(() => {
+  checkNarrow()
+  window.addEventListener("resize", checkNarrow)
+  tooltipEl = document.createElement('div')
+  tooltipEl.className = 'contract-tooltip'
+  tooltipEl.style.cssText = 'display:none;position:fixed;z-index:9999;max-width:300px;padding:10px 14px;background:#fff;color:#303133;font-size:13px;line-height:1.6;border-radius:8px;white-space:normal;word-break:break-word;pointer-events:none;box-shadow:0 4px 20px rgba(0,0,0,0.15);font-family:"Microsoft YaHei",sans-serif;'
+  document.body.appendChild(tooltipEl)
+})
+
+onUnmounted(() => {
+  window.removeEventListener("resize", checkNarrow)
+  if (tooltipEl) {
+    tooltipEl.remove()
+    tooltipEl = null
+  }
+})
+
 function pushContractResult(data) {
   messages.value.push({
     role: 'assistant',
@@ -256,7 +347,8 @@ function delay(ms) {
   transition: all 0.3s;
 }
 .chat-panel.with-preview {
-  flex: 0 0 55%;
+  flex: 0 0 calc(var(--split-ratio) * 100%);
+  min-width: 280px;
 }
 .chat-header {
   padding: 16px 24px;
@@ -376,9 +468,27 @@ function delay(ms) {
 @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
 
 /* 右侧预览 */
+.split-divider {
+  width: 3px;
+  cursor: col-resize;
+  background: #e4e7ed;
+  flex-shrink: 0;
+  transition: background 0.2s;
+  position: relative;
+}
+.split-divider::after {
+  content: '';
+  position: absolute;
+  inset: -4px 0;
+}
+.split-divider:hover,
+.split-divider.active {
+  background: #a0c4ff;
+}
+
 .preview-panel {
-  width: 45%;
-  min-width: 380px;
+  flex: 1;
+  min-width: 280px;
   display: flex;
   flex-direction: column;
   background: #fff;
@@ -411,11 +521,13 @@ function delay(ms) {
   border-radius: 2px;
   cursor: pointer;
   transition: background 0.2s;
+  position: relative;
 }
 .contract-text :deep(mark.risk-high)   { background: rgba(220, 80, 80, 0.55); }
 .contract-text :deep(mark.risk-medium) { background: rgba(245, 195, 50, 0.50); }
 .contract-text :deep(mark.risk-low)    { background: rgba(144, 147, 153, 0.35); }
-.contract-text :deep(mark:hover)       { filter: brightness(0.88); }
+.contract-text :deep(mark):hover { filter: brightness(0.88); }
+
 .preview-legend {
   padding: 10px 16px;
   border-top: 1px solid #ebeef5;
@@ -434,4 +546,24 @@ function delay(ms) {
 /* 右侧滑入动画 */
 .slide-enter-active, .slide-leave-active { transition: all 0.3s ease; }
 .slide-enter-from, .slide-leave-to { transform: translateX(100%); opacity: 0; }
+
+/* ---- 响应式：窄屏 ---- */
+.chat-panel.hidden-narrow {
+  display: none !important;
+}
+.preview-panel.preview-fullscreen {
+  flex: 1 1 100% !important;
+  min-width: 0 !important;
+}
+.split-divider {
+  display: block;
+}
+@media (max-width: 699px) {
+  .split-divider {
+    display: none;
+  }
+  .chat-panel.hidden-narrow {
+    display: none !important;
+  }
+}
 </style>
