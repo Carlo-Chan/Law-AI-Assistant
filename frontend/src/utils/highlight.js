@@ -84,7 +84,7 @@ export function renderHighlightedContract(rawText, riskPoints) {
     const after = result.slice(end)
     const bubble = escapeHtml(rp.bubble_text || "")
     const level = escapeHtml(rp.level || "")
-    result = `${before}<mark class="risk-${level}" data-bubble="${bubble}" data-level="${level}">${match}</mark>${after}`
+    result = `${before}<mark class="risk-${level}" data-bubble="${bubble.replace(/"/g, '&quot;')}" data-level="${level}">${match}</mark>${after}`
   }
 
   return result.replace(/\n/g, "<br>")

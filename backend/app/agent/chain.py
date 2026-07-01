@@ -161,17 +161,17 @@ async def run_contract_analysis(raw_text: str) -> dict:
 
     # Post-process: match key_phrase against raw_text to find exact quote
     risk_points = data.get("risk_points", [])
-    for rp in risk_points:
+    for i, rp in enumerate(risk_points):
         kp = rp.get("key_phrase", "")
         if kp:
             matched = fuzzy_match(raw_text, kp)
             if matched:
                 rp["quote"] = matched
             else:
-                print(f"  [contract] WARN: key_phrase not matched in raw_text: {kp[:50]}")
-                rp["quote"] = kp  # fallback
+                print(f"  [contract] WARN: key_phrase not matched: {kp[:50]}")
+                rp["quote"] = kp
         elif rp.get("quote"):
-            pass  # backward compat
+            pass
         else:
             rp["quote"] = ""
 
