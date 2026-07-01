@@ -126,7 +126,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand } from '@element-plus/icons-vue'
 import { marked } from 'marked'
-import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle } from '../utils/api'
+import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, saveGreeting } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
 
 // ---- 状态 ----
@@ -169,6 +169,8 @@ function checkNarrow() {
   if (!isNarrow.value && wasNarrow) forceSidebar.value = false
 }
 let tooltipEl = null
+let pinnedMark = null
+let pinnedScrollHandler = null
 
 const LOADING_STEPS = [
   '正在提取合同文本...',
@@ -224,7 +226,7 @@ async function loadConversation(id) {
   try {
     const conv = await getConversation(id)
     currentConvId.value = id
-    messages.value = conv.messages.map(m => {
+    const msgs = conv.messages.map(m => {
       const msg = { role: m.role, content: m.content }
       if (m.file_name) msg.file = { name: m.file_name }
       if (m.contract_data) {
@@ -236,6 +238,11 @@ async function loadConversation(id) {
       }
       return msg
     })
+    // Prepend greeting if missing (backward compat)
+    if (!msgs.length || msgs[0].role !== 'assistant' || !msgs[0].content.includes('AI 法律助手')) {
+      msgs.unshift({ role: 'assistant', content: GREETING })
+    }
+    messages.value = msgs
     showPreview.value = false
     previewData.value = null
   } catch { /* ignore */ }
@@ -254,9 +261,15 @@ async function ensureConversation() {
   if (!currentConvId.value) {
     const conv = await createConversation()
     currentConvId.value = conv.id
+    // Save greeting as first message
+    try {
+      await saveGreeting(conv.id, GREETING)
+    } catch {}
     await refreshConvList()
   }
 }
+
+const GREETING = '您好！我是 AI 法律助手。您可以向我咨询法律问题，或上传合同文件进行风险审查。'
 async function doSaveMessages(userContent, assistantContent, fileName = null, contractData = null) {
   if (!currentConvId.value) return
   try {
@@ -321,6 +334,7 @@ async function sendFile() {
     await ensureConversation()
     const res = await analyzeContract(fileToSend)
     pushContractResult(res)
+    doSaveMessages(messages.value[messages.value.length - 2].content, res.chat_reply, fileToSend.name, res)
   } catch (e) {
     const errMsg = e?.response?.data?.detail || e.message || '请确认后端服务已启动。'
     messages.value.push({ role: 'assistant', content: '### ⚠️ 合同审查失败\n\n' + errMsg })
@@ -331,17 +345,51 @@ async function sendFile() {
   }
 }
 
+function updatePinnedBubble() {
+  if (!pinnedMark || !tooltipEl) return
+  const rect = pinnedMark.getBoundingClientRect()
+  const panel = document.querySelector('.preview-panel')
+  const panelRect = panel ? panel.getBoundingClientRect() : { left: 0, right: window.innerWidth }
+  const tipW = tooltipEl.offsetWidth
+  const tipH = tooltipEl.offsetHeight
+  const gap = 8
+  let left = rect.left + rect.width / 2 - tipW / 2
+  left = Math.max(panelRect.left + 8, Math.min(left, panelRect.right - tipW - 8))
+  let top = rect.top - tipH - gap
+  if (top < panelRect.top + 8) {
+    top = rect.bottom + gap
+  }
+  tooltipEl.style.left = left + 'px'
+  tooltipEl.style.top = top + 'px'
+}
+
 function onContractClick(e) {
   const mark = e.target.closest('mark')
   if (!mark) return
-  const bubble = mark.dataset.bubble
-  if (bubble) {
-    ElMessage({
-      message: bubble,
-      type: mark.dataset.level === 'high' ? 'error' : mark.dataset.level === 'medium' ? 'warning' : 'info',
-      duration: 8000,
-      showClose: true,
-    })
+  if (pinnedMark === mark) {
+    // Unpin
+    pinnedMark.classList.remove('pinned')
+    pinnedMark = null
+    if (tooltipEl) tooltipEl.style.display = 'none'
+    if (pinnedScrollHandler) {
+      document.querySelector('.preview-body')?.removeEventListener('scroll', pinnedScrollHandler)
+      pinnedScrollHandler = null
+    }
+  } else {
+    // Unpin previous
+    if (pinnedMark) {
+      pinnedMark.classList.remove('pinned')
+      if (pinnedScrollHandler) {
+        document.querySelector('.preview-body')?.removeEventListener('scroll', pinnedScrollHandler)
+      }
+    }
+    // Pin this one
+    pinnedMark = mark
+    mark.classList.add('pinned')
+    // Show bubble + attach scroll listener
+    onContractHover(e)
+    pinnedScrollHandler = () => updatePinnedBubble()
+    document.querySelector('.preview-body')?.addEventListener('scroll', pinnedScrollHandler, { passive: true })
   }
 }
 
@@ -386,6 +434,8 @@ function onDividerDragStart(e) {
 function onContractHover(e) {
   const mark = e.target.closest('mark')
   if (!mark || !tooltipEl) return
+  // If a different mark is pinned, don't steal the bubble
+  if (pinnedMark && pinnedMark !== mark) return
   const bubble = mark.dataset.bubble
   if (!bubble) return
   tooltipEl.textContent = bubble
@@ -409,7 +459,7 @@ function onContractHover(e) {
 }
 
 function onContractLeave(e) {
-  if (!tooltipEl) return
+  if (!tooltipEl || pinnedMark) return
   tooltipEl.style.display = 'none'
 }
 
@@ -792,6 +842,13 @@ function delay(ms) {
 
 .chat-panel {
   position: relative;
+}
+
+
+.contract-text :deep(mark.pinned) {
+  outline: 2px solid #409EFF;
+  outline-offset: 1px;
+  filter: brightness(0.85);
 }
 
 </style>
