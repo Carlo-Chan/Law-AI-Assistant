@@ -135,7 +135,15 @@ class SaveMessagesRequest(BaseModel):
 
 @router.post("/conversations/{conv_id}/messages", response_model=ConvResponse)
 async def save_messages(conv_id: str, req: SaveMessagesRequest):
-    history.add_message(conv_id, "user", req.user_content, req.file_name, req.contract_data)
-    history.add_message(conv_id, "assistant", req.assistant_content)
+    history.add_message(conv_id, "user", req.user_content, req.file_name)
+    history.add_message(conv_id, "assistant", req.assistant_content, contract_data=req.contract_data)
+    return ConvResponse(code=200, data={"ok": True})
+
+class GreetingRequest(BaseModel):
+    content: str
+
+@router.post("/conversations/{conv_id}/greeting", response_model=ConvResponse)
+async def save_greeting(conv_id: str, req: GreetingRequest):
+    history.add_message(conv_id, "assistant", req.content)
     return ConvResponse(code=200, data={"ok": True})
 
