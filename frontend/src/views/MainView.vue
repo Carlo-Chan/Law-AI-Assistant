@@ -90,12 +90,9 @@
 import { ref, computed, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Upload, Promotion, Document, View, Close } from '@element-plus/icons-vue'
-// import VMdPreview from '@kangc/v-md-editor/lib/preview'
-// import vuepressTheme from '@kangc/v-md-editor/lib/theme/vuepress.js'
+import { marked } from 'marked'
 import { chat as chatApi, analyzeContract } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
-
-// // VMdPreview.use(vuepressTheme)
 
 // ---- 状态 ----
 const messages = ref([
@@ -130,7 +127,8 @@ const MOCK_POINTS = [
 
 // ---- 渲染 ----
 function renderMd(text) {
-  return '<p>' + text.replace(/\n/g, '<br>') + '</p>'
+  if (!text) return ''
+  return marked.parse(text)
 }
 
 const highlightedContract = computed(() => {
