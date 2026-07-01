@@ -10,6 +10,7 @@ from app.agent.tools import AGENT_TOOLS
 from app.core.config import get_settings
 
 settings = get_settings()
+NL = chr(10)
 
 llm = ChatOpenAI(
     model="deepseek-chat",
@@ -46,18 +47,18 @@ async def run_chat(query: str, history: list | None = None) -> dict:
             messages.append(AIMessage(content=h["content"]))
     messages.append(HumanMessage(content=query))
 
-    print(f"\n{'='*60}")
-    print(f"[Chat] user: {query[:120]}")
-    print(f"{'='*60}")
+    print(f"\n{chr(61)*60}")
+    print(f"[Chat] user: {query[:150]}")
+    print(f"{chr(61)*60}")
 
     result = await chat_agent.ainvoke({"messages": messages})
     all_msgs = result["messages"]
 
-    # Log tool calls and results
+    # tool call trace
     for m in all_msgs:
         name = getattr(m, "name", "")
         if isinstance(m, ToolMessage):
-            snippet = str(m.content)[:200].replace(chr(10), " ")
+            snippet = str(m.content)[:500].replace(NL, " ")
             print(f"  [{name}] result: {snippet}")
         elif isinstance(m, AIMessage) and hasattr(m, "tool_calls") and m.tool_calls:
             for tc in m.tool_calls:
@@ -74,7 +75,7 @@ async def run_chat(query: str, history: list | None = None) -> dict:
         if name and hasattr(m, "content") and m.content:
             sources.append({"tool": name, "snippet": str(m.content)[:200]})
 
-    print(f"  [reply] {reply[:150]}...")
+    print(f"  [reply] {reply[:200]}...")
     return {"reply": reply, "sources": sources[:5]}
 
 
@@ -92,18 +93,50 @@ CONTRACT_SYSTEM_PROMPT = (
 )
 
 
+
+contract_agent = create_agent(
+    model=llm,
+    tools=AGENT_TOOLS,
+    system_prompt=CONTRACT_SYSTEM_PROMPT,
+)
+
+
 async def run_contract_analysis(raw_text: str) -> dict:
     """Contract review returning structured result"""
-    messages = [
-        SystemMessage(content=CONTRACT_SYSTEM_PROMPT),
-        HumanMessage(content=f"请审查以下合同文本：\n\n{raw_text}"),
-    ]
-    response = await llm.ainvoke(messages)
-    raw = response.content.strip()
-    m = re.search(r"\{[\s\S]*\}", raw)
+    query = f"请审查以下合同文本：\n\n{raw_text}"
+
+    print(f"\n{chr(61)*60}")
+    print(f"[Contract] review request, text length: {len(raw_text)}")
+    print(f"{chr(61)*60}")
+
+    messages = [HumanMessage(content=query)]
+    result = await contract_agent.ainvoke({"messages": messages})
+    all_msgs = result["messages"]
+
+    # tool call trace
+    for m in all_msgs:
+        name = getattr(m, "name", "")
+        if isinstance(m, ToolMessage):
+            snippet = str(m.content)[:500].replace(NL, " ")
+            print(f"  [{name}] result: {snippet}")
+        elif isinstance(m, AIMessage) and hasattr(m, "tool_calls") and m.tool_calls:
+            for tc in m.tool_calls:
+                args = tc.get("args", {})
+                q = args.get("query", args.get("text", str(args)[:80]))
+                print(f"  [LLM call -> {tc.get("name", "?")}] {q}")
+
+    reply = ""
+    for m in all_msgs:
+        if isinstance(m, AIMessage) and m.content:
+            reply = m.content
+
+    m = re.search(r"\{[\s\S]*\}", reply)
     if not m:
-        raise ValueError(f"JSON not found in: {raw[:300]}")
+        raise ValueError(f"JSON not found in agent response: {reply[:300]}")
     data = json.loads(m.group())
+
+    print(f"  [contract] risks found: {len(data.get("risk_points", []))}")
+
     return {
         "raw_text": raw_text,
         "risk_points": data.get("risk_points", []),
