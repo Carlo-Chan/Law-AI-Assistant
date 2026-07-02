@@ -301,7 +301,7 @@ async function doSaveMessages(userContent, assistantContent, fileName, contractD
 
 function handleSend() {
   if (pendingFile.value) {
-    sendFile()
+    sendFile(input.value.trim() || null)
   } else {
     sendText()
   }
@@ -365,23 +365,29 @@ function handleFileChange(file) {
 }
 
 // ---- 合同审查发送 ----
-async function sendFile() {
+async function sendFile(instruction = null) {
   if (!pendingFile.value || loading.value) return
+
+  const displayContent = instruction
+    ? `📄 上传合同：${pendingFile.value.name}
+${instruction}`
+    : `📄 上传合同：${pendingFile.value.name}`
 
   messages.value.push({
     role: 'user',
-    content: `📄 上传合同：${pendingFile.value.name}`,
+    content: displayContent,
     file: pendingFile.value,
   })
   const fileToSend = pendingFile.value
   pendingFile.value = null
+  input.value = ''
   loading.value = true
   await scrollToBottom()
 
   try {
     await ensureConversation()
     try {
-      const t = fileToSend.name.replace(/\.[^.]+$/, "")
+      const t = instruction || fileToSend.name.replace(/\.[^.]+$/, "")
       await updateConvTitle(currentConvId.value, t.length > 14 ? t.slice(0, 14) + "…" : t)
     } catch {}
     thinkingSteps.value = []
