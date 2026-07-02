@@ -290,6 +290,10 @@ async function sendText() {
 
   try {
     await ensureConversation()
+    try {
+      const t = query
+      await updateConvTitle(currentConvId.value, t.length > 14 ? t.slice(0, 14) + "…" : t)
+    } catch {}
     const history = messages.value
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .slice(0, -1)
@@ -332,6 +336,10 @@ async function sendFile() {
 
   try {
     await ensureConversation()
+    try {
+      const t = fileToSend.name.replace(/\.[^.]+$/, "")
+      await updateConvTitle(currentConvId.value, t.length > 14 ? t.slice(0, 14) + "…" : t)
+    } catch {}
     const res = await analyzeContract(fileToSend)
     pushContractResult(res)
     doSaveMessages(messages.value[messages.value.length - 2].content, res.chat_reply, fileToSend.name, res)
