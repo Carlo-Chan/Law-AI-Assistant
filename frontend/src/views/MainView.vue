@@ -80,30 +80,31 @@
       </div>
 
       <div class="chat-input-area">
-        <div class="input-row">
-          <el-upload
-            :auto-upload="false"
-            :show-file-list="false"
-            :on-change="handleFileChange"
-            accept=".pdf,.doc,.docx,.txt"
-          >
-            <el-button :icon="Upload" circle :disabled="loading" />
-          </el-upload>
-          <el-input
-            v-model="input"
-            type="textarea"
-            :rows="2"
-            placeholder="输入法律问题，或上传合同文件进行审查..."
-            :disabled="loading"
-            @keydown.enter.exact.prevent="sendText"
-          />
-          <el-button type="primary" :icon="Promotion" :disabled="!canSend" @click="sendText" />
-        </div>
         <div v-if="pendingFile" class="file-tag">
           <el-tag closable @close="pendingFile = null">{{ pendingFile.name }}</el-tag>
-          <el-button type="success" size="small" :loading="loading" @click="sendFile">
-            开始审查
-          </el-button>
+        </div>
+        <div class="input-row">
+          <div class="input-wrapper">
+            <el-input
+              v-model="input"
+              type="textarea"
+              :rows="2"
+              placeholder="输入法律问题，或上传合同文件进行审查..."
+              :disabled="loading"
+              @keydown.enter.exact.prevent="handleSend"
+            />
+            <div class="input-actions">
+              <el-upload
+                :auto-upload="false"
+                :show-file-list="false"
+                :on-change="handleFileChange"
+                accept=".pdf,.doc,.docx,.txt"
+              >
+                <el-button :icon="Upload" circle size="small" :disabled="loading" />
+              </el-upload>
+              <el-button type="primary" :icon="Promotion" size="small" :disabled="!canSend" @click="handleSend" />
+            </div>
+          </div>
         </div>
       </div>
       <div v-if="frostedOverlay" class="frosted-overlay" @click="sidebarOpen = false; forceSidebar = false" />
@@ -297,6 +298,14 @@ async function doSaveMessages(userContent, assistantContent, fileName, contractD
   } catch {}
 }
 // Simple inline POST helper (avoid circular import)
+
+function handleSend() {
+  if (pendingFile.value) {
+    sendFile()
+  } else {
+    sendText()
+  }
+}
 
 async function sendText() {
   const query = input.value.trim()
@@ -708,11 +717,28 @@ function openContractPreview(msg) {
   gap: 8px;
   align-items: flex-end;
 }
+.input-wrapper {
+  position: relative;
+  flex: 1;
+}
+.input-wrapper :deep(.el-textarea__inner) {
+  padding-bottom: 36px;
+  resize: none;
+}
+.input-actions {
+  position: absolute;
+  bottom: 6px;
+  left: 8px;
+  right: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
 .input-row .el-textarea {
   flex: 1;
 }
 .file-tag {
-  margin-top: 8px;
+  margin-bottom: 8px;
   display: flex;
   align-items: center;
   gap: 10px;
