@@ -69,7 +69,7 @@ def build_article_hierarchy(body):
 
 def split_by_article(body, law_name, hierarchy_map):
     chunks = []
-    pat = re.compile(r"(?:^|\n)-?\s*\*?\*?\u7b2c([\u4e00-\u9fa5\d]+)\u6761\*?\*?\s*(.*?)(?=\n-?\s*\*?\*?\u7b2c[\u4e00-\u9fa5\d]+\u6761|\Z)", re.DOTALL)
+    pat = re.compile(r"(?:^|\n)-?\s*\*?\*?\u7b2c([\u4e00-\u9fa5\d]+)\u6761\*?\*?\s*(.*?)(?=\n(?:-?\s*\*?\*?\u7b2c[\u4e00-\u9fa5\d]+\u6761|#{2,5}\s)|\Z)", re.DOTALL)
     matches = list(pat.finditer(body))
     if len(matches) <= 1:
         cpat = re.compile(r"(?:^|\n)(?:#{2,4}\s*)?\u7b2c[\u4e00-\u9fa5\d]+\u7ae0\s*.*?(?=\n(?:#{2,4}\s*)?\u7b2c[\u4e00-\u9fa5\d]+\u7ae0|\Z)", re.DOTALL)
@@ -94,8 +94,10 @@ def split_by_article(body, law_name, hierarchy_map):
         hier = hierarchy_map.get(num, "")
         hdr = "\u3010" + law_name + "\u3011"
         if hier: hdr += " " + hier
-        chunk_content = hdr + chr(10) + chr(10) + ft
-        chunks.append({"content": chunk_content, "article": "\u7b2c" + num + "\u6761", "law": law_name, "hierarchy": hier})
+        # Strip any trailing chapter/section headings from article content
+        ft_clean = re.sub(r"\n#{2,5}\s+第[一-龥\d]+[章节].*$", "", ft)
+        chunk_content = hdr + chr(10) + chr(10) + ft_clean
+        chunks.append({"content": chunk_content, "article": "第" + num + "条", "law": law_name, "hierarchy": hier})
     return chunks
 
 
