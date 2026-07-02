@@ -474,7 +474,18 @@ function onContractLeave(e) {
 onMounted(() => {
   checkNarrow()
   window.addEventListener("resize", checkNarrow)
-  watch(showPreview, () => { nextTick(checkNarrow) })
+  watch(showPreview, (val) => {
+    nextTick(checkNarrow)
+    if (!val && pinnedMark) {
+      pinnedMark.classList.remove("pinned")
+      pinnedMark = null
+      if (tooltipEl) tooltipEl.style.display = "none"
+      if (pinnedScrollHandler) {
+        document.querySelector(".preview-body")?.removeEventListener("scroll", pinnedScrollHandler)
+        pinnedScrollHandler = null
+      }
+    }
+  })
   refreshConvList()
   tooltipEl = document.createElement('div')
   tooltipEl.className = 'contract-tooltip'
