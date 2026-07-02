@@ -48,12 +48,13 @@ export async function deleteConversation(id) {
   return data.data
 }
 /** 保存消息到会话 */
-export async function saveMessages(convId, userContent, assistantContent, fileName = null, contractData = null) {
+export async function saveMessages(convId, userContent, assistantContent, fileName = null, contractData = null, thinkingChain = null) {
   await api.post(`/conversations/${convId}/messages`, {
     user_content: userContent,
     assistant_content: assistantContent,
     file_name: fileName,
     contract_data: contractData,
+    thinking_chain: thinkingChain,
   })
 }
 
@@ -66,3 +67,77 @@ export async function saveGreeting(convId, content) {
   await api.post(`/conversations/${convId}/greeting`, { content })
 }
 
+
+
+export async function chatStream(query, history, { onThinking, onToolResult, onToken, onDone, onError }) {
+  try {
+    const res = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, history }),
+    })
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ""
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split("\n")
+      buf = lines.pop() || ""
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try {
+            const evt = JSON.parse(line.slice(6))
+            switch (evt.type) {
+              case "thinking": onThinking?.(evt.label); break
+              case "tool_result": onToolResult?.(evt.tool, evt.output); break
+              case "token": onToken?.(evt.content); break
+              case "done": onDone?.(evt); break
+              case "error": onError?.(evt.message); break
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch (e) {
+    onError?.(e.message || "Network error")
+  }
+}
+
+export async function analyzeContractStream(file, { onThinking, onToolResult, onToken, onDone, onError }) {
+  try {
+    const formData = new FormData()
+    formData.append("file", file)
+    const res = await fetch("/api/analyze_contract/stream", {
+      method: "POST",
+      body: formData,
+    })
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ""
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split("\n")
+      buf = lines.pop() || ""
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try {
+            const evt = JSON.parse(line.slice(6))
+            switch (evt.type) {
+              case "thinking": onThinking?.(evt.label); break
+              case "tool_result": onToolResult?.(evt.tool, evt.output); break
+              case "token": onToken?.(evt.content); break
+              case "done": onDone?.(evt); break
+              case "error": onError?.(evt.message); break
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch (e) {
+    onError?.(e.message || "Network error")
+  }
+}

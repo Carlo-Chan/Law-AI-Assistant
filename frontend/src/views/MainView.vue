@@ -44,27 +44,37 @@
           <div v-if="msg.role === 'user' && msg.file" class="file-badge">
             <el-icon><Document /></el-icon> {{ msg.file.name }}
           </div>
+          <!-- thinking chain: live during streaming, or persisted -->
+          <div v-if="msg.role === 'assistant' && i === messages.length - 1 && loading" class="thinking-chain">
+            <div class="thinking-summary" @click="thinkingExpanded = !thinkingExpanded">
+              <span class="thinking-dot" />
+              <span>{{ thinkingLabel }}</span>
+              <span class="thinking-arrow">{{ thinkingExpanded ? '∨' : '>' }}</span>
+            </div>
+            <div v-if="thinkingExpanded" class="thinking-details">
+              <div v-for="(step, si) in thinkingSteps" :key="si" class="thinking-step">
+                <span class="thinking-step-icon">{{ step.type === 'tool' ? '🔍' : '✅' }}</span>
+                <span class="thinking-step-text">{{ step.label }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-else-if="msg.thinkingChain?.length" class="thinking-chain">
+            <div class="thinking-summary persisted" @click="msg.thinkingExpanded = !msg.thinkingExpanded">
+              <span>{{ msg.thinkingChain.filter(s => s.type === 'tool').length }} 次工具调用</span>
+              <span class="thinking-arrow">{{ msg.thinkingExpanded ? '∨' : '>' }}</span>
+            </div>
+            <div v-if="msg.thinkingExpanded" class="thinking-details">
+              <div v-for="(step, si) in msg.thinkingChain" :key="si" class="thinking-step">
+                <span class="thinking-step-icon">{{ step.type === 'tool' ? '🔍' : '✅' }}</span>
+                <span class="thinking-step-text">{{ step.label }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span>
+              </div>
+            </div>
+          </div>
           <div class="message-content" v-html="renderMd(msg.content)" />
-          <div v-if="msg.hasContract" class="contract-actions">
+          <div v-if="msg.contractRawText" class="contract-actions">
             <el-button type="primary" size="small" @click="openContractPreview(msg)">
               <el-icon><View /></el-icon> 查看合同标注
             </el-button>
-          </div>
-        </div>
-        <div v-if="loading" class="message assistant">
-          <div class="loading-animation">
-            <div class="terminal">
-              <div class="terminal-header">
-                <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
-                <span class="terminal-title">Law-AI 分析引擎</span>
-              </div>
-              <div class="terminal-body">
-                <p v-for="(line, i) in loadingLines" :key="i" class="terminal-line">
-                  <span class="prompt">$</span> {{ line }}
-                </p>
-                <p class="terminal-line cursor"><span class="prompt">$</span> _</p>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -126,7 +136,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand } from '@element-plus/icons-vue'
 import { marked } from 'marked'
-import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, saveGreeting } from '../utils/api'
+import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, saveGreeting, chatStream, analyzeContractStream } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
 
 // ---- 状态 ----
@@ -136,7 +146,15 @@ const messages = ref([
 const input = ref('')
 const pendingFile = ref(null)
 const loading = ref(false)
-const loadingLines = ref([])
+const thinkingSteps = ref([])
+const thinkingExpanded = ref(false)
+
+const thinkingLabel = computed(() => {
+  if (thinkingSteps.value.length === 0) return '正在思考...'
+  const last = thinkingSteps.value[thinkingSteps.value.length - 1]
+  if (last.type === 'tool') return '正在搜索：' + last.label + '...'
+  return '已完成思考'
+})
 const msgContainer = ref(null)
 
 const showPreview = ref(false)
@@ -172,15 +190,6 @@ let tooltipEl = null
 let pinnedMark = null
 let pinnedScrollHandler = null
 let hoverTimer = null
-
-const LOADING_STEPS = [
-  '正在提取合同文本...',
-  '解析完成',
-  '正在比对《民法典》相关条款...',
-  '正在检索相关司法解释...',
-  '正在生成审查报告...',
-  '正在标注风险条款...',
-]
 
 const canSend = computed(() => (input.value.trim() || pendingFile.value) && !loading.value)
 
@@ -230,11 +239,20 @@ async function loadConversation(id) {
     const msgs = conv.messages.map(m => {
       const msg = { role: m.role, content: m.content }
       if (m.file_name) msg.file = { name: m.file_name }
+      if (m.thinking_chain) {
+        try {
+          msg.thinkingChain = typeof m.thinking_chain === 'string'
+            ? JSON.parse(m.thinking_chain) : m.thinking_chain
+          msg.thinkingExpanded = false
+        } catch {}
+      }
       if (m.contract_data) {
         try {
-          msg.contractData = typeof m.contract_data === 'string'
+          const cd = typeof m.contract_data === 'string'
             ? JSON.parse(m.contract_data) : m.contract_data
-          msg.hasContract = true
+          msg.contractData = cd
+          msg.contractRawText = cd.raw_text || ''
+          msg.contractRiskPoints = cd.risk_points || []
         } catch {}
       }
       return msg
@@ -271,10 +289,10 @@ async function ensureConversation() {
 }
 
 const GREETING = '您好！我是 AI 法律助手。您可以向我咨询法律问题，或上传合同文件进行风险审查。'
-async function doSaveMessages(userContent, assistantContent, fileName = null, contractData = null) {
+async function doSaveMessages(userContent, assistantContent, fileName, contractData, thinkingChain) {
   if (!currentConvId.value) return
   try {
-    await saveMessages(currentConvId.value, userContent, assistantContent, fileName, contractData)
+    await saveMessages(currentConvId.value, userContent, assistantContent, fileName, contractData, thinkingChain)
     await refreshConvList()
   } catch {}
 }
@@ -299,9 +317,31 @@ async function sendText() {
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .slice(0, -1)
       .map(m => ({ role: m.role, content: m.content }))
-    const res = await chatApi(query, history)
-    messages.value.push({ role: 'assistant', content: res.reply })
-    doSaveMessages(query, res.reply)
+    thinkingSteps.value = []
+    thinkingExpanded.value = false
+    messages.value.push({ role: 'assistant', content: '', thinkingChain: [] })
+    await chatStream(query, history, {
+      onThinking(label) {
+        thinkingSteps.value.push({ type: 'tool', label })
+      },
+      onToolResult(tool, output) {
+        thinkingSteps.value.push({ type: 'done', label: tool + ' 完成', snippet: output })
+      },
+      onToken(content) {
+        const last = messages.value[messages.value.length - 1]
+        last.content += content
+      },
+      async onDone() {
+        const last = messages.value[messages.value.length - 1]
+        last.thinkingChain = [...thinkingSteps.value]
+        last.thinkingExpanded = false
+        await doSaveMessages(query, last.content, null, null, last.thinkingChain)
+      },
+      onError(msg) {
+        const last = messages.value[messages.value.length - 1]
+        last.content = '### ⚠️ 请求失败\n\n' + msg
+      },
+    })
   } catch (e) {
     messages.value.push({ role: 'assistant', content: '### \u26a0\ufe0f 请求失败\n\n请确认后端服务已启动。' })
   } finally {
@@ -329,27 +369,45 @@ async function sendFile() {
   loading.value = true
   await scrollToBottom()
 
-  // 过场动画
-  for (const step of LOADING_STEPS) {
-    await delay(500 + Math.random() * 800)
-    loadingLines.value = [...loadingLines.value, step]
-  }
-
   try {
     await ensureConversation()
     try {
       const t = fileToSend.name.replace(/\.[^.]+$/, "")
       await updateConvTitle(currentConvId.value, t.length > 14 ? t.slice(0, 14) + "…" : t)
     } catch {}
-    const res = await analyzeContract(fileToSend)
-    pushContractResult(res)
-    doSaveMessages(messages.value[messages.value.length - 2].content, res.chat_reply, fileToSend.name, res)
+    thinkingSteps.value = []
+    thinkingExpanded.value = false
+    messages.value.push({ role: 'assistant', content: '', thinkingChain: [] })
+    await analyzeContractStream(fileToSend, {
+      onThinking(label) {
+        thinkingSteps.value.push({ type: 'tool', label })
+      },
+      onToolResult(tool, output) {
+        thinkingSteps.value.push({ type: 'done', label: tool + ' 完成', snippet: output })
+      },
+      onToken(content) {
+        const last = messages.value[messages.value.length - 1]
+        last.content += content
+      },
+      async onDone(data) {
+        const last = messages.value[messages.value.length - 1]
+        last.thinkingChain = [...thinkingSteps.value]
+        last.thinkingExpanded = false
+        last.contractData = data
+        if (data.chat_reply) last.content = data.chat_reply
+        pushContractAttach(last, data, fileToSend)
+        await doSaveMessages(messages.value[messages.value.length - 2].content, data.chat_reply, fileToSend.name, data, last.thinkingChain)
+      },
+      onError(msg) {
+        const last = messages.value[messages.value.length - 1]
+        last.content = '### ⚠️ 合同审查失败\n\n' + msg
+      },
+    })
   } catch (e) {
     const errMsg = e?.response?.data?.detail || e.message || '请确认后端服务已启动。'
     messages.value.push({ role: 'assistant', content: '### ⚠️ 合同审查失败\n\n' + errMsg })
   } finally {
     loading.value = false
-    loadingLines.value = []
     await scrollToBottom()
   }
 }
@@ -515,11 +573,18 @@ onUnmounted(() => {
   }
 })
 
+function pushContractAttach(msg, data, file) {
+  msg.contractRawText = data.raw_text || ''
+  msg.contractRiskPoints = data.risk_points || []
+  if (file) {
+    msg.file = file
+  }
+}
+
 function pushContractResult(data) {
   messages.value.push({
     role: 'assistant',
     content: data.chat_reply,
-    hasContract: true,
     contractData: data,
   })
 }
@@ -529,9 +594,6 @@ function openContractPreview(msg) {
   showPreview.value = true
 }
 
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
 </script>
 
 <style scoped>
@@ -577,6 +639,7 @@ function delay(ms) {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 20px;
   background: #f5f7fa;
 }
@@ -602,11 +665,15 @@ function delay(ms) {
   gap: 4px;
 }
 .message-content {
-  display: inline-block;
+  display: block;
+  width: fit-content;
+  max-width: 90%;
   padding: 12px 16px;
   border-radius: 10px;
   line-height: 1.7;
   font-size: 14px;
+  overflow-wrap: anywhere;
+  overflow: hidden;
 }
 .message.user .message-content {
   background: #409EFF;
@@ -617,6 +684,13 @@ function delay(ms) {
   background: #fff;
   box-shadow: 0 1px 4px rgba(0,0,0,0.08);
   max-width: 90%;
+}
+/* prevent pre/code blocks from overflowing during streaming */
+.message-content :deep(pre),
+.message-content :deep(code) {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .contract-actions {
   margin-top: 8px;
@@ -642,6 +716,68 @@ function delay(ms) {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+/* Thinking Chain */
+.thinking-chain {
+  margin-bottom: 8px;
+}
+.thinking-summary.persisted {
+  color: #606266;
+  background: #f5f7fa;
+  cursor: pointer;
+}
+.thinking-summary.persisted:hover {
+  background: #ebeef5;
+}
+.thinking-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #f0f4ff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #4a6cf7;
+  user-select: none;
+}
+.thinking-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4a6cf7;
+  animation: thinking-pulse 1.2s infinite;
+}
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.thinking-arrow {
+  color: #909399;
+  font-size: 12px;
+}
+.thinking-details {
+  margin-top: 4px;
+  padding: 8px 12px;
+  background: #f8f9fc;
+  border-radius: 6px;
+}
+.thinking-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 12px;
+  color: #909399;
+}
+.thinking-step-icon {
+  flex-shrink: 0;
+}
+.thinking-step-text {
+  word-break: break-all;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 /* Loading 终端 */

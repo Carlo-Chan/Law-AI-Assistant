@@ -2,10 +2,12 @@
 API 路由：法律问答 + 合同审查
 """
 from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
+import json
 
-from app.agent.chain import run_chat, run_contract_analysis
+from app.agent.chain import run_chat, run_contract_analysis, run_chat_stream, run_contract_analysis_stream
 from app.services.parser import DocumentParser
 from app.services import history
 
@@ -57,6 +59,17 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    async def generate():
+        try:
+            async for event in run_chat_stream(request.query, request.history):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
 @router.post("/analyze_contract", response_model=ContractAnalysisResponse)
 async def analyze_contract(file: UploadFile = File(...)):
     """合同审查：上传文件 -> 解析文本 -> AI 分析"""
@@ -82,6 +95,23 @@ async def analyze_contract(file: UploadFile = File(...)):
             chat_reply=result["chat_reply"],
         ),
     )
+
+
+@router.post("/analyze_contract/stream")
+async def analyze_contract_stream(file: UploadFile = File(...)):
+    raw_bytes = await file.read()
+    try:
+        raw_text = DocumentParser.parse(raw_bytes, file.filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    async def generate():
+        try:
+            async for event in run_contract_analysis_stream(raw_text):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 # ============================================================
@@ -132,11 +162,12 @@ class SaveMessagesRequest(BaseModel):
     assistant_content: str
     file_name: str | None = None
     contract_data: dict | None = None
+    thinking_chain: list | None = None
 
 @router.post("/conversations/{conv_id}/messages", response_model=ConvResponse)
 async def save_messages(conv_id: str, req: SaveMessagesRequest):
     history.add_message(conv_id, "user", req.user_content, req.file_name)
-    history.add_message(conv_id, "assistant", req.assistant_content, contract_data=req.contract_data)
+    history.add_message(conv_id, "assistant", req.assistant_content, contract_data=req.contract_data, thinking_chain=req.thinking_chain)
     return ConvResponse(code=200, data={"ok": True})
 
 class GreetingRequest(BaseModel):

@@ -82,7 +82,7 @@ async def run_chat(query: str, history: list | None = None) -> dict:
             for tc in m.tool_calls:
                 args = tc.get("args", {})
                 q = args.get("query", args.get("text", str(args)[:80]))
-                print(f"  [LLM call -> {tc.get("name", "?")}] {q}")
+                print(f"  [LLM call -> {tc.get('name', '?')}] {q}")
 
     reply = ""
     sources = []
@@ -95,6 +95,44 @@ async def run_chat(query: str, history: list | None = None) -> dict:
 
     print(f"  [reply] {reply[:200]}...")
     return {"reply": reply, "sources": sources[:5]}
+
+# -*- coding: utf-8 -*-
+
+async def run_chat_stream(query, history=None):
+    """Legal QA streaming: yields SSE dicts"""
+    messages = []
+    for h in (history or []):
+        if h.get("role") == "user":
+            messages.append(HumanMessage(content=h["content"]))
+        elif h.get("role") == "assistant":
+            messages.append(AIMessage(content=h["content"]))
+    messages.append(HumanMessage(content=query))
+    print(f"\n{'='*60}")
+    print(f"[Chat Stream] user: {query[:150]}")
+    print(f"{'='*60}")
+    async for event in chat_agent.astream_events({"messages": messages}, version="v2"):
+        kind = event["event"]
+        if kind == "on_tool_start":
+            tool_name = event.get("name", "unknown")
+            label_map = {"search_laws": "search_laws", "search_web": "search_web", "search_legal": "search_legal", "verify_legal": "verify_legal"}
+            label = label_map.get(tool_name, tool_name)
+            print(f"  [Stream] thinking: {label}")
+            yield {"type": "thinking", "label": label}
+        elif kind == "on_tool_end":
+            tool_name = event.get("name", "unknown")
+            output = event["data"].get("output", "")
+            if hasattr(output, "content"):
+                output = str(output.content)
+            else:
+                output = str(output)
+            print(f"  [Stream] tool_done: {tool_name}")
+            yield {"type": "tool_result", "tool": tool_name, "output": output}
+        elif kind == "on_chat_model_stream":
+            chunk = event["data"]["chunk"]
+            if chunk.content:
+                yield {"type": "token", "content": chunk.content}
+    print(f"  [Stream] done")
+    yield {"type": "done"}
 
 
 CONTRACT_SYSTEM_PROMPT = (
@@ -147,7 +185,7 @@ async def run_contract_analysis(raw_text: str) -> dict:
             for tc in m.tool_calls:
                 args = tc.get("args", {})
                 q = args.get("query", args.get("text", str(args)[:80]))
-                print(f"  [LLM call -> {tc.get("name", "?")}] {q}")
+                print(f"  [LLM call -> {tc.get('name', '?')}] {q}")
 
     reply = ""
     for m in all_msgs:
@@ -182,3 +220,71 @@ async def run_contract_analysis(raw_text: str) -> dict:
         "risk_points": risk_points,
         "chat_reply": data.get("chat_reply", ""),
     }
+
+async def run_contract_analysis_stream(raw_text):
+    """Contract review streaming: yields SSE dicts"""
+    query = f"\u8bf7\u5ba1\u67e5\u4ee5\u4e0b\u5408\u540c\u6587\u672c\uff1a\\n\\n{raw_text}"
+    print(f"\n{'='*60}")
+    print(f"[Contract Stream] review request, text length: {len(raw_text)}")
+    print(f"{'='*60}")
+    messages = [HumanMessage(content=query)]
+    full_reply = ""
+    async for event in contract_agent.astream_events({"messages": messages}, version="v2", config={"recursion_limit": 12}):
+        kind = event["event"]
+        if kind == "on_tool_start":
+            tool_name = event.get("name", "unknown")
+            label_map = {"search_laws": "search_laws", "search_web": "search_web", "search_legal": "search_legal", "verify_legal": "verify_legal"}
+            label = label_map.get(tool_name, tool_name)
+            print(f"  [Stream] thinking: {label}")
+            yield {"type": "thinking", "label": label}
+        elif kind == "on_tool_end":
+            tool_name = event.get("name", "unknown")
+            output = event["data"].get("output", "")
+            if hasattr(output, "content"):
+                output = str(output.content)
+            else:
+                output = str(output)
+            print(f"  [Stream] tool_done: {tool_name}")
+            yield {"type": "tool_result", "tool": tool_name, "output": output}
+        elif kind == "on_chat_model_stream":
+            chunk = event["data"]["chunk"]
+            if chunk.content:
+                full_reply += chunk.content
+                yield {"type": "token", "content": chunk.content}
+    # Extract JSON object with balanced braces
+    start = full_reply.find("{")
+    if start == -1:
+        yield {"type": "error", "message": "JSON not found in agent response"}
+        return
+    depth = 0
+    end = start
+    for i in range(start, len(full_reply)):
+        if full_reply[i] == "{":
+            depth += 1
+        elif full_reply[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    json_str = full_reply[start:end]
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        yield {"type": "error", "message": f"JSON parse error: {e}"}
+        return
+    risk_points = data.get("risk_points", [])
+    for i, rp in enumerate(risk_points):
+        kp = rp.get("key_phrase", "")
+        if kp:
+            matched = fuzzy_match(raw_text, kp)
+            if matched:
+                rp["quote"] = matched
+            else:
+                print(f"  [contract stream] WARN: key_phrase not matched: {kp[:50]}")
+                rp["quote"] = kp
+        elif rp.get("quote"):
+            pass
+        else:
+            rp["quote"] = ""
+    print(f"  [contract stream] risks found: {len(risk_points)}")
+    yield {"type": "done", "raw_text": raw_text, "risk_points": risk_points, "chat_reply": data.get("chat_reply", "")}

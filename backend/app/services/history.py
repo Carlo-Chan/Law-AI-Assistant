@@ -33,10 +33,13 @@ def _init_db():
                 content TEXT NOT NULL DEFAULT '',
                 file_name TEXT,
                 contract_data TEXT,
+                thinking_chain TEXT,
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id);
+
         """)
+
     conn.close()
 
 
@@ -73,23 +76,36 @@ def get_conversation(conv_id: str) -> dict | None:
         if not conv:
             return None
         msgs = conn.execute(
-            "SELECT role, content, file_name, contract_data FROM messages WHERE conversation_id=? ORDER BY id",
+            "SELECT role, content, file_name, contract_data, thinking_chain FROM messages WHERE conversation_id=? ORDER BY id",
             (conv_id,),
         ).fetchall()
+    result = []
+    for m in msgs:
+        md = dict(m)
+        if md.get("thinking_chain"):
+            try:
+                md["thinking_chain"] = json.loads(md["thinking_chain"])
+            except (json.JSONDecodeError, TypeError):
+                md["thinking_chain"] = []
+        else:
+            md["thinking_chain"] = []
+        result.append(md)
     return {
         **dict(conv),
-        "messages": [dict(m) for m in msgs],
+        "messages": result,
     }
 
 
 def add_message(conv_id: str, role: str, content: str = "",
-                file_name: str | None = None, contract_data: dict | None = None):
+                file_name: str | None = None, contract_data: dict | None = None,
+                thinking_chain: list | None = None):
     now = datetime.now().isoformat()
     with _get_conn() as conn:
         conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, file_name, contract_data, created_at) VALUES (?,?,?,?,?,?)",
+            "INSERT INTO messages (conversation_id, role, content, file_name, contract_data, thinking_chain, created_at) VALUES (?,?,?,?,?,?,?)",
             (conv_id, role, content, file_name,
              json.dumps(contract_data, ensure_ascii=False) if contract_data else None,
+             json.dumps(thinking_chain, ensure_ascii=False) if thinking_chain else None,
              now),
         )
         # Update conversation timestamp
