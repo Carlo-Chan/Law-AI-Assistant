@@ -171,6 +171,7 @@ function checkNarrow() {
 let tooltipEl = null
 let pinnedMark = null
 let pinnedScrollHandler = null
+let hoverTimer = null
 
 const LOADING_STEPS = [
   '正在提取合同文本...',
@@ -378,7 +379,7 @@ function onContractClick(e) {
     // Unpin
     pinnedMark.classList.remove('pinned')
     pinnedMark = null
-    if (tooltipEl) tooltipEl.style.display = 'none'
+    if (tooltipEl) tooltipEl.style.opacity = '0'
     if (pinnedScrollHandler) {
       document.querySelector('.preview-body')?.removeEventListener('scroll', pinnedScrollHandler)
       pinnedScrollHandler = null
@@ -394,7 +395,8 @@ function onContractClick(e) {
     // Pin this one
     pinnedMark = mark
     mark.classList.add('pinned')
-    // Show bubble + attach scroll listener
+    // Show bubble immediately (bypass debounce)
+    if (tooltipEl) tooltipEl.style.opacity = '1'
     onContractHover(e)
     pinnedScrollHandler = () => updatePinnedBubble()
     document.querySelector('.preview-body')?.addEventListener('scroll', pinnedScrollHandler, { passive: true })
@@ -446,8 +448,17 @@ function onContractHover(e) {
   if (pinnedMark && pinnedMark !== mark) return
   const bubble = mark.dataset.bubble
   if (!bubble) return
-  tooltipEl.textContent = bubble
-  tooltipEl.style.display = 'block'
+  clearTimeout(hoverTimer)
+  const isVisible = tooltipEl.style.opacity === '1'
+  const show = () => {
+    tooltipEl.textContent = bubble
+    tooltipEl.style.opacity = '1'
+  }
+  if (isVisible) {
+    show()
+  } else {
+    hoverTimer = setTimeout(show, 200)
+  }
   const rect = mark.getBoundingClientRect()
   // Use preview-panel bounds as the visible area
   const panel = document.querySelector('.preview-panel')
@@ -467,8 +478,11 @@ function onContractHover(e) {
 }
 
 function onContractLeave(e) {
+  clearTimeout(hoverTimer)
   if (!tooltipEl || pinnedMark) return
-  tooltipEl.style.display = 'none'
+  hoverTimer = setTimeout(() => {
+    if (!pinnedMark) tooltipEl.style.opacity = '0'
+  }, 100)
 }
 
 onMounted(() => {
@@ -479,7 +493,7 @@ onMounted(() => {
     if (!val && pinnedMark) {
       pinnedMark.classList.remove("pinned")
       pinnedMark = null
-      if (tooltipEl) tooltipEl.style.display = "none"
+      if (tooltipEl) tooltipEl.style.opacity = "0"
       if (pinnedScrollHandler) {
         document.querySelector(".preview-body")?.removeEventListener("scroll", pinnedScrollHandler)
         pinnedScrollHandler = null
@@ -489,7 +503,7 @@ onMounted(() => {
   refreshConvList()
   tooltipEl = document.createElement('div')
   tooltipEl.className = 'contract-tooltip'
-  tooltipEl.style.cssText = 'display:none;position:fixed;z-index:9999;max-width:300px;padding:10px 14px;background:#fff;color:#303133;font-size:13px;line-height:1.6;border-radius:8px;white-space:normal;word-break:break-word;pointer-events:none;box-shadow:0 4px 20px rgba(0,0,0,0.15);font-family:"Microsoft YaHei",sans-serif;'
+  tooltipEl.style.cssText = 'display:block;opacity:0;pointer-events:none;transition:opacity 0.15s ease;position:fixed;z-index:9999;max-width:300px;padding:10px 14px;background:#fff;color:#303133;font-size:13px;line-height:1.6;border-radius:8px;white-space:normal;word-break:break-word;pointer-events:none;box-shadow:0 4px 20px rgba(0,0,0,0.15);font-family:"Microsoft YaHei",sans-serif;'
   document.body.appendChild(tooltipEl)
 })
 
