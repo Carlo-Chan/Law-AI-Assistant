@@ -291,6 +291,7 @@ async function ensureConversation() {
 }
 
 const GREETING = '您好！我是 AI 法律助手。您可以向我咨询法律问题，或上传合同文件进行风险审查。'
+const LOADING_DOTS = '<span class="loading-dots">…</span>'
 async function doSaveMessages(userContent, assistantContent, fileName, contractData, thinkingChain) {
   if (!currentConvId.value) return
   try {
@@ -396,7 +397,7 @@ ${instruction}`
     } catch {}
     thinkingSteps.value = []
     thinkingExpanded.value = false
-    messages.value.push({ role: 'assistant', content: '', thinkingChain: [] })
+    messages.value.push({ role: 'assistant', content: LOADING_DOTS, thinkingChain: [] })
     await analyzeContractStream(fileToSend, {
       onThinking(label) {
         thinkingSteps.value.push({ type: 'tool', label })
@@ -408,8 +409,7 @@ ${instruction}`
         thinkingSteps.value.push({ type: 'done', label: tool + ' 完成', snippet: output })
       },
       onToken(content) {
-        const last = messages.value[messages.value.length - 1]
-        last.content += content
+        // Don't show raw JSON during contract streaming; keep placeholder
       },
       async onDone(data) {
         const last = messages.value[messages.value.length - 1]
@@ -706,6 +706,17 @@ function openContractPreview(msg) {
   background: #fff;
   box-shadow: 0 1px 4px rgba(0,0,0,0.08);
   max-width: 90%;
+}
+
+.message-content :deep(.loading-dots) {
+  display: inline-block;
+  font-size: 28px;
+  color: #909399;
+  animation: breathe 1.5s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
 }
 /* prevent pre/code blocks from overflowing during streaming */
 .message-content :deep(pre),
