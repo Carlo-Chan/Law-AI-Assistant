@@ -69,7 +69,7 @@ export async function saveGreeting(convId, content) {
 
 
 
-export async function chatStream(query, history, { onThinking, onReasoning, onToolResult, onToken, onDone, onError }) {
+export async function chatStream(query, history, { onThinking, onReasoning, onReasoningToken, onToolChunk, onToolResult, onToken, onDone, onError }) {
   try {
     const res = await fetch("/api/chat/stream", {
       method: "POST",
@@ -92,8 +92,11 @@ export async function chatStream(query, history, { onThinking, onReasoning, onTo
             switch (evt.type) {
               case "thinking": onThinking?.(evt.label); break
               case "thinking_reasoning": onReasoning?.(evt.content); break
+              case "thinking_reasoning_token": await onReasoningToken?.(evt.content); break
+              case "tool_result_chunk": onToolChunk?.(evt.tool, evt.content, evt.first); break
+              case "tool_result_end": break
               case "tool_result": onToolResult?.(evt.tool, evt.output); break
-              case "token": onToken?.(evt.content); break
+              case "token": await onToken?.(evt.content); break
               case "done": onDone?.(evt); break
               case "error": onError?.(evt.message); break
             }
@@ -106,7 +109,7 @@ export async function chatStream(query, history, { onThinking, onReasoning, onTo
   }
 }
 
-export async function analyzeContractStream(file, { onThinking, onReasoning, onToolResult, onToken, onDone, onError }) {
+export async function analyzeContractStream(file, { onThinking, onReasoning, onReasoningToken, onToolChunk, onToolResult, onToken, onDone, onError }) {
   try {
     const formData = new FormData()
     formData.append("file", file)
@@ -130,8 +133,11 @@ export async function analyzeContractStream(file, { onThinking, onReasoning, onT
             switch (evt.type) {
               case "thinking": onThinking?.(evt.label); break
               case "thinking_reasoning": onReasoning?.(evt.content); break
+              case "thinking_reasoning_token": await onReasoningToken?.(evt.content); break
+              case "tool_result_chunk": onToolChunk?.(evt.tool, evt.content, evt.first); break
+              case "tool_result_end": break
               case "tool_result": onToolResult?.(evt.tool, evt.output); break
-              case "token": onToken?.(evt.content); break
+              case "token": await onToken?.(evt.content); break
               case "done": onDone?.(evt); break
               case "error": onError?.(evt.message); break
             }

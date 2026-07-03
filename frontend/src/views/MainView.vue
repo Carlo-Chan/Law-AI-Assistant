@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="app-layout" :style="{ '--split-ratio': splitRatio }">
     <!-- 侧边栏 -->
     <transition name="sidebar-slide">
@@ -54,7 +54,7 @@
             <div v-if="thinkingExpanded" class="thinking-details">
               <div v-for="(step, si) in thinkingSteps" :key="si" class="thinking-step">
                 <span class="thinking-step-icon">{{ step.type === 'tool' ? '🔍' : step.type === 'reasoning' ? '💬' : '✅' }}</span>
-                <span class="thinking-step-text">{{ step.label }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span>
+                <span class="thinking-step-text">{{ cleanFences(step.label) }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span>
               </div>
             </div>
           </div>
@@ -66,7 +66,7 @@
             <div v-if="msg.thinkingExpanded" class="thinking-details">
               <div v-for="(step, si) in msg.thinkingChain" :key="si" class="thinking-step">
                 <span class="thinking-step-icon">{{ step.type === 'tool' ? '🔍' : step.type === 'reasoning' ? '💬' : '✅' }}</span>
-                <span class="thinking-step-text">{{ step.label }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span>
+                <span class="thinking-step-text">{{ cleanFences(step.label) }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span>
               </div>
             </div>
           </div>
@@ -203,6 +203,9 @@ const MOCK_POINTS = [
 ]
 
 // ---- 渲染 ----
+function cleanFences(text) {
+  return text.replace(/```\w*\s*\n?/g, '').replace(/```/g, '')
+}
 function renderMd(text) {
   if (!text) return ''
   return marked.parse(text)
@@ -336,14 +339,37 @@ async function sendText() {
         thinkingSteps.value.push({ type: 'tool', label })
       },
       onReasoning(text) {
-        thinkingSteps.value.push({ type: 'reasoning', label: text })
+        const steps = thinkingSteps.value
+        if (steps.length && steps[steps.length - 1].type === 'reasoning') {
+          steps[steps.length - 1].label = text
+        } else {
+          steps.push({ type: 'reasoning', label: text })
+        }
+      },
+      async onReasoningToken(ch) {
+        const steps = thinkingSteps.value
+        if (!steps.length || steps[steps.length - 1].type !== 'reasoning') {
+          steps.push({ type: 'reasoning', label: '' })
+        }
+        steps[steps.length - 1].label += ch
+        await nextTick()
+      },
+      onToolChunk(tool, content, first) {
+        const steps = thinkingSteps.value
+        if (first) {
+          steps.push({ type: 'done', label: tool + ' 完成', snippet: content })
+        } else {
+          const last = steps[steps.length - 1]
+          if (last && last.type === 'done') last.snippet += content
+        }
       },
       onToolResult(tool, output) {
         thinkingSteps.value.push({ type: 'done', label: tool + ' 完成', snippet: output })
       },
-      onToken(content) {
+      async onToken(content) {
         const last = messages.value[messages.value.length - 1]
         last.content += content
+        await nextTick()
       },
       async onDone() {
         const last = messages.value[messages.value.length - 1]
@@ -403,13 +429,38 @@ ${instruction}`
         thinkingSteps.value.push({ type: 'tool', label })
       },
       onReasoning(text) {
-        thinkingSteps.value.push({ type: 'reasoning', label: text })
+        const steps = thinkingSteps.value
+        if (steps.length && steps[steps.length - 1].type === 'reasoning') {
+          steps[steps.length - 1].label = text
+        } else {
+          steps.push({ type: 'reasoning', label: text })
+        }
+      },
+      async onReasoningToken(ch) {
+        const steps = thinkingSteps.value
+        if (!steps.length || steps[steps.length - 1].type !== 'reasoning') {
+          steps.push({ type: 'reasoning', label: '' })
+        }
+        steps[steps.length - 1].label += ch
+        await nextTick()
+      },
+      onToolChunk(tool, content, first) {
+        const steps = thinkingSteps.value
+        if (first) {
+          steps.push({ type: 'done', label: tool + ' 完成', snippet: content })
+        } else {
+          const last = steps[steps.length - 1]
+          if (last && last.type === 'done') last.snippet += content
+        }
       },
       onToolResult(tool, output) {
         thinkingSteps.value.push({ type: 'done', label: tool + ' 完成', snippet: output })
       },
-      onToken(content) {
-        // Don't show raw JSON during contract streaming; keep placeholder
+      async onToken(content) {
+        const last = messages.value[messages.value.length - 1]
+        if (last.content === LOADING_DOTS) last.content = ''
+        last.content += content
+        await nextTick()
       },
       async onDone(data) {
         const last = messages.value[messages.value.length - 1]
@@ -706,6 +757,17 @@ function openContractPreview(msg) {
   background: #fff;
   box-shadow: 0 1px 4px rgba(0,0,0,0.08);
   max-width: 90%;
+}
+
+.loading-dots {
+  display: inline-block;
+  font-size: 28px;
+  color: #909399;
+  animation: breathe 1.5s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
 }
 
 .message-content :deep(.loading-dots) {
