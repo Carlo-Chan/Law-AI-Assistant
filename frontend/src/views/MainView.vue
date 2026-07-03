@@ -53,19 +53,19 @@
             </div>
             <div v-if="thinkingExpanded" class="thinking-details">
               <div v-for="(step, si) in thinkingSteps" :key="si" class="thinking-step">
-                <span class="thinking-step-icon">{{ step.type === 'tool' ? '🔍' : '✅' }}</span>
+                <span class="thinking-step-icon">{{ step.type === 'tool' ? '🔍' : step.type === 'reasoning' ? '💬' : '✅' }}</span>
                 <span class="thinking-step-text">{{ step.label }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span>
               </div>
             </div>
           </div>
           <div v-else-if="msg.thinkingChain?.length" class="thinking-chain">
             <div class="thinking-summary persisted" @click="msg.thinkingExpanded = !msg.thinkingExpanded">
-              <span>{{ msg.thinkingChain.filter(s => s.type === 'tool').length }} 次工具调用</span>
+              <span>{{ msg.thinkingChain.filter(s => s.type === 'tool' || s.type === 'reasoning').length }} 次思考步骤</span>
               <span class="thinking-arrow">{{ msg.thinkingExpanded ? '∨' : '>' }}</span>
             </div>
             <div v-if="msg.thinkingExpanded" class="thinking-details">
               <div v-for="(step, si) in msg.thinkingChain" :key="si" class="thinking-step">
-                <span class="thinking-step-icon">{{ step.type === 'tool' ? '🔍' : '✅' }}</span>
+                <span class="thinking-step-icon">{{ step.type === 'tool' ? '🔍' : step.type === 'reasoning' ? '💬' : '✅' }}</span>
                 <span class="thinking-step-text">{{ step.label }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span>
               </div>
             </div>
@@ -154,7 +154,8 @@ const thinkingLabel = computed(() => {
   if (thinkingSteps.value.length === 0) return '正在思考...'
   const last = thinkingSteps.value[thinkingSteps.value.length - 1]
   if (last.type === 'tool') return '正在搜索：' + last.label + '...'
-  return '已完成思考'
+  if (last.type === 'reasoning') return '正在分析：' + last.label.slice(0, 20) + '...'
+  return '思考中…'
 })
 const msgContainer = ref(null)
 
@@ -333,6 +334,9 @@ async function sendText() {
       onThinking(label) {
         thinkingSteps.value.push({ type: 'tool', label })
       },
+      onReasoning(text) {
+        thinkingSteps.value.push({ type: 'reasoning', label: text })
+      },
       onToolResult(tool, output) {
         thinkingSteps.value.push({ type: 'done', label: tool + ' 完成', snippet: output })
       },
@@ -396,6 +400,9 @@ ${instruction}`
     await analyzeContractStream(fileToSend, {
       onThinking(label) {
         thinkingSteps.value.push({ type: 'tool', label })
+      },
+      onReasoning(text) {
+        thinkingSteps.value.push({ type: 'reasoning', label: text })
       },
       onToolResult(tool, output) {
         thinkingSteps.value.push({ type: 'done', label: tool + ' 完成', snippet: output })

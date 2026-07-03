@@ -69,7 +69,7 @@ export async function saveGreeting(convId, content) {
 
 
 
-export async function chatStream(query, history, { onThinking, onToolResult, onToken, onDone, onError }) {
+export async function chatStream(query, history, { onThinking, onReasoning, onToolResult, onToken, onDone, onError }) {
   try {
     const res = await fetch("/api/chat/stream", {
       method: "POST",
@@ -91,6 +91,7 @@ export async function chatStream(query, history, { onThinking, onToolResult, onT
             const evt = JSON.parse(line.slice(6))
             switch (evt.type) {
               case "thinking": onThinking?.(evt.label); break
+              case "thinking_reasoning": onReasoning?.(evt.content); break
               case "tool_result": onToolResult?.(evt.tool, evt.output); break
               case "token": onToken?.(evt.content); break
               case "done": onDone?.(evt); break
@@ -105,7 +106,7 @@ export async function chatStream(query, history, { onThinking, onToolResult, onT
   }
 }
 
-export async function analyzeContractStream(file, { onThinking, onToolResult, onToken, onDone, onError }) {
+export async function analyzeContractStream(file, { onThinking, onReasoning, onToolResult, onToken, onDone, onError }) {
   try {
     const formData = new FormData()
     formData.append("file", file)
@@ -128,6 +129,7 @@ export async function analyzeContractStream(file, { onThinking, onToolResult, on
             const evt = JSON.parse(line.slice(6))
             switch (evt.type) {
               case "thinking": onThinking?.(evt.label); break
+              case "thinking_reasoning": onReasoning?.(evt.content); break
               case "tool_result": onToolResult?.(evt.tool, evt.output); break
               case "token": onToken?.(evt.content); break
               case "done": onDone?.(evt); break

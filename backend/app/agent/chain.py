@@ -223,21 +223,30 @@ async def run_contract_analysis(raw_text: str) -> dict:
 
 async def run_contract_analysis_stream(raw_text):
     """Contract review streaming: yields SSE dicts"""
-    query = f"\u8bf7\u5ba1\u67e5\u4ee5\u4e0b\u5408\u540c\u6587\u672c\uff1a\\n\\n{raw_text}"
+    query = f"请审查以下合同文本：\n\n{raw_text}"
     print(f"\n{'='*60}")
     print(f"[Contract Stream] review request, text length: {len(raw_text)}")
     print(f"{'='*60}")
     messages = [HumanMessage(content=query)]
     full_reply = ""
+    pending = ""
     async for event in contract_agent.astream_events({"messages": messages}, version="v2", config={"recursion_limit": 12}):
         kind = event["event"]
         if kind == "on_tool_start":
+            if pending.strip():
+                print(f"  [Stream] reasoning flush: {pending[:80]}...")
+                yield {"type": "thinking_reasoning", "content": pending.strip()}
+                pending = ""
             tool_name = event.get("name", "unknown")
             label_map = {"search_laws": "search_laws", "search_web": "search_web", "search_legal": "search_legal", "verify_legal": "verify_legal"}
             label = label_map.get(tool_name, tool_name)
             print(f"  [Stream] thinking: {label}")
             yield {"type": "thinking", "label": label}
         elif kind == "on_tool_end":
+            if pending.strip():
+                print(f"  [Stream] reasoning flush: {pending[:80]}...")
+                yield {"type": "thinking_reasoning", "content": pending.strip()}
+                pending = ""
             tool_name = event.get("name", "unknown")
             output = event["data"].get("output", "")
             if hasattr(output, "content"):
@@ -250,23 +259,37 @@ async def run_contract_analysis_stream(raw_text):
             chunk = event["data"]["chunk"]
             if chunk.content:
                 full_reply += chunk.content
-                yield {"type": "token", "content": chunk.content}
-    # Extract JSON object with balanced braces
-    start = full_reply.find("{")
-    if start == -1:
+                pending += chunk.content
+    # Extract JSON and flush reasoning
+    print(f"  [Stream] final pending len: {len(pending)}")
+    start_json = full_reply.find("{")
+    if start_json == -1:
         yield {"type": "error", "message": "JSON not found in agent response"}
         return
+    # Flush reasoning from pending (only text since last tool end)
+    start_json_in_pending = pending.find("{")
+    if start_json_in_pending > 0:
+        reasoning_tail = pending[:start_json_in_pending].strip()
+        reasoning_tail = re.sub(r'```\w*\s*\n?\s*$', '', reasoning_tail).strip()
+        if reasoning_tail:
+            print(f"  [Stream] reasoning flush (final): {reasoning_tail[:80]}...")
+            yield {"type": "thinking_reasoning", "content": reasoning_tail}
+    # Yield only the JSON part as tokens
     depth = 0
-    end = start
-    for i in range(start, len(full_reply)):
+    end_json = start_json
+    for i in range(start_json, len(full_reply)):
         if full_reply[i] == "{":
             depth += 1
         elif full_reply[i] == "}":
             depth -= 1
             if depth == 0:
-                end = i + 1
+                end_json = i + 1
                 break
-    json_str = full_reply[start:end]
+    json_str = full_reply[start_json:end_json]
+    json_content = full_reply[start_json:end_json]
+    print(f"  [Stream] json token range: [{start_json}:{end_json}], len={len(json_content)}")
+    for ch in json_content:
+        yield {"type": "token", "content": ch}
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError as e:
@@ -287,4 +310,9 @@ async def run_contract_analysis_stream(raw_text):
         else:
             rp["quote"] = ""
     print(f"  [contract stream] risks found: {len(risk_points)}")
-    yield {"type": "done", "raw_text": raw_text, "risk_points": risk_points, "chat_reply": data.get("chat_reply", "")}
+    chat_reply = data.get("chat_reply", "")
+    chat_reply = chat_reply.strip()
+    chat_reply = re.sub(r"```json\s*\n?", "", chat_reply)
+    chat_reply = re.sub(r"\n?\s*```\s*\n?", "\n", chat_reply)
+    chat_reply = chat_reply.strip()
+    yield {"type": "done", "raw_text": raw_text, "risk_points": risk_points, "chat_reply": chat_reply}
