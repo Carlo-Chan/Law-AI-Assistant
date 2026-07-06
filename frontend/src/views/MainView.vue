@@ -396,6 +396,9 @@ function stopGeneration() {
   const last = messages.value[messages.value.length - 1]
   if (last && last.role === 'assistant') {
     flushTypewriter(last)
+    if (last.content === LOADING_DOTS) {
+      last.content = '已停止生成。'
+    }
   }
 }
 
@@ -488,6 +491,7 @@ async function sendText() {
         flushTypewriter(asstMsgProxy)
         asstMsgProxy.content = '### ⚠️ 请求失败\n\n' + msg
         if (_isActive()) thinkingSteps.value = [..._localSteps]
+        doSaveMessages(_convId, query, asstMsgProxy.content, null, null, asstMsgProxy.thinkingChain).catch(() => {})
       },
     })
   } catch (e) {
@@ -604,6 +608,7 @@ async function sendFile(instruction = null) {
         flushTypewriter(asstMsgProxy)
         asstMsgProxy.content = '### ⚠️ 合同审查失败\n\n' + msg
         if (_isActive()) thinkingSteps.value = [..._localSteps]
+        doSaveMessages(_convId, _userDisplayContent, asstMsgProxy.content, fileToSend.name, null, asstMsgProxy.thinkingChain).catch(() => {})
       },
     })
   } catch (e) {
