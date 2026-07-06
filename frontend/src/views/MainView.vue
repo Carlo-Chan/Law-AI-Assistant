@@ -393,10 +393,13 @@ async function sendText() {
   try {
     await ensureConversation()
     const _convId = currentConvId.value
-    try {
-      const t = query
-      await updateConvTitle(_convId, t.length > 14 ? t.slice(0, 14) + "…" : t)
-    } catch {}
+    const isFirstMsg = messages.value.filter(m => m.role === 'user').length === 1
+    if (isFirstMsg) {
+      try {
+        const t = query
+        await updateConvTitle(_convId, t.length > 14 ? t.slice(0, 14) + "…" : t)
+      } catch {}
+    }
     await refreshConvList()
     const history = messages.value
       .filter(m => m.role === 'user' || m.role === 'assistant')
@@ -505,10 +508,13 @@ async function sendFile(instruction = null) {
   try {
     await ensureConversation()
     const _convId = currentConvId.value
-    try {
-      const t = instruction || fileToSend.name.replace(/\.[^.]+$/, "")
-      await updateConvTitle(_convId, t.length > 14 ? t.slice(0, 14) + "…" : t)
-    } catch {}
+    const isFirstMsg = messages.value.filter(m => m.role === 'user').length === 1
+    if (isFirstMsg) {
+      try {
+        const t = instruction || fileToSend.name.replace(/\.[^.]+$/, "")
+        await updateConvTitle(_convId, t.length > 14 ? t.slice(0, 14) + "…" : t)
+      } catch {}
+    }
     await refreshConvList()
     const _localSteps = []
     thinkingSteps.value = []
