@@ -204,6 +204,58 @@ const MOCK_POINTS = [
   { quote: '租赁期间的物业费由乙方承担', level: 'low', bubble_text: '属于常规条款，建议明确具体的物业费单价。' },
 ]
 
+// ---- 打字机队列机制 ----
+const typewriters = new WeakMap()
+
+function appendToTypewriter(msg, chunk, isActiveFn) {
+  if (msg.content === LOADING_DOTS) {
+    msg.content = ''
+  }
+  if (typeof msg.fullContent !== 'string') {
+    msg.fullContent = msg.content || ''
+  }
+  msg.fullContent += chunk
+
+  let tw = typewriters.get(msg)
+  if (!tw) {
+    tw = { queue: '', timer: null }
+    typewriters.set(msg, tw)
+  }
+  tw.queue += chunk
+
+  if (!tw.timer) {
+    tw.timer = setInterval(() => {
+      if (tw.queue.length > 0) {
+        let chars = 1
+        if (tw.queue.length > 200) chars = 10
+        else if (tw.queue.length > 50) chars = 4
+        else if (tw.queue.length > 20) chars = 2
+
+        msg.content += tw.queue.slice(0, chars)
+        tw.queue = tw.queue.slice(chars)
+
+        if (isActiveFn && isActiveFn()) {
+          scrollToBottom()
+        }
+      } else {
+        clearInterval(tw.timer)
+        tw.timer = null
+      }
+    }, 30)
+  }
+}
+
+function flushTypewriter(msg) {
+  const tw = typewriters.get(msg)
+  if (tw) {
+    if (tw.timer) clearInterval(tw.timer)
+    if (typeof msg.fullContent === 'string') {
+      msg.content = msg.fullContent
+    }
+    typewriters.delete(msg)
+  }
+}
+
 // ---- 渲染 ----
 function cleanFences(text) {
   return text.replace(/```\w*\s*\n?/g, '').replace(/```/g, '')
@@ -355,6 +407,7 @@ async function sendText() {
     thinkingExpanded.value = false
     const _asstMsg = { role: 'assistant', content: LOADING_DOTS, thinkingChain: [] }
     messages.value.push(_asstMsg)
+    const asstMsgProxy = messages.value[messages.value.length - 1]
     const _isActive = () => currentConvId.value === _convId
     activeStreamConvId.value = _convId
     await chatStream(query, history, {
@@ -395,28 +448,22 @@ async function sendText() {
         if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
       async onToken(content) {
-        if (_asstMsg.content === LOADING_DOTS) _asstMsg.content = ''
-        _asstMsg.content += content
-        await nextTick()
+        appendToTypewriter(asstMsgProxy, content, _isActive)
       },
       async onDone() {
-        _asstMsg.thinkingChain = [..._localSteps]
-        _asstMsg.thinkingExpanded = false
+        asstMsgProxy.thinkingChain = [..._localSteps]
+        asstMsgProxy.thinkingExpanded = false
         if (_isActive()) {
           thinkingSteps.value = [..._localSteps]
           thinkingExpanded.value = false
-          const cur = messages.value[messages.value.length - 1]
-          if (cur === _asstMsg) {
-            cur.content = _asstMsg.content
-            cur.thinkingChain = _asstMsg.thinkingChain
-            cur.thinkingExpanded = false
-          }
         }
-        await doSaveMessages(_convId, query, _asstMsg.content, null, null, _asstMsg.thinkingChain)
+        const finalContent = asstMsgProxy.fullContent || asstMsgProxy.content
+        await doSaveMessages(_convId, query, finalContent, null, null, asstMsgProxy.thinkingChain)
         if (_isActive()) await scrollToBottom()
       },
       onError(msg) {
-        _asstMsg.content = '### ⚠️ 请求失败\n\n' + msg
+        flushTypewriter(asstMsgProxy)
+        asstMsgProxy.content = '### ⚠️ 请求失败\n\n' + msg
         if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
     })
@@ -468,6 +515,7 @@ async function sendFile(instruction = null) {
     thinkingExpanded.value = false
     const _asstMsg = { role: 'assistant', content: LOADING_DOTS, thinkingChain: [] }
     messages.value.push(_asstMsg)
+    const asstMsgProxy = messages.value[messages.value.length - 1]
     const _isActive = () => currentConvId.value === _convId
     activeStreamConvId.value = _convId
     await analyzeContractStream(fileToSend, {
@@ -508,34 +556,24 @@ async function sendFile(instruction = null) {
         if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
       async onToken(content) {
-        if (_asstMsg.content === LOADING_DOTS) _asstMsg.content = ''
-        _asstMsg.content += content
-        await nextTick()
+        appendToTypewriter(asstMsgProxy, content, _isActive)
       },
       async onDone(data) {
-        _asstMsg.thinkingChain = [..._localSteps]
-        _asstMsg.thinkingExpanded = false
-        _asstMsg.contractData = data
-        if (data.chat_reply) _asstMsg.content = data.chat_reply
-        pushContractAttach(_asstMsg, data, fileToSend)
+        asstMsgProxy.thinkingChain = [..._localSteps]
+        asstMsgProxy.thinkingExpanded = false
+        asstMsgProxy.contractData = data
+        pushContractAttach(asstMsgProxy, data, fileToSend)
         if (_isActive()) {
           thinkingSteps.value = [..._localSteps]
           thinkingExpanded.value = false
-          const cur = messages.value[messages.value.length - 1]
-          if (cur === _asstMsg) {
-            cur.content = _asstMsg.content
-            cur.thinkingChain = _asstMsg.thinkingChain
-            cur.thinkingExpanded = false
-            cur.contractData = _asstMsg.contractData
-            if (_asstMsg.contractRawText) cur.contractRawText = _asstMsg.contractRawText
-            if (_asstMsg.contractRiskPoints) cur.contractRiskPoints = _asstMsg.contractRiskPoints
-          }
         }
-        await doSaveMessages(_convId, _userDisplayContent, data.chat_reply, fileToSend.name, data, _asstMsg.thinkingChain)
+        const finalContent = asstMsgProxy.fullContent || asstMsgProxy.content
+        await doSaveMessages(_convId, _userDisplayContent, finalContent, fileToSend.name, data, asstMsgProxy.thinkingChain)
         if (_isActive()) await scrollToBottom()
       },
       onError(msg) {
-        _asstMsg.content = '### ⚠️ 合同审查失败\n\n' + msg
+        flushTypewriter(asstMsgProxy)
+        asstMsgProxy.content = '### ⚠️ 合同审查失败\n\n' + msg
         if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
     })

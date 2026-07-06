@@ -107,9 +107,9 @@ async def run_chat_stream(query, history=None):
         elif h.get("role") == "assistant":
             messages.append(AIMessage(content=h["content"]))
     messages.append(HumanMessage(content=query))
-    print(f"\n{'='*60}")
+    print(f"\n{chr(61)*60}")
     print(f"[Chat Stream] user: {query[:150]}")
-    print(f"{'='*60}")
+    print(f"{chr(61)*60}")
     pending = ""
     tool_called = False
     async for event in chat_agent.astream_events({"messages": messages}, version="v2"):
@@ -137,27 +137,25 @@ async def run_chat_stream(query, history=None):
             else:
                 output = str(output)
             print(f"  [Stream] tool_done: {tool_name}")
-            # Stream tool result in chunks for progressive display
             chunk_size = 30
             for j in range(0, len(output), chunk_size):
                 yield {"type": "tool_result_chunk", "tool": tool_name, "content": output[j:j+chunk_size], "first": j == 0}
-                await asyncio.sleep(0.03)
+                await asyncio.sleep(0.02)
             yield {"type": "tool_result_end", "tool": tool_name}
         elif kind == "on_chat_model_stream":
             chunk = event["data"]["chunk"]
             if chunk.content:
                 pending += chunk.content
-                # Before any tool call: stream reasoning to thinking chain progressively
                 if not tool_called:
-                    for ch in chunk.content:
-                        yield {"type": "thinking_reasoning_token", "content": ch}
-                        await asyncio.sleep(0.01)
-    # After loop: flush final answer to dialog
+                    yield {"type": "thinking_reasoning_token", "content": chunk.content}
+                    await asyncio.sleep(0.012)
+    # Flush final answer in small batches for typing effect
     if pending.strip():
         print(f"  [Stream] final answer: {pending[:80]}...")
-        for ch in pending:
-            yield {"type": "token", "content": ch}
-            await asyncio.sleep(0.02)
+        batch_size = 8
+        for j in range(0, len(pending), batch_size):
+            yield {"type": "token", "content": pending[j:j+batch_size]}
+            await asyncio.sleep(0.03)
     print(f"  [Stream] done")
     yield {"type": "done"}
 CONTRACT_SYSTEM_PROMPT = (
@@ -255,6 +253,7 @@ async def run_contract_analysis_stream(raw_text):
     messages = [HumanMessage(content=query)]
     full_reply = ""
     pending = ""
+    flushed_pos = 0
     async for event in contract_agent.astream_events({"messages": messages}, version="v2", config={"recursion_limit": 12}):
         kind = event["event"]
         if kind == "on_tool_start":
@@ -262,6 +261,7 @@ async def run_contract_analysis_stream(raw_text):
                 print(f"  [Stream] reasoning flush: {pending[:80]}...")
                 yield {"type": "thinking_reasoning", "content": pending.strip()}
                 pending = ""
+                flushed_pos = len(full_reply)
             tool_name = event.get("name", "unknown")
             label_map = {"search_laws": "search_laws", "search_web": "search_web", "search_legal": "search_legal", "verify_legal": "verify_legal"}
             label = label_map.get(tool_name, tool_name)
@@ -272,6 +272,7 @@ async def run_contract_analysis_stream(raw_text):
                 print(f"  [Stream] reasoning flush: {pending[:80]}...")
                 yield {"type": "thinking_reasoning", "content": pending.strip()}
                 pending = ""
+                flushed_pos = len(full_reply)
             tool_name = event.get("name", "unknown")
             output = event["data"].get("output", "")
             if hasattr(output, "content"):
@@ -300,7 +301,7 @@ async def run_contract_analysis_stream(raw_text):
     # Flush final reasoning (text between last tool end and JSON start)
     m = re.search(r'\{\s*"chat_reply"|\{\s*"risk_points"', full_reply)
     if m:
-        reasoning_tail = full_reply[:m.start()].strip()
+        reasoning_tail = full_reply[flushed_pos:m.start()].strip()
         reasoning_tail = re.sub(r'```\w*\s*\n?\s*$', '', reasoning_tail).strip()
         reasoning_tail = re.sub(r'```$', '', reasoning_tail).strip()
         if reasoning_tail:
@@ -346,10 +347,10 @@ async def run_contract_analysis_stream(raw_text):
             else:
                 batch += ch
                 i += 1
-            if len(batch) >= 5:
+            if len(batch) >= 8:
                 yield {"type": "token", "content": batch}
                 batch = ""
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.03)
         if batch:
             yield {"type": "token", "content": batch}
         print(f"  [Stream] chat_reply streaming done")
