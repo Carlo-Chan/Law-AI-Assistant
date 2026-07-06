@@ -45,7 +45,7 @@
             <el-icon><Document /></el-icon> {{ msg.file.name }}
           </div>
           <!-- thinking chain: live during streaming, or persisted -->
-          <div v-if="msg.role === 'assistant' && i === messages.length - 1 && loading" class="thinking-chain">
+          <div v-if="msg.role === 'assistant' && i === messages.length - 1 && loading && currentConvId === activeStreamConvId" class="thinking-chain">
             <div class="thinking-summary" @click="thinkingExpanded = !thinkingExpanded">
               <span class="thinking-dot" />
               <span>{{ thinkingLabel }}</span>
@@ -147,6 +147,8 @@ const messages = ref([
 const input = ref('')
 const pendingFile = ref(null)
 const loading = ref(false)
+const activeStreamConvId = ref(null)
+const streamMessageCache = ref(null)
 const thinkingSteps = ref([])
 const thinkingExpanded = ref(false)
 
@@ -230,6 +232,10 @@ async function refreshConvList() {
   try { conversations.value = await listConversations() } catch {}
 }
 async function newChat() {
+  // Save in-progress messages before switching away (only for the active stream's conversation)
+  if (loading.value && activeStreamConvId.value && currentConvId.value === activeStreamConvId.value) {
+    streamMessageCache.value = { convId: currentConvId.value, messages: [...messages.value] }
+  }
   currentConvId.value = null
   messages.value = [{ role: 'assistant', content: '您好！我是 AI 法律助手。您可以向我咨询法律问题，或上传合同文件进行风险审查。' }]
   showPreview.value = false
@@ -238,6 +244,16 @@ async function newChat() {
   forceSidebar.value = false
 }
 async function loadConversation(id) {
+  // Restore cached messages if this conversation has an active stream
+  if (loading.value && activeStreamConvId.value === id && streamMessageCache.value?.convId === id) {
+    messages.value = streamMessageCache.value.messages
+    currentConvId.value = id
+    return
+  }
+  // Save in-progress messages before switching away from the active stream's conversation
+  if (loading.value && activeStreamConvId.value && currentConvId.value === activeStreamConvId.value && currentConvId.value !== id) {
+    streamMessageCache.value = { convId: currentConvId.value, messages: [...messages.value] }
+  }
   try {
     const conv = await getConversation(id)
     currentConvId.value = id
@@ -295,10 +311,11 @@ async function ensureConversation() {
 
 const GREETING = '您好！我是 AI 法律助手。您可以向我咨询法律问题，或上传合同文件进行风险审查。'
 const LOADING_DOTS = '<span class="loading-dots">…</span>'
-async function doSaveMessages(userContent, assistantContent, fileName, contractData, thinkingChain) {
-  if (!currentConvId.value) return
+async function doSaveMessages(overrideConvId, userContent, assistantContent, fileName, contractData, thinkingChain) {
+  const _cid = overrideConvId || currentConvId.value
+  if (!_cid) return
   try {
-    await saveMessages(currentConvId.value, userContent, assistantContent, fileName, contractData, thinkingChain)
+    await saveMessages(_cid, userContent, assistantContent, fileName, contractData, thinkingChain)
     await refreshConvList()
   } catch {}
 }
@@ -323,69 +340,92 @@ async function sendText() {
 
   try {
     await ensureConversation()
+    const _convId = currentConvId.value
     try {
       const t = query
-      await updateConvTitle(currentConvId.value, t.length > 14 ? t.slice(0, 14) + "…" : t)
+      await updateConvTitle(_convId, t.length > 14 ? t.slice(0, 14) + "…" : t)
     } catch {}
+    await refreshConvList()
     const history = messages.value
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .slice(0, -1)
       .map(m => ({ role: m.role, content: m.content }))
+    const _localSteps = []
     thinkingSteps.value = []
     thinkingExpanded.value = false
-    messages.value.push({ role: 'assistant', content: '', thinkingChain: [] })
+    const _asstMsg = { role: 'assistant', content: LOADING_DOTS, thinkingChain: [] }
+    messages.value.push(_asstMsg)
+    const _isActive = () => currentConvId.value === _convId
+    activeStreamConvId.value = _convId
     await chatStream(query, history, {
       onThinking(label) {
-        thinkingSteps.value.push({ type: 'tool', label })
+        _localSteps.push({ type: 'tool', label })
+        if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
       onReasoning(text) {
-        const steps = thinkingSteps.value
+        const steps = _localSteps
         if (steps.length && steps[steps.length - 1].type === 'reasoning') {
           steps[steps.length - 1].label = text
         } else {
           steps.push({ type: 'reasoning', label: text })
         }
+        if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
       async onReasoningToken(ch) {
-        const steps = thinkingSteps.value
+        const steps = _localSteps
         if (!steps.length || steps[steps.length - 1].type !== 'reasoning') {
           steps.push({ type: 'reasoning', label: '' })
         }
         steps[steps.length - 1].label += ch
+        if (_isActive()) thinkingSteps.value = [..._localSteps]
         await nextTick()
       },
       onToolChunk(tool, content, first) {
-        const steps = thinkingSteps.value
+        const steps = _localSteps
         if (first) {
           steps.push({ type: 'done', label: tool + ' 完成', snippet: content })
         } else {
           const last = steps[steps.length - 1]
           if (last && last.type === 'done') last.snippet += content
         }
+        if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
       onToolResult(tool, output) {
-        thinkingSteps.value.push({ type: 'done', label: tool + ' 完成', snippet: output })
+        _localSteps.push({ type: 'done', label: tool + ' 完成', snippet: output })
+        if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
       async onToken(content) {
-        const last = messages.value[messages.value.length - 1]
-        last.content += content
+        if (_asstMsg.content === LOADING_DOTS) _asstMsg.content = ''
+        _asstMsg.content += content
         await nextTick()
       },
       async onDone() {
-        const last = messages.value[messages.value.length - 1]
-        last.thinkingChain = [...thinkingSteps.value]
-        last.thinkingExpanded = false
-        await doSaveMessages(query, last.content, null, null, last.thinkingChain)
+        _asstMsg.thinkingChain = [..._localSteps]
+        _asstMsg.thinkingExpanded = false
+        if (_isActive()) {
+          thinkingSteps.value = [..._localSteps]
+          thinkingExpanded.value = false
+          const cur = messages.value[messages.value.length - 1]
+          if (cur === _asstMsg) {
+            cur.content = _asstMsg.content
+            cur.thinkingChain = _asstMsg.thinkingChain
+            cur.thinkingExpanded = false
+          }
+        }
+        await doSaveMessages(_convId, query, _asstMsg.content, null, null, _asstMsg.thinkingChain)
+        if (_isActive()) await scrollToBottom()
       },
       onError(msg) {
-        const last = messages.value[messages.value.length - 1]
-        last.content = '### ⚠️ 请求失败\n\n' + msg
+        _asstMsg.content = '### ⚠️ 请求失败\n\n' + msg
+        if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
     })
   } catch (e) {
-    messages.value.push({ role: 'assistant', content: '### \u26a0\ufe0f 请求失败\n\n请确认后端服务已启动。' })
+    messages.value.push({ role: 'assistant', content: '### ⚠️ 请求失败\n\n请确认后端服务已启动。' })
   } finally {
     loading.value = false
+    activeStreamConvId.value = null
+    streamMessageCache.value = null
     await scrollToBottom()
   }
 }
@@ -400,9 +440,9 @@ async function sendFile(instruction = null) {
   if (!pendingFile.value || loading.value) return
 
   const displayContent = instruction
-    ? `📄 上传合同：${pendingFile.value.name}
-${instruction}`
+    ? `📄 上传合同：${pendingFile.value.name}\n${instruction}`
     : `📄 上传合同：${pendingFile.value.name}`
+  const _userDisplayContent = displayContent
 
   messages.value.push({
     role: 'user',
@@ -417,63 +457,86 @@ ${instruction}`
 
   try {
     await ensureConversation()
+    const _convId = currentConvId.value
     try {
       const t = instruction || fileToSend.name.replace(/\.[^.]+$/, "")
-      await updateConvTitle(currentConvId.value, t.length > 14 ? t.slice(0, 14) + "…" : t)
+      await updateConvTitle(_convId, t.length > 14 ? t.slice(0, 14) + "…" : t)
     } catch {}
+    await refreshConvList()
+    const _localSteps = []
     thinkingSteps.value = []
     thinkingExpanded.value = false
-    messages.value.push({ role: 'assistant', content: LOADING_DOTS, thinkingChain: [] })
+    const _asstMsg = { role: 'assistant', content: LOADING_DOTS, thinkingChain: [] }
+    messages.value.push(_asstMsg)
+    const _isActive = () => currentConvId.value === _convId
+    activeStreamConvId.value = _convId
     await analyzeContractStream(fileToSend, {
       onThinking(label) {
-        thinkingSteps.value.push({ type: 'tool', label })
+        _localSteps.push({ type: 'tool', label })
+        if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
       onReasoning(text) {
-        const steps = thinkingSteps.value
+        const steps = _localSteps
         if (steps.length && steps[steps.length - 1].type === 'reasoning') {
           steps[steps.length - 1].label = text
         } else {
           steps.push({ type: 'reasoning', label: text })
         }
+        if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
       async onReasoningToken(ch) {
-        const steps = thinkingSteps.value
+        const steps = _localSteps
         if (!steps.length || steps[steps.length - 1].type !== 'reasoning') {
           steps.push({ type: 'reasoning', label: '' })
         }
         steps[steps.length - 1].label += ch
+        if (_isActive()) thinkingSteps.value = [..._localSteps]
         await nextTick()
       },
       onToolChunk(tool, content, first) {
-        const steps = thinkingSteps.value
+        const steps = _localSteps
         if (first) {
           steps.push({ type: 'done', label: tool + ' 完成', snippet: content })
         } else {
           const last = steps[steps.length - 1]
           if (last && last.type === 'done') last.snippet += content
         }
+        if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
       onToolResult(tool, output) {
-        thinkingSteps.value.push({ type: 'done', label: tool + ' 完成', snippet: output })
+        _localSteps.push({ type: 'done', label: tool + ' 完成', snippet: output })
+        if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
       async onToken(content) {
-        const last = messages.value[messages.value.length - 1]
-        if (last.content === LOADING_DOTS) last.content = ''
-        last.content += content
+        if (_asstMsg.content === LOADING_DOTS) _asstMsg.content = ''
+        _asstMsg.content += content
         await nextTick()
       },
       async onDone(data) {
-        const last = messages.value[messages.value.length - 1]
-        last.thinkingChain = [...thinkingSteps.value]
-        last.thinkingExpanded = false
-        last.contractData = data
-        if (data.chat_reply) last.content = data.chat_reply
-        pushContractAttach(last, data, fileToSend)
-        await doSaveMessages(messages.value[messages.value.length - 2].content, data.chat_reply, fileToSend.name, data, last.thinkingChain)
+        _asstMsg.thinkingChain = [..._localSteps]
+        _asstMsg.thinkingExpanded = false
+        _asstMsg.contractData = data
+        if (data.chat_reply) _asstMsg.content = data.chat_reply
+        pushContractAttach(_asstMsg, data, fileToSend)
+        if (_isActive()) {
+          thinkingSteps.value = [..._localSteps]
+          thinkingExpanded.value = false
+          const cur = messages.value[messages.value.length - 1]
+          if (cur === _asstMsg) {
+            cur.content = _asstMsg.content
+            cur.thinkingChain = _asstMsg.thinkingChain
+            cur.thinkingExpanded = false
+            cur.contractData = _asstMsg.contractData
+            if (_asstMsg.contractRawText) cur.contractRawText = _asstMsg.contractRawText
+            if (_asstMsg.contractRiskPoints) cur.contractRiskPoints = _asstMsg.contractRiskPoints
+          }
+        }
+        await doSaveMessages(_convId, _userDisplayContent, data.chat_reply, fileToSend.name, data, _asstMsg.thinkingChain)
+        if (_isActive()) await scrollToBottom()
       },
       onError(msg) {
-        const last = messages.value[messages.value.length - 1]
-        last.content = '### ⚠️ 合同审查失败\n\n' + msg
+        _asstMsg.content = '### ⚠️ 合同审查失败\n\n' + msg
+        if (_isActive()) thinkingSteps.value = [..._localSteps]
       },
     })
   } catch (e) {
@@ -481,6 +544,8 @@ ${instruction}`
     messages.value.push({ role: 'assistant', content: '### ⚠️ 合同审查失败\n\n' + errMsg })
   } finally {
     loading.value = false
+    activeStreamConvId.value = null
+    streamMessageCache.value = null
     await scrollToBottom()
   }
 }

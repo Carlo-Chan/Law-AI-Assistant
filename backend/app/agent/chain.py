@@ -160,6 +160,34 @@ async def run_chat_stream(query, history=None):
             await asyncio.sleep(0.02)
     print(f"  [Stream] done")
     yield {"type": "done"}
+CONTRACT_SYSTEM_PROMPT = (
+    "你是专业合同审查AI。用户会发送一份合同文本，你需要逐条分析风险条款。"
+    "\n\n工作流程（重要！最多2轮工具调用）："
+    "\n1. 用search_laws一次性检索合同涉及的所有法律领域（买卖、违约、仲裁等）"
+    "\n2. 若本地结果不足，可再用search_web或search_legal补充一次，不要重复搜索同一主题"
+    "\n3. 两轮工具调用后，必须直接输出JSON审查结果"
+    "\n\n输出JSON格式（不要包含任何其他内容）："
+    "{\"chat_reply\": \"Markdown格式的总体审查报告（对话区显示）\", \"risk_points\": [{\"key_phrase\": \"从合同原文中摘录的关键词句\", \"level\": \"high|medium|low\", \"bubble_text\": \"法律分析和修改建议\"}]}"
+    "\n\n重要规则："
+    "\n- key_phrase必须从合同原文中逐字摘录，5-20个汉字，用于在原文中定位标记"
+    "\n- key_phrase不得改写、润色、调整语序、增减字词"
+    "\n- 若合同中有多处相同文字，摘录时适当多取几个字以区分"
+    "\n- 如果某条款整体偏高危，key_phrase取该条款的第一句话即可"
+    "\n- bubble_text不少于30字，必须包含法条依据和具体修改建议，严禁截断"
+    "\n- 必须标注所有等级的风险条款，包括low等级，不得遗漏任何风险点"
+    "\n- chat_reply使用Markdown，包含总体评估和逐条分析，风险等级用🔴🟡⚪标记"
+    "\n\n审查标准："
+    "high = 违反法律强制性规定、显失公平的霸王条款；"
+    "medium = 权利义务不对等、表述模糊可能引发争议；"
+    "low = 建议优化的常规条款。"
+)
+contract_agent = create_agent(
+    model=llm,
+    tools=AGENT_TOOLS,
+    system_prompt=CONTRACT_SYSTEM_PROMPT,
+)
+
+
 async def run_contract_analysis(raw_text: str) -> dict:
     """Contract review returning structured result"""
     query = f"请审查以下合同文本：\n\n{raw_text}"
