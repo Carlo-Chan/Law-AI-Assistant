@@ -60,7 +60,13 @@
         <span class="subtitle">法律咨询 · 合同审查</span>
       </div>
 
-      <div class="chat-messages" ref="msgContainer">
+      <div v-if="messages.length === 0" class="welcome-screen">
+        <div class="welcome-content">
+          <h1>AI 法律助手</h1>
+          <p>您可以向我咨询法律问题，或上传合同文件进行风险审查</p>
+        </div>
+      </div>
+      <div v-else class="chat-messages" ref="msgContainer" @scroll="onMsgScroll">
         <div v-for="(msg, i) in messages" :key="i" :class="['message', msg.role]">
           <div v-if="msg.role === 'user' && editingIndex === i" class="edit-inline">
             <div class="edit-inline-wrapper">
@@ -143,6 +149,11 @@
       </div>
 
       <div class="chat-input-area">
+        <transition name="fade">
+          <div v-if="showScrollBtn" class="scroll-bottom-btn" @click="scrollToBottom">
+            <el-icon><ArrowDown /></el-icon>
+          </div>
+        </transition>
         <div v-if="pendingFile" class="file-tag">
           <el-tag closable @close="pendingFile = null">{{ pendingFile.name }}</el-tag>
         </div>
@@ -199,15 +210,13 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause, CopyDocument, Refresh, Edit, MoreFilled } from '@element-plus/icons-vue'
+import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause, CopyDocument, Refresh, Edit, MoreFilled, ArrowDown } from '@element-plus/icons-vue'
 import { marked } from 'marked'
-import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, saveGreeting, chatStream, analyzeContractStream, rebuildMessages } from '../utils/api'
+import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, chatStream, analyzeContractStream, rebuildMessages } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
 
 // ---- 状态 ----
-const messages = ref([
-  { role: 'assistant', content: '您好！我是 AI 法律助手。您可以向我咨询法律问题，或上传合同文件进行风险审查。' }
-])
+const messages = ref([])
 const input = ref('')
 const pendingFile = ref(null)
 const loading = ref(false)
@@ -231,6 +240,13 @@ const thinkingLabel = computed(() => {
   return '思考中…'
 })
 const msgContainer = ref(null)
+const showScrollBtn = ref(false)
+
+function onMsgScroll() {
+  const el = msgContainer.value
+  if (!el) return
+  showScrollBtn.value = el.scrollHeight - el.scrollTop - el.clientHeight > 100
+}
 
 const showPreview = ref(false)
 const previewData = ref(null)
@@ -360,7 +376,7 @@ async function newChat() {
     streamMessageCache.value = { convId: currentConvId.value, messages: [...messages.value] }
   }
   currentConvId.value = null
-  messages.value = [{ role: 'assistant', content: '您好！我是 AI 法律助手。您可以向我咨询法律问题，或上传合同文件进行风险审查。' }]
+  messages.value = []
   showPreview.value = false
   previewData.value = null
   sidebarOpen.value = false
@@ -401,9 +417,9 @@ async function loadConversation(id) {
       }
       return msg
     })
-    // Prepend greeting if missing (backward compat)
-    if (!msgs.length || msgs[0].role !== 'assistant' || !msgs[0].content.includes('AI 法律助手')) {
-      msgs.unshift({ role: 'assistant', content: GREETING })
+    // Skip greeting if stored as first message (backward compat)
+    if (msgs.length && msgs[0].content && msgs[0].content.includes('AI 法律助手')) {
+      msgs.shift()
     }
     messages.value = msgs
     showPreview.value = false
@@ -440,7 +456,7 @@ async function handleDeleteConv(id) {
     await deleteConversation(id)
     if (currentConvId.value === id) {
       currentConvId.value = null
-      messages.value = [{ role: 'assistant', content: '您好！我是 AI 法律助手。您可以向我咨询法律问题，或上传合同文件进行风险审查。' }]
+      messages.value = []
     }
     await refreshConvList()
   } catch {}
@@ -449,15 +465,10 @@ async function ensureConversation() {
   if (!currentConvId.value) {
     const conv = await createConversation()
     currentConvId.value = conv.id
-    // Save greeting as first message
-    try {
-      await saveGreeting(conv.id, GREETING)
-    } catch {}
     await refreshConvList()
   }
 }
 
-const GREETING = '您好！我是 AI 法律助手。您可以向我咨询法律问题，或上传合同文件进行风险审查。'
 const LOADING_DOTS = '<span class="loading-dots">…</span>'
 async function doSaveMessages(overrideConvId, userContent, assistantContent, fileName, contractData, thinkingChain) {
   const _cid = overrideConvId || currentConvId.value
@@ -1067,6 +1078,28 @@ function openContractPreview(msg) {
   color: #a6adc8;
 }
 
+/* 欢迎页 */
+.welcome-screen {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f7f8fa;
+}
+.welcome-content {
+  text-align: center;
+}
+.welcome-content h1 {
+  font-size: 28px;
+  font-weight: 600;
+  color: #303133;
+  margin: 0 0 12px;
+}
+.welcome-content p {
+  font-size: 15px;
+  color: #909399;
+  margin: 0;
+}
 .chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -1209,12 +1242,47 @@ function openContractPreview(msg) {
   gap: 6px;
 }
 
+.scroll-bottom-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  cursor: pointer;
+  color: #606266;
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  transition: all 0.15s;
+  z-index: 10;
+}
+.scroll-bottom-btn:hover {
+  color: #409eff;
+  border-color: #409eff;
+  box-shadow: 0 2px 12px rgba(64,158,255,0.2);
+}
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
 /* 输入区 */
 .chat-input-area {
   padding: 12px 20px;
   background: #fff;
   border-top: 1px solid #ebeef5;
   flex-shrink: 0;
+  position: relative;
 }
 .input-row {
   display: flex;
