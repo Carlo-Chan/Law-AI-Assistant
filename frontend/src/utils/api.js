@@ -69,12 +69,13 @@ export async function saveGreeting(convId, content) {
 
 
 
-export async function chatStream(query, history, { onThinking, onReasoning, onReasoningToken, onToolChunk, onToolResult, onToken, onDone, onError }) {
+export async function chatStream(query, history, signal, { onThinking, onReasoning, onReasoningToken, onToolChunk, onToolResult, onToken, onDone, onError }) {
   try {
     const res = await fetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query, history }),
+      signal,
     })
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
@@ -105,17 +106,22 @@ export async function chatStream(query, history, { onThinking, onReasoning, onRe
       }
     }
   } catch (e) {
-    onError?.(e.message || "Network error")
+    if (e.name === 'AbortError') {
+      onDone?.({ aborted: true })
+    } else {
+      onError?.(e.message || "Network error")
+    }
   }
 }
 
-export async function analyzeContractStream(file, { onThinking, onReasoning, onReasoningToken, onToolChunk, onToolResult, onToken, onDone, onError }) {
+export async function analyzeContractStream(file, signal, { onThinking, onReasoning, onReasoningToken, onToolChunk, onToolResult, onToken, onDone, onError }) {
   try {
     const formData = new FormData()
     formData.append("file", file)
     const res = await fetch("/api/analyze_contract/stream", {
       method: "POST",
       body: formData,
+      signal,
     })
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
@@ -146,6 +152,10 @@ export async function analyzeContractStream(file, { onThinking, onReasoning, onR
       }
     }
   } catch (e) {
-    onError?.(e.message || "Network error")
+    if (e.name === 'AbortError') {
+      onDone?.({ aborted: true })
+    } else {
+      onError?.(e.message || "Network error")
+    }
   }
 }

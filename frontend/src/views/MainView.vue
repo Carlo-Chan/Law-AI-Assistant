@@ -102,7 +102,8 @@
               >
                 <el-button :icon="Upload" circle size="small" :disabled="loading" />
               </el-upload>
-              <el-button type="primary" :icon="Promotion" size="small" :disabled="!canSend" @click="handleSend" />
+              <el-button v-if="!loading" type="primary" :icon="Promotion" size="small" :disabled="!canSend" @click="handleSend" />
+              <el-button v-else type="danger" :icon="VideoPause" size="small" @click="handleSend" />
             </div>
           </div>
         </div>
@@ -135,7 +136,7 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand } from '@element-plus/icons-vue'
+import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, saveGreeting, chatStream, analyzeContractStream } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
@@ -147,6 +148,7 @@ const messages = ref([
 const input = ref('')
 const pendingFile = ref(null)
 const loading = ref(false)
+const abortController = ref(null)
 const activeStreamConvId = ref(null)
 const streamMessageCache = ref(null)
 const thinkingSteps = ref([])
@@ -374,10 +376,26 @@ async function doSaveMessages(overrideConvId, userContent, assistantContent, fil
 // Simple inline POST helper (avoid circular import)
 
 function handleSend() {
+  if (loading.value) {
+    stopGeneration()
+    return
+  }
   if (pendingFile.value) {
     sendFile(input.value.trim() || null)
   } else {
     sendText()
+  }
+}
+
+function stopGeneration() {
+  if (abortController.value) {
+    abortController.value.abort()
+    abortController.value = null
+  }
+  // Flush any pending typewriter content immediately
+  const last = messages.value[messages.value.length - 1]
+  if (last && last.role === 'assistant') {
+    flushTypewriter(last)
   }
 }
 
@@ -413,7 +431,8 @@ async function sendText() {
     const asstMsgProxy = messages.value[messages.value.length - 1]
     const _isActive = () => currentConvId.value === _convId
     activeStreamConvId.value = _convId
-    await chatStream(query, history, {
+    abortController.value = new AbortController()
+    await chatStream(query, history, abortController.value.signal, {
       onThinking(label) {
         _localSteps.push({ type: 'tool', label })
         if (_isActive()) thinkingSteps.value = [..._localSteps]
@@ -453,7 +472,8 @@ async function sendText() {
       async onToken(content) {
         appendToTypewriter(asstMsgProxy, content, _isActive)
       },
-      async onDone() {
+      async onDone(data) {
+        flushTypewriter(asstMsgProxy)
         asstMsgProxy.thinkingChain = [..._localSteps]
         asstMsgProxy.thinkingExpanded = false
         if (_isActive()) {
@@ -474,6 +494,7 @@ async function sendText() {
     messages.value.push({ role: 'assistant', content: '### ⚠️ 请求失败\n\n请确认后端服务已启动。' })
   } finally {
     loading.value = false
+    abortController.value = null
     activeStreamConvId.value = null
     streamMessageCache.value = null
     await scrollToBottom()
@@ -524,7 +545,8 @@ async function sendFile(instruction = null) {
     const asstMsgProxy = messages.value[messages.value.length - 1]
     const _isActive = () => currentConvId.value === _convId
     activeStreamConvId.value = _convId
-    await analyzeContractStream(fileToSend, {
+    abortController.value = new AbortController()
+    await analyzeContractStream(fileToSend, abortController.value.signal, {
       onThinking(label) {
         _localSteps.push({ type: 'tool', label })
         if (_isActive()) thinkingSteps.value = [..._localSteps]
@@ -565,6 +587,7 @@ async function sendFile(instruction = null) {
         appendToTypewriter(asstMsgProxy, content, _isActive)
       },
       async onDone(data) {
+        flushTypewriter(asstMsgProxy)
         asstMsgProxy.thinkingChain = [..._localSteps]
         asstMsgProxy.thinkingExpanded = false
         asstMsgProxy.contractData = data
