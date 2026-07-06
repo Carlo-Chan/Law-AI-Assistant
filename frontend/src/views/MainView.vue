@@ -17,9 +17,30 @@
             :class="['conv-item', { active: conv.id === currentConvId }]"
             @click="loadConversation(conv.id)"
           >
-            <span class="conv-title">{{ conv.title }}</span>
-            <el-button class="conv-delete" :icon="Delete" circle size="small"
-              @click.stop="handleDeleteConv(conv.id)" />
+            <span v-if="renamingConvId !== conv.id" class="conv-title">{{ conv.title }}</span>
+            <input
+              v-else
+              v-model="renameText"
+              class="conv-title-input"
+              @keydown.enter.prevent="finishRename(conv.id)"
+              @keydown.esc.prevent="cancelRename"
+              @blur="finishRename(conv.id)"
+              @click.stop
+              ref="renameInput"
+            />
+            <el-dropdown v-if="renamingConvId !== conv.id" trigger="click" @command="(cmd) => cmd === 'rename' ? startRename(conv.id) : handleDeleteConv(conv.id)" @visible-change="(v) => sidebarMenuConvId = v ? conv.id : null">
+              <span :class="['conv-more', { 'conv-more-visible': sidebarMenuConvId === conv.id }]" @click.stop><el-icon><MoreFilled /></el-icon></span>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="rename">
+                    <el-icon><Edit /></el-icon> 重命名
+                  </el-dropdown-item>
+                  <el-dropdown-item command="delete">
+                    <el-icon><Delete /></el-icon> 删除
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
           <div v-if="!filteredConvs.length" class="conv-empty">暂无历史对话</div>
         </div>
@@ -178,7 +199,7 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause, CopyDocument, Refresh, Edit } from '@element-plus/icons-vue'
+import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause, CopyDocument, Refresh, Edit, MoreFilled } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, saveGreeting, chatStream, analyzeContractStream, rebuildMessages } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
@@ -194,6 +215,9 @@ const abortController = ref(null)
 const editingIndex = ref(-1)
 const editingText = ref('')
 const dropdownOpenIndex = ref(-1)
+const sidebarMenuConvId = ref(null)
+const renamingConvId = ref(null)
+const renameText = ref('')
 const activeStreamConvId = ref(null)
 const streamMessageCache = ref(null)
 const thinkingSteps = ref([])
@@ -386,6 +410,31 @@ async function loadConversation(id) {
     previewData.value = null
   } catch { /* ignore */ }
 }
+async function startRename(convId) {
+  const conv = conversations.value.find(c => c.id === convId)
+  if (!conv) return
+  renamingConvId.value = convId
+  renameText.value = conv.title
+  await nextTick()
+  // Auto-focus the input so blur detection works immediately
+  const input = document.querySelector('.conv-title-input')
+  if (input) input.focus()
+}
+async function finishRename(convId) {
+  const val = renameText.value.trim()
+  if (val) {
+    try { await updateConvTitle(convId, val) } catch {}
+    const conv = conversations.value.find(c => c.id === convId)
+    if (conv) conv.title = val
+  }
+  renamingConvId.value = null
+  renameText.value = ''
+}
+function cancelRename() {
+  renamingConvId.value = null
+  renameText.value = ''
+}
+
 async function handleDeleteConv(id) {
   try {
     await deleteConversation(id)
@@ -1436,12 +1485,37 @@ function openContractPreview(msg) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.conv-delete {
+.conv-title-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #409eff;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+  outline: none;
+  background: #fff;
+  margin-right: 4px;
+}
+.conv-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #909399;
   visibility: hidden;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: all 0.15s;
+  flex-shrink: 0;
 }
-.conv-item:hover .conv-delete {
+.conv-more:hover {
+  color: #409eff;
+  background: #ecf5ff;
+}
+.conv-item:hover .conv-more,
+.conv-more-visible {
   visibility: visible;
   opacity: 1;
 }
