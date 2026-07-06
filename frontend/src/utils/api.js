@@ -62,6 +62,10 @@ export async function saveMessages(convId, userContent, assistantContent, fileNa
 export async function updateConvTitle(convId, title) {
   await api.post(`/conversations/${convId}/title`, { title })
 }
+/** 重建会话消息（用于删除单条消息后同步） */
+export async function rebuildMessages(convId, messages) {
+  await api.post(`/conversations/${convId}/rebuild`, { messages })
+}
 /** 保存问候语 */
 export async function saveGreeting(convId, content) {
   await api.post(`/conversations/${convId}/greeting`, { content })

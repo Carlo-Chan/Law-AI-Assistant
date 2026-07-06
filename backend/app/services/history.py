@@ -117,6 +117,21 @@ def update_title(conv_id: str, title: str):
         conn.execute("UPDATE conversations SET title=? WHERE id=?", (title, conv_id))
 
 
+def rebuild_messages(conv_id: str, messages: list[dict]):
+    "Delete all messages for a conversation and re-insert from list"
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv_id,))
+        now = datetime.now().isoformat()
+        for m in messages:
+            conn.execute(
+                "INSERT INTO messages (conversation_id, role, content, file_name, contract_data, thinking_chain, created_at) VALUES (?,?,?,?,?,?,?)",
+                (conv_id, m.get("role", ""), m.get("content", ""), m.get("file_name"),
+                 json.dumps(m.get("contract_data"), ensure_ascii=False) if m.get("contract_data") else None,
+                 json.dumps(m.get("thinking_chain"), ensure_ascii=False) if m.get("thinking_chain") else None,
+                 now),
+            )
+        conn.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
+
 def delete_conversation(conv_id: str):
     with _get_conn() as conn:
         conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv_id,))

@@ -41,6 +41,21 @@
 
       <div class="chat-messages" ref="msgContainer">
         <div v-for="(msg, i) in messages" :key="i" :class="['message', msg.role]">
+          <div v-if="msg.role === 'user' && editingIndex === i" class="edit-inline">
+            <div class="edit-inline-wrapper">
+              <el-input
+                v-model="editingText"
+                type="textarea"
+                :autosize="{ minRows: 1, maxRows: 12 }"
+                @keydown.esc="cancelEdit"
+              />
+              <div class="edit-actions">
+                <el-button size="small" text @click="cancelEdit">取消</el-button>
+                <el-button size="small" type="primary" @click="saveEdit(i)">保存</el-button>
+              </div>
+            </div>
+          </div>
+          <template v-else>
           <div v-if="msg.role === 'user' && msg.file" class="file-badge">
             <el-icon><Document /></el-icon> {{ msg.file.name }}
           </div>
@@ -71,6 +86,33 @@
             </div>
           </div>
           <div class="message-content" v-html="renderMd(msg.content)" />
+          </template>
+          <div v-if="msg.role === 'assistant' && editingIndex === -1" :class="['msg-actions', 'msg-actions-left', { 'msg-actions-visible': dropdownOpenIndex === i }]">
+            <el-dropdown trigger="click" @command="(cmd) => copyMessage(i, cmd === 'md')" @visible-change="(v) => dropdownOpenIndex = v ? i : -1">
+              <span class="action-btn" title="复制"><el-icon><CopyDocument /></el-icon></span>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="text">复制纯文本</el-dropdown-item>
+                  <el-dropdown-item command="md">复制 Markdown</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <span class="action-btn" title="重新生成" @click="regenerateMessage(i)"><el-icon><Refresh /></el-icon></span>
+            <span class="action-btn" title="删除" @click="deleteMessage(i)"><el-icon><Delete /></el-icon></span>
+          </div>
+          <div v-if="msg.role === 'user' && editingIndex !== i" :class="['msg-actions', 'msg-actions-right', { 'msg-actions-visible': dropdownOpenIndex === i }]">
+            <el-dropdown trigger="click" @command="(cmd) => copyMessage(i, cmd === 'md')" @visible-change="(v) => dropdownOpenIndex = v ? i : -1">
+              <span class="action-btn" title="复制"><el-icon><CopyDocument /></el-icon></span>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="text">复制纯文本</el-dropdown-item>
+                  <el-dropdown-item command="md">复制 Markdown</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <span class="action-btn" title="编辑" @click="editMessage(i)"><el-icon><Edit /></el-icon></span>
+            <span class="action-btn" title="删除" @click="deleteMessage(i)"><el-icon><Delete /></el-icon></span>
+          </div>
           <div v-if="msg.contractRawText" class="contract-actions">
             <el-button type="primary" size="small" @click="openContractPreview(msg)">
               <el-icon><View /></el-icon> 查看合同标注
@@ -136,9 +178,9 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause } from '@element-plus/icons-vue'
+import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause, CopyDocument, Refresh, Edit } from '@element-plus/icons-vue'
 import { marked } from 'marked'
-import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, saveGreeting, chatStream, analyzeContractStream } from '../utils/api'
+import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, saveGreeting, chatStream, analyzeContractStream, rebuildMessages } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
 
 // ---- 状态 ----
@@ -149,6 +191,9 @@ const input = ref('')
 const pendingFile = ref(null)
 const loading = ref(false)
 const abortController = ref(null)
+const editingIndex = ref(-1)
+const editingText = ref('')
+const dropdownOpenIndex = ref(-1)
 const activeStreamConvId = ref(null)
 const streamMessageCache = ref(null)
 const thinkingSteps = ref([])
@@ -375,6 +420,20 @@ async function doSaveMessages(overrideConvId, userContent, assistantContent, fil
 }
 // Simple inline POST helper (avoid circular import)
 
+// Strip markdown for plain-text copy
+function stripMarkdown(md) {
+  if (!md) return ''
+  let text = md
+  text = text.replace(/^#{1,6}\s+/gm, '')
+  text = text.replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
+  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+  text = text.replace(/`{1,3}[^`]*`{1,3}/g, '')
+  text = text.replace(/^[*-]\s+/gm, '')
+  text = text.replace(/^>\s+/gm, '')
+  text = text.replace(/\n{3,}/g, '\n\n')
+  return text.trim()
+}
+
 function handleSend() {
   if (loading.value) {
     stopGeneration()
@@ -385,6 +444,119 @@ function handleSend() {
   } else {
     sendText()
   }
+}
+
+// ---- 消息操作 ----
+async function copyMessage(idx, asMarkdown = false) {
+  const msg = messages.value[idx]
+  if (!msg || !msg.content) return
+  const raw = typeof msg.content === 'string' ? msg.content : ''
+  const text = asMarkdown ? raw : stripMarkdown(raw)
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('已复制到剪贴板')
+  } catch {
+    ElMessage.error('复制失败')
+  }
+}
+
+async function deleteMessage(idx) {
+  const msg = messages.value[idx]
+  if (!msg) return
+  messages.value.splice(idx, 1)
+  // Sync with backend
+  if (currentConvId.value) {
+    try {
+      const exportable = messages.value
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .map(m => ({
+          role: m.role,
+          content: m.content,
+          file_name: m.file?.name || null,
+          contract_data: m.contractData || null,
+          thinking_chain: m.thinkingChain || null,
+        }))
+      await rebuildMessages(currentConvId.value, exportable)
+    } catch {}
+  }
+}
+
+async function regenerateMessage(idx) {
+  const msg = messages.value[idx]
+  if (!msg || msg.role !== 'assistant') return
+  // Find preceding user message
+  if (idx > 0 && messages.value[idx - 1].role === 'user') {
+    const userMsg = messages.value[idx - 1]
+    // Remove the pair
+    messages.value.splice(idx - 1, 2)
+    // Sync removal to backend before re-sending
+    if (currentConvId.value) {
+      try {
+        const exportable = messages.value
+          .filter(m => m.role === 'user' || m.role === 'assistant')
+          .map(m => ({
+            role: m.role,
+            content: m.content,
+            file_name: m.file?.name || null,
+            contract_data: m.contractData || null,
+            thinking_chain: m.thinkingChain || null,
+          }))
+        await rebuildMessages(currentConvId.value, exportable)
+      } catch {}
+    }
+    if (userMsg.file) {
+      // It was a file upload - re-send
+      pendingFile.value = userMsg.file
+      input.value = ''
+      // Extract instruction if any
+      const displayText = userMsg.content
+      const fileMark = '📄 上传合同：' + userMsg.file.name
+      if (displayText.startsWith(fileMark)) {
+        const instr = displayText.slice(fileMark.length).trim().replace(/^\n/, '')
+        input.value = instr
+
+        input.value = instr
+      }
+      sendFile(input.value.trim() || null)
+    } else {
+      // Text message
+      input.value = userMsg.content
+      sendText()
+    }
+  }
+}
+
+function editMessage(idx) {
+  const msg = messages.value[idx]
+  if (!msg || msg.role !== 'user') return
+  editingIndex.value = idx
+  editingText.value = msg.content
+}
+async function saveEdit(idx) {
+  const msg = messages.value[idx]
+  if (!msg) return
+  msg.content = editingText.value
+  editingIndex.value = -1
+  editingText.value = ''
+  // Sync to backend
+  if (currentConvId.value) {
+    try {
+      const exportable = messages.value
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .map(m => ({
+          role: m.role,
+          content: m.content,
+          file_name: m.file?.name || null,
+          contract_data: m.contractData || null,
+          thinking_chain: m.thinkingChain || null,
+        }))
+      await rebuildMessages(currentConvId.value, exportable)
+    } catch {}
+  }
+}
+function cancelEdit() {
+  editingIndex.value = -1
+  editingText.value = ''
 }
 
 function stopGeneration() {
@@ -926,6 +1098,66 @@ function openContractPreview(msg) {
 }
 .contract-actions {
   margin-top: 8px;
+}
+
+/* 消息操作按钮 */
+.msg-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.message:hover .msg-actions,
+.msg-actions-visible {
+  opacity: 1;
+}
+.msg-actions-left {
+  justify-content: flex-start;
+}
+.msg-actions-right {
+  justify-content: flex-end;
+}
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #909399;
+  transition: all 0.15s;
+}
+.action-btn:hover {
+  color: #409eff;
+  background: #ecf5ff;
+}
+.action-btn .el-icon {
+  font-size: 14px;
+}
+
+/* 行内编辑 */
+.edit-inline {
+  width: 100%;
+  max-width: 100%;
+}
+.message.user .edit-inline {
+  margin-left: auto;
+}
+.edit-inline-wrapper {
+  position: relative;
+}
+.edit-inline-wrapper :deep(.el-textarea__inner) {
+  padding-bottom: 36px;
+  resize: none;
+}
+.edit-actions {
+  position: absolute;
+  bottom: 8px;
+  right: 10px;
+  display: flex;
+  gap: 6px;
 }
 
 /* 输入区 */

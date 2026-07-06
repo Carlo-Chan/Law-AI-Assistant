@@ -152,6 +152,11 @@ async def update_title(conv_id: str, req: UpdateTitleRequest):
     return ConvResponse(code=200, data={"ok": True})
 
 
+@router.post("/conversations/{conv_id}/rebuild", response_model=ConvResponse)
+async def rebuild_conv(conv_id: str, payload: dict):
+    history.rebuild_messages(conv_id, payload.get("messages", []))
+    return ConvResponse(code=200, data={"ok": True})
+
 @router.delete("/conversations/{conv_id}", response_model=ConvResponse)
 async def delete_conversation(conv_id: str):
     history.delete_conversation(conv_id)
