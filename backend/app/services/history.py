@@ -50,11 +50,10 @@ _init_db()
 # CRUD
 # ============================================================
 
-def list_conversations(limit: int = 50) -> list[dict]:
+def list_conversations() -> list[dict]:
     with _get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM conversations ORDER BY updated_at DESC LIMIT ?",
-            (limit,),
+            "SELECT * FROM conversations ORDER BY updated_at DESC"
         ).fetchall()
     return [dict(r) for r in rows]
 

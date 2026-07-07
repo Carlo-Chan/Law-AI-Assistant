@@ -424,6 +424,7 @@ async function newChat() {
   }
   currentConvId.value = null
   messages.value = []
+  showScrollBtn.value = false
   showPreview.value = false
   previewData.value = null
   sidebarOpen.value = false
@@ -431,6 +432,7 @@ async function newChat() {
   input.value = draftInputs['__new__'] || ''
 }
 async function loadConversation(id) {
+  showScrollBtn.value = false
   // 保存当前对话的输入框草稿
   if (currentConvId.value) {
     draftInputs[currentConvId.value] = input.value
@@ -478,6 +480,8 @@ async function loadConversation(id) {
       msgs.shift()
     }
     messages.value = msgs
+    await nextTick()
+    await scrollToBottom()
     showPreview.value = false
     previewData.value = null
   } catch { /* ignore */ }
