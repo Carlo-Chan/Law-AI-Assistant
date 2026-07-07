@@ -226,6 +226,7 @@ import { pinyin } from 'pinyin-pro'
 // ---- 状态 ----
 const messages = ref([])
 const input = ref('')
+const draftInputs = {}  // 按对话ID记忆输入框草稿
 const pendingFile = ref(null)
 const loading = ref(false)
 const abortController = ref(null)
@@ -403,6 +404,12 @@ async function refreshConvList() {
   try { conversations.value = await listConversations() } catch {}
 }
 async function newChat() {
+  // 保存当前对话的输入框草稿
+  if (currentConvId.value) {
+    draftInputs[currentConvId.value] = input.value
+  } else {
+    draftInputs['__new__'] = input.value
+  }
   // Save in-progress messages before switching away (only for the active stream's conversation)
   if (loading.value && activeStreamConvId.value && currentConvId.value === activeStreamConvId.value) {
     streamMessageCache.value = { convId: currentConvId.value, messages: [...messages.value] }
@@ -413,12 +420,20 @@ async function newChat() {
   previewData.value = null
   sidebarOpen.value = false
   forceSidebar.value = false
+  input.value = draftInputs['__new__'] || ''
 }
 async function loadConversation(id) {
+  // 保存当前对话的输入框草稿
+  if (currentConvId.value) {
+    draftInputs[currentConvId.value] = input.value
+  } else {
+    draftInputs['__new__'] = input.value
+  }
   // Restore cached messages if this conversation has an active stream
   if (loading.value && activeStreamConvId.value === id && streamMessageCache.value?.convId === id) {
     messages.value = streamMessageCache.value.messages
     currentConvId.value = id
+    input.value = draftInputs[id] || ''
     return
   }
   // Save in-progress messages before switching away from the active stream's conversation
@@ -428,6 +443,7 @@ async function loadConversation(id) {
   try {
     const conv = await getConversation(id)
     currentConvId.value = id
+    input.value = draftInputs[id] || ''
     const msgs = conv.messages.map(m => {
       const msg = { role: m.role, content: m.content }
       if (m.file_name) msg.file = { name: m.file_name }
@@ -672,6 +688,7 @@ async function sendText() {
 
   messages.value.push({ role: 'user', content: query })
   input.value = ''
+  if (currentConvId.value) delete draftInputs[currentConvId.value]; else delete draftInputs['__new__']
   loading.value = true
   await scrollToBottom()
 
@@ -791,6 +808,7 @@ async function sendFile(instruction = null) {
   const fileToSend = pendingFile.value
   pendingFile.value = null
   input.value = ''
+  if (currentConvId.value) delete draftInputs[currentConvId.value]; else delete draftInputs['__new__']
   loading.value = true
   await scrollToBottom()
 
