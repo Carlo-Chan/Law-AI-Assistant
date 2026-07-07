@@ -146,9 +146,6 @@ async def run_chat_stream(query, history=None):
             chunk = event["data"]["chunk"]
             if chunk.content:
                 pending += chunk.content
-                if not tool_called:
-                    yield {"type": "thinking_reasoning_token", "content": chunk.content}
-                    await asyncio.sleep(0.012)
     # Flush final answer in small batches for typing effect
     if pending.strip():
         print(f"  [Stream] final answer: {pending[:80]}...")
