@@ -4,7 +4,14 @@
     <transition name="sidebar-slide">
       <div v-if="sidebarVisible" class="sidebar" :class="{ 'sidebar-overlay': forceSidebar }">
         <div class="sidebar-header">
-          <el-input v-model="searchText" placeholder="搜索对话..." size="small" clearable />
+          <el-input v-model="searchText" placeholder="搜索对话..." class="search-input">
+            <template #prefix>
+              <el-icon class="search-icon"><Search /></el-icon>
+            </template>
+            <template #suffix>
+              <span v-if="searchText" class="search-clear-btn" @click.stop="searchText = ''">✕</span>
+            </template>
+          </el-input>
           <el-button :icon="ArrowLeft" circle size="small" @click="sidebarOpen = false; forceSidebar = false" />
         </div>
         <el-button type="primary" class="new-chat-btn" @click="newChat">
@@ -210,10 +217,11 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause, CopyDocument, Refresh, Edit, MoreFilled, ArrowDown } from '@element-plus/icons-vue'
+import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause, CopyDocument, Refresh, Edit, MoreFilled, ArrowDown, Search } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, chatStream, analyzeContractStream, rebuildMessages } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
+import { pinyin } from 'pinyin-pro'
 
 // ---- 状态 ----
 const messages = ref([])
@@ -260,10 +268,34 @@ const forceSidebar = ref(false)
 const sidebarFits = ref(true)
 const sidebarVisible = computed(() => sidebarOpen.value && (sidebarFits.value || forceSidebar.value))
 const frostedOverlay = computed(() => isNarrow.value && forceSidebar.value && sidebarOpen.value)
+// 拼音模糊搜索：支持全拼、首字母、混合
+function pinyinMatch(title, query) {
+  const titlePinyin = pinyin(title, { toneType: 'none', type: 'array' }).join('').toLowerCase()
+  const titleInitials = pinyin(title, { toneType: 'none', type: 'array' }).map(s => s[0]).join('').toLowerCase()
+  return titlePinyin.includes(query) || titleInitials.includes(query)
+}
+// 模糊匹配：query 的每个字符按顺序在 title（或 title 对应拼音）中出现即可
+function fuzzyMatch(title, query) {
+  // 先在原标题上做字符级模糊匹配
+  let ti = 0
+  for (let qi = 0; qi < query.length; qi++) {
+    const qch = query[qi]
+    let found = false
+    while (ti < title.length) {
+      if (title[ti] === qch) { found = true; ti++; break }
+      ti++
+    }
+    if (!found) return false
+  }
+  return true
+}
 const filteredConvs = computed(() => {
   if (!searchText.value) return conversations.value
   const q = searchText.value.toLowerCase()
-  return conversations.value.filter(c => c.title.toLowerCase().includes(q))
+  return conversations.value.filter(c => {
+    const t = c.title.toLowerCase()
+    return t.includes(q) || pinyinMatch(c.title, q) || fuzzyMatch(t, q)
+  })
 })
 const splitRatio = ref(0.55)
 const dragging = ref(false)
@@ -1525,6 +1557,25 @@ function openContractPreview(msg) {
   border-bottom: 1px solid #ebeef5;
 }
 .sidebar-header .el-input { flex: 1; }
+.search-input {
+  --el-input-height: 36px;
+  --el-input-inner-height: 36px;
+}
+.search-icon {
+  margin-left: 0px;
+  margin-right: 8px;
+  color: #909399;
+}
+.search-clear-btn {
+  font-size: 14px;
+  color: #909399;
+  cursor: pointer;
+  padding: 2px;
+  line-height: 1;
+}
+.search-clear-btn:hover {
+  color: #606266;
+}
 .new-chat-btn {
   margin: 12px;
   width: calc(100% - 24px);
