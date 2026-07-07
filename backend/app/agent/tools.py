@@ -1,7 +1,7 @@
-"""
+﻿"""
 Agent 工具集：本地法律检索 + 元典智库 + 联网搜索 + 幻觉校验
 """
-import json, httpx
+import json, httpx, re
 from langchain_core.tools import tool
 from langchain_tavily._utilities import TavilySearchAPIWrapper
 
@@ -16,15 +16,101 @@ _httpx_client = httpx.Client(
     limits=httpx.Limits(max_keepalive_connections=5, max_connections=20),
 )
 
-# ============================================================
-# Tool 1: 本地法律条文检索（ChromaDB RAG）
-# ============================================================
+# 法条号转换工具
+_CN_NUMS = "零一二三四五六七八九十百千"
 
-@tool
+def _arabic_to_chinese(num_str):
+    """将 '585' 转为 '五百八十五'"""
+    try:
+        n = int(num_str)
+        if n <= 10:
+            return _CN_NUMS[n]
+        elif n < 100:
+            tens = n // 10
+            ones = n % 10
+            result = (_CN_NUMS[tens] if tens > 1 else "") + "十"
+            if ones > 0:
+                result += _CN_NUMS[ones]
+            if result.startswith("一十"): result = "十" + result[2:]
+            return result
+        elif n < 1000:
+            hundreds = n // 100
+            rest = n % 100
+            result = _CN_NUMS[hundreds] + "百"
+            if rest > 0:
+                result += _arabic_to_chinese(str(rest))
+            return result
+        else:
+            return num_str
+    except:
+        return num_str
+
+
+
+_LAW_ALIASES = {
+    "民法典": "中华人民共和国民法典",
+    "刑法": "中华人民共和国刑法",
+    "劳动法": "中华人民共和国劳动法",
+    "劳动合同法": "中华人民共和国劳动合同法",
+    "公司法": "中华人民共和国公司法",
+    "治安管理处罚法": "中华人民共和国治安管理处罚法",
+    "消费者权益保护法": "中华人民共和国消费者权益保护法",
+    "著作权法": "中华人民共和国著作权法",
+    "道路交通安全法": "中华人民共和国道路交通安全法",
+    "个人信息保护法": "中华人民共和国个人信息保护法",
+    "反家庭暴力法": "中华人民共和国反家庭暴力法",
+    "反电信网络诈骗法": "中华人民共和国反电信网络诈骗法",
+}
+
+def _extract_article_numbers(query):
+    """extract article numbers with law name, returns [(law_keyword_or_None, article_cn), ...]"""
+    results = []
+    cn_match = re.findall(r'第([零一二三四五六七八九十百千万\d]+)条', query)
+    law_keyword = None
+    law_match = re.search(r'《?([^》第]+?)》?\s*第', query)
+    if law_match:
+        candidate = law_match.group(1).strip()
+        if candidate in _LAW_ALIASES:
+            law_keyword = candidate
+        else:
+            for alias in sorted(_LAW_ALIASES, key=lambda x: -len(x)):
+                if alias in candidate or candidate in alias:
+                    law_keyword = alias
+                    break
+    for m in cn_match:
+        article_cn = "第" + (_arabic_to_chinese(m) if m.isdigit() else m) + "条"
+        results.append((law_keyword, article_cn))
+    return results
 def search_laws(query: str) -> str:
-    """搜索本地法律知识库，获取相关法律条文原文。"""
+    """search local law database"""
     retriever = get_retriever()
-    return retriever.search_as_context(query, top_k=5)
+    vector_results = retriever.search(query, top_k=8)
+    bm25_results = retriever.search_bm25(query, top_k=8)
+    exact_results = []
+    article_nums = _extract_article_numbers(query)
+    if article_nums:
+        try:
+            exact_results = retriever.search_by_articles(article_nums, _LAW_ALIASES)
+        except Exception:
+            pass
+    seen = set()
+    all_results = []
+    for r in exact_results:
+        key = (r["law"], r.get("article", ""))
+        if key not in seen:
+            seen.add(key)
+            all_results.append(r)
+    for r in bm25_results:
+        key = (r["law"], r.get("article", ""))
+        if key not in seen:
+            seen.add(key)
+            all_results.append(r)
+    for r in vector_results:
+        key = (r["law"], r.get("article", ""))
+        if key not in seen:
+            seen.add(key)
+            all_results.append(r)
+    return retriever.format_results(all_results)
 
 
 # ============================================================

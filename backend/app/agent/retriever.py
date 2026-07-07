@@ -5,6 +5,8 @@ import chromadb
 import os as _os
 from pathlib import Path
 from app.init_db import OllamaEmbeddingFunction
+from rank_bm25 import BM25Okapi
+import jieba
 
 _db = Path(__file__).resolve().parent.parent.parent / "chroma_db"
 _rel = _os.path.relpath(str(_db), _os.getcwd())
@@ -12,6 +14,13 @@ _rel = _os.path.relpath(str(_db), _os.getcwd())
 _client = None
 _collection = None
 _ef = None
+_bm25 = None
+_bm25_docs = None
+
+
+def _bm25_tokenize(text):
+    """Chinese word segmentation for BM25"""
+    return list(jieba.cut(text))
 
 
 def _init():
@@ -24,6 +33,32 @@ def _init():
         name="laws",
         embedding_function=_ef,
     )
+    global _bm25, _bm25_docs
+    if _bm25 is None:
+        _build_bm25()
+
+
+
+def _build_bm25():
+    """Build BM25 index from all documents in ChromaDB"""
+    global _bm25, _bm25_docs
+    try:
+        all_data = _collection.get(include=["documents", "metadatas"])
+        _bm25_docs = []
+        tokenized_corpus = []
+        for i, doc in enumerate(all_data["documents"]):
+            tokens = _bm25_tokenize(doc)
+            tokenized_corpus.append(tokens)
+            _bm25_docs.append({
+                "content": doc,
+                "law": all_data["metadatas"][i].get("law", ""),
+                "article": all_data["metadatas"][i].get("article", ""),
+                "hierarchy": all_data["metadatas"][i].get("hierarchy", ""),
+            })
+        _bm25 = BM25Okapi(tokenized_corpus)
+    except Exception:
+        _bm25 = None
+        _bm25_docs = []
 
 
 class LawRetriever:
@@ -52,20 +87,65 @@ class LawRetriever:
             })
         return docs
 
-    def search_as_context(self, query: str, top_k: int = 5) -> str:
-        results = self.search(query, top_k)
+    def search_by_articles(self, article_nums, law_aliases=None):
+        """search by article number with optional law name filter"""
+        docs = []
+        for law_kw, num in article_nums:
+            try:
+                results = _collection.get(where={"article": num})
+                if results.get("documents"):
+                    for i in range(len(results["documents"])):
+                        meta = results["metadatas"][i] if results.get("metadatas") else {}
+                        doc_law = meta.get("law", "")
+                        if law_kw and law_aliases:
+                            target_law = law_aliases.get(law_kw, "")
+                            if target_law and doc_law != target_law:
+                                continue
+                        docs.append({
+                            "content": results["documents"][i],
+                            "law": doc_law,
+                            "article": meta.get("article", ""),
+                            "hierarchy": meta.get("hierarchy", ""),
+                        })
+            except Exception:
+                continue
+        return docs
+    def search_bm25(self, query: str, top_k: int = 5):
+        """BM25 keyword-based search"""
+        global _bm25, _bm25_docs
+        if _bm25 is None or not _bm25_docs:
+            return []
+        try:
+            tokens = _bm25_tokenize(query)
+            scores = _bm25.get_scores(tokens)
+            # Get top_k indices
+            top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+            docs = []
+            for idx in top_indices:
+                if scores[idx] > 0:
+                    docs.append(dict(_bm25_docs[idx]))
+            return docs
+        except Exception:
+            return []
+
+    def format_results(self, results):
+        """将结果列表格式化为 LLM 上下文文本"""
         if not results:
             return "No relevant laws found."
         parts = []
         for i, r in enumerate(results, 1):
             src = r["law"]
-            if r["hierarchy"]:
-                src += " > " + r["hierarchy"]
-            if r["article"] and r["article"] != "-":
+            if r.get("hierarchy"):
+                src += " 〉 " + r["hierarchy"]
+            if r.get("article") and r["article"] != "-":
                 src += " " + r["article"]
             line = "[" + str(i) + "] [" + src + "]" + chr(10) + r["content"]
             parts.append(line)
         return (chr(10)+chr(10)).join(parts)
+
+    def search_as_context(self, query: str, top_k: int = 5) -> str:
+        results = self.search(query, top_k)
+        return self.format_results(results)
 
 
 _retriever = None
