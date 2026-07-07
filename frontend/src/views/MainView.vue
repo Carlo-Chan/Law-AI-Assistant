@@ -102,7 +102,11 @@
             </div>
             <div v-if="thinkingExpanded" class="thinking-details">
               <div v-for="(step, si) in thinkingSteps" :key="si" class="thinking-step">
-                <span class="thinking-step-icon">{{ step.type === 'tool' ? '🔍' : step.type === 'reasoning' ? '💬' : '✅' }}</span>
+                <span class="thinking-step-icon">
+                <el-icon v-if="step.type === 'tool'"><Search /></el-icon>
+                <el-icon v-else-if="step.type === 'reasoning'"><ChatDotRound /></el-icon>
+                <el-icon v-else><CircleCheck /></el-icon>
+              </span>
                 <span class="thinking-step-text">{{ cleanFences(step.label) }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span>
               </div>
             </div>
@@ -114,7 +118,11 @@
             </div>
             <div v-if="msg.thinkingExpanded" class="thinking-details">
               <div v-for="(step, si) in msg.thinkingChain" :key="si" class="thinking-step">
-                <span class="thinking-step-icon">{{ step.type === 'tool' ? '🔍' : step.type === 'reasoning' ? '💬' : '✅' }}</span>
+                <span class="thinking-step-icon">
+                <el-icon v-if="step.type === 'tool'"><Search /></el-icon>
+                <el-icon v-else-if="step.type === 'reasoning'"><ChatDotRound /></el-icon>
+                <el-icon v-else><CircleCheck /></el-icon>
+              </span>
                 <span class="thinking-step-text">{{ cleanFences(step.label) }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span>
               </div>
             </div>
@@ -217,7 +225,7 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause, CopyDocument, Refresh, Edit, MoreFilled, ArrowDown, Search } from '@element-plus/icons-vue'
+import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause, CopyDocument, Refresh, Edit, MoreFilled, ArrowDown, Search, ChatDotRound, CircleCheck } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, chatStream, analyzeContractStream, rebuildMessages } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
@@ -1421,6 +1429,11 @@ function openContractPreview(msg) {
 }
 .thinking-step-icon {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  color: #909399;
+  font-size: 13px;
+  padding-top: 2px;
 }
 .thinking-step-text {
   word-break: break-all;
