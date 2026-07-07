@@ -2,6 +2,7 @@
 Agent dialog chain: legal QA + contract review
 """
 import json, re, asyncio
+from json_repair import repair_json
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
@@ -41,11 +42,13 @@ llm = ChatOpenAI(
 LEGAL_SYSTEM_PROMPT = (
     "你是专业法律AI助手。用户会提出法律问题，你必须先调用工具检索相关法条，再基于检索结果回答。"
     "工作流程："
-    "1. 收到用户问题后，第一时间调用 search_laws 检索本地法律知识库"
-    "2. 若本地结果不足，可额外调用 search_web 联网补充"
+    "1. 收到用户问题后，第一时间调用search_laws检索本地法律知识库"
+    "2. 若本地结果不足，可额外调用search_web联网或search_legal补充"
     "3. 综合检索结果，给出准确的法律建议，引用具体法条出处"
-    "回答要求：使用 Markdown 格式，分点列举，引用法律名称和条款号。"
+    "回答要求：使用Markdown格式，分点列举，引用法律名称和条款号。"
     "如果问题超出法律范畴，说明无法提供建议。"
+    "简单问候或闲聊时直接回复，不必调用工具。"
+    "如果多次检索仍无相关结果，不要反复尝试，直接基于已有法律知识给出回答。"
 )
 
 chat_agent = create_agent(
@@ -157,24 +160,38 @@ async def run_chat_stream(query, history=None):
     yield {"type": "done"}
 CONTRACT_SYSTEM_PROMPT = (
     "你是专业合同审查AI。用户会发送一份合同文本，你需要逐条分析风险条款。"
-    "\n\n工作流程（重要！最多2轮工具调用）："
-    "\n1. 用search_laws一次性检索合同涉及的所有法律领域（买卖、违约、仲裁等）"
-    "\n2. 若本地结果不足，可再用search_web或search_legal补充一次，不要重复搜索同一主题"
-    "\n3. 两轮工具调用后，必须直接输出JSON审查结果"
-    "\n\n输出JSON格式（不要包含任何其他内容）："
-    "{\"chat_reply\": \"Markdown格式的总体审查报告（对话区显示）\", \"risk_points\": [{\"key_phrase\": \"从合同原文中摘录的关键词句\", \"level\": \"high|medium|low\", \"bubble_text\": \"法律分析和修改建议\"}]}"
-    "\n\n重要规则："
-    "\n- key_phrase必须从合同原文中逐字摘录，5-20个汉字，用于在原文中定位标记"
-    "\n- key_phrase不得改写、润色、调整语序、增减字词"
-    "\n- 若合同中有多处相同文字，摘录时适当多取几个字以区分"
-    "\n- 如果某条款整体偏高危，key_phrase取该条款的第一句话即可"
-    "\n- bubble_text不少于30字，必须包含法条依据和具体修改建议，严禁截断"
-    "\n- 必须标注所有等级的风险条款，包括low等级，不得遗漏任何风险点"
-    "\n- chat_reply使用Markdown，包含总体评估和逐条分析，风险等级用🔴🟡⚪标记"
-    "\n\n审查标准："
-    "high = 违反法律强制性规定、显失公平的霸王条款；"
-    "medium = 权利义务不对等、表述模糊可能引发争议；"
-    "low = 建议优化的常规条款。"
+    "\n\n工作流程（最多2轮工具调用）："
+    "\n1. 用search_laws一次性检索合同涉及的所有法律领域"
+    "\n2. 若本地结果不足，可用search_web或search_legal再补充一次"
+    "\n3. 如果多次检索仍无相关结果，不要反复尝试，直接基于法律常识输出审查意见"
+    "\n4. 必须直接输出以下JSON，禁止用 ```json 包裹，严格遵循模板格式要求，禁止输出任何其他文字"
+    "\n\n你的输出是一个JSON对象，包含chat_reply和risk_points两个字段。两者必须同时有内容，缺一不可！"
+    "\n\n=== chat_reply字段（Markdown报告）==="
+    "\n套用以下模板："
+    "\n# 合同审查报告"
+    "\n\n## 总体评估"
+    "\n本合同共X条，存在**Y个风险点**（🔴高危X个、🟡中危X个、⚪低危X个）。（一句话定性评价）"
+    "\n\n---"
+    "\n\n## 逐条风险分析"
+    "\n\n### 🔴 风险点一：条款名称（第X条）"
+    "\n**原文：** \"逐字摘录的合同原文\""
+    "\n\n**分析：** 法律依据与风险说明"
+    "\n\n**建议修改为：** 具体修改方案"
+    "\n\n### 🟡 风险点二：..."
+    "\n\n### ⚪ 风险点三：..."
+    "\n\n---"
+    "\n\n## 审查结论"
+    "\n\n（1-2句总结建议）"
+    "\n风险点按高危→中危→低危排序。"
+    "\n\n=== risk_points字段（结构化风险数据，JSON数组）==="
+    "\n每个风险点包含三个字段，必须与chat_reply中的风险点一一对应："
+    "\n- key_phrase: 从合同原文中逐字摘录（含标点），5-20字。必须能用Ctrl+F精确找到，不得改写、润色、调整语序。若有多处相同文字，多取几个字以区分上下文。"
+    "\n- level: high/medium/low（high=违反法律强制性规定、霸王条款；medium=权利义务不对等、表述模糊；low=建议优化的常规条款）"
+    '\n- bubble_text: 不少于30字。格式为\"该条款存在XX风险。依据《XX法》第X条，……。建议修改为：……\"，严禁截断。'
+    "\n必须标注所有等级的风险条款，包括low等级，不得遗漏任何风险点。"
+    "\n\n完整JSON示例（注意risk_points不能为空数组）："
+    '{\"chat_reply\": \"# 合同审查报告\\n...\", \"risk_points\": [{\"key_phrase\": \"逐字摘录的合同原文\", \"level\": \"high\", \"bubble_text\": \"该条款存在霸王条款风险。依据《民法典》第X条，……。建议修改为：……\"}]}'
+    "\n\n再次强调：risk_points数组必须有内容，不能是空的！有多少个风险点就放多少个元素！"
 )
 contract_agent = create_agent(
     model=llm,
@@ -312,13 +329,40 @@ async def run_contract_analysis_stream(raw_text):
         yield {"type": "error", "message": "JSON not found in agent response"}
         return
     start_json = m.start()
-    # Parse JSON with raw_decode (handles braces inside string values)
+    # Parse JSON: raw_decode first, fallback to json-repair for robustness
+    json_candidate = full_reply[start_json:]
+    data = None
+    end_idx = 0
+    # Attempt 1: direct raw_decode
     try:
         decoder = json.JSONDecoder()
-        data, end_idx = decoder.raw_decode(full_reply[start_json:])
-    except json.JSONDecodeError as e:
-        print(f"  [Stream] raw_decode error: {e}")
-        yield {"type": "error", "message": f"JSON parse error: {e}"}
+        data, end_idx = decoder.raw_decode(json_candidate)
+    except json.JSONDecodeError:
+        pass
+    # Attempt 2: json-repair (handles unescaped chars, missing commas, etc.)
+    if data is None:
+        try:
+            # Find JSON boundaries (from first { to matching })
+            brace_depth = 0
+            close_idx = -1
+            for i, ch in enumerate(json_candidate):
+                if ch == '{': brace_depth += 1
+                elif ch == '}':
+                    brace_depth -= 1
+                    if brace_depth == 0:
+                        close_idx = i + 1
+                        break
+            if close_idx > 0:
+                snippet = json_candidate[:close_idx]
+                repaired = repair_json(snippet)
+                data = json.loads(repaired)
+                end_idx = close_idx
+        except Exception:
+            pass
+    if data is None:
+        snippet = json_candidate[:200]
+        print(f"  [Stream] all parse attempts failed, first 200 chars: {snippet}")
+        yield {"type": "error", "message": "JSON parse error: unable to parse agent response"}
         return
     json_str = full_reply[start_json:start_json + end_idx]
     print(f"  [Stream] json parsed OK, len={len(json_str)}")

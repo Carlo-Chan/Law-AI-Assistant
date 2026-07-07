@@ -1526,9 +1526,9 @@ function openContractPreview(msg) {
   transition: background 0.2s;
   position: relative;
 }
-.contract-text :deep(mark.risk-high)   { background: rgba(220, 80, 80, 0.55); }
-.contract-text :deep(mark.risk-medium) { background: rgba(245, 195, 50, 0.50); }
-.contract-text :deep(mark.risk-low)    { background: rgba(144, 147, 153, 0.35); }
+.contract-text :deep(mark.risk-high)   { background: #eb9e9e; }
+.contract-text :deep(mark.risk-medium) { background: #fae198; }
+.contract-text :deep(mark.risk-low)    { background: #d8d9db; }
 .contract-text :deep(mark):hover { filter: brightness(0.88); }
 
 .preview-legend {

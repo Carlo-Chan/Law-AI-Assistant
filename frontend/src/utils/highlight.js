@@ -22,20 +22,29 @@ export function fuzzyFind(rawText, quote) {
   const quoteChinese = extractChinese(quote)
   const textChinese = extractChinese(rawText)
 
-  const idx = textChinese.indexOf(quoteChinese)
-  if (idx === -1) return null
+  // Exact match
+  let idx = textChinese.indexOf(quoteChinese)
+  let matchLen = quoteChinese.length
+
+  if (idx === -1) {
+    // Fallback: try longest common substring (handle minor wording differences)
+    const lcs = longestCommonSubstring(textChinese, quoteChinese)
+    if (lcs.length < Math.min(4, quoteChinese.length * 0.6)) return null
+    idx = textChinese.indexOf(lcs)
+    matchLen = lcs.length
+  }
 
   let charCount = 0
   let start = -1, end = -1
   let foundStart = false
 
   for (let i = 0; i < rawText.length; i++) {
-    if (/[\u4e00-\u9fa5]/.test(rawText[i])) {
+    if (/[一-龥]/.test(rawText[i])) {
       if (charCount === idx) {
         start = i
         foundStart = true
       }
-      if (charCount === idx + quoteChinese.length - 1) {
+      if (charCount === idx + matchLen - 1) {
         end = i + 1
         break
       }
@@ -43,7 +52,27 @@ export function fuzzyFind(rawText, quote) {
     }
   }
 
+  if (foundStart && end === -1) end = rawText.length
+
   return foundStart ? { start, end } : null
+}
+
+function longestCommonSubstring(a, b) {
+  const m = a.length, n = b.length
+  let maxLen = 0, endIdx = 0
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1
+        if (dp[i][j] > maxLen) {
+          maxLen = dp[i][j]
+          endIdx = i
+        }
+      }
+    }
+  }
+  return a.slice(endIdx - maxLen, endIdx)
 }
 
 /**
@@ -64,27 +93,33 @@ export function getRiskClass(level) {
  * @returns {string} HTML 字符串
  */
 export function renderHighlightedContract(rawText, riskPoints) {
-  const positions = riskPoints
+  const matches = riskPoints
     .map(rp => {
       const q = rp.quote || rp.key_phrase || ""
       const pos = fuzzyFind(rawText, q)
-      if (!pos) {
-        console.warn("[highlight] match failed:", q.slice(0, 40), "| level:", rp.level)
-      }
-      return { ...rp, pos }
+      if (!pos) console.warn("[highlight] match failed:", q.slice(0, 40))
+      return pos ? { ...rp, pos } : null
     })
-    .filter(rp => rp.pos !== null)
+    .filter(Boolean)
     .sort((a, b) => b.pos.start - a.pos.start)
 
+  if (!matches.length) return rawText.replace(/\n/g, "<br>")
+
   let result = rawText
-  for (const rp of positions) {
-    const { start, end } = rp.pos
-    const before = result.slice(0, start)
-    const match = result.slice(start, end)
-    const after = result.slice(end)
+  const shifts = []
+  for (const rp of matches) {
+    let start = rp.pos.start
+    let end = rp.pos.end
+    for (const s of shifts) {
+      if (s.at < start) start += s.delta
+      if (s.at < end) end += s.delta
+    }
     const bubble = escapeHtml(rp.bubble_text || "")
-    const level = escapeHtml(rp.level || "")
-    result = `${before}<mark class="risk-${level}" data-bubble="${bubble.replace(/"/g, '&quot;')}" data-level="${level}">${match}</mark>${after}`
+    const openTag = '<mark class="risk-' + escapeHtml(rp.level) + '" data-bubble="' + bubble.replace(/"/g, "&quot;") + '" data-level="' + escapeHtml(rp.level) + '">'
+    const closeTag = "</mark>"
+    result = result.slice(0, start) + openTag + result.slice(start, end) + closeTag + result.slice(end)
+    shifts.push({ at: rp.pos.start, delta: openTag.length })
+    shifts.push({ at: rp.pos.end, delta: closeTag.length })
   }
 
   return result.replace(/\n/g, "<br>")
