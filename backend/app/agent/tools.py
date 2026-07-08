@@ -40,6 +40,15 @@ def _arabic_to_chinese(num_str):
             if rest > 0:
                 result += _arabic_to_chinese(str(rest))
             return result
+        elif n < 10000:
+            thousands = n // 1000
+            rest = n % 1000
+            result = _CN_NUMS[thousands] + "千"
+            if rest > 0:
+                if rest < 100:
+                    result += "零"
+                result += _arabic_to_chinese(str(rest))
+            return result
         else:
             return num_str
     except:
