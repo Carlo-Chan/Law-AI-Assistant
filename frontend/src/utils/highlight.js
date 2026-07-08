@@ -22,12 +22,12 @@ export function fuzzyFind(rawText, quote) {
   const quoteChinese = extractChinese(quote)
   const textChinese = extractChinese(rawText)
 
-  // Exact match
+  // 精确匹配
   let idx = textChinese.indexOf(quoteChinese)
   let matchLen = quoteChinese.length
 
   if (idx === -1) {
-    // Fallback: try longest common substring (handle minor wording differences)
+    // 回退：尝试最长公共子串匹配（处理措辞微小差异）
     const lcs = longestCommonSubstring(textChinese, quoteChinese)
     if (lcs.length < Math.min(4, quoteChinese.length * 0.6)) return null
     idx = textChinese.indexOf(lcs)

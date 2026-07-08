@@ -1,7 +1,9 @@
 ﻿"""
-Agent dialog chain: legal QA + contract review
+对话链：法律咨询 + 合同审查
 """
-import json, re, asyncio
+import json
+import re
+import asyncio
 from json_repair import repair_json
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
@@ -14,21 +16,31 @@ settings = get_settings()
 NL = chr(10)
 
 
+# 提取字符串中的中文字符
 def _extract_chinese(s): return re.sub(r"[^一-龥]", "", s)
 
+
+# 将关键短语与原文进行模糊匹配，返回精确引用文本
 def fuzzy_match(raw_text, key_phrase):
     pc = _extract_chinese(key_phrase)
     tc = _extract_chinese(raw_text)
     idx = tc.find(pc)
-    if idx == -1: return None
-    cnt = 0; start = end = -1
+    if idx == -1:
+        return None
+    cnt = 0
+    start = end = -1
     for i, ch in enumerate(raw_text):
         if "一" <= ch <= "龥":
-            if cnt == idx: start = i
-            if cnt == idx + len(pc) - 1: end = i + 1; break
+            if cnt == idx:
+                start = i
+            if cnt == idx + len(pc) - 1:
+                end = i + 1
+                break
             cnt += 1
-    if start >= 0 and end > start: return raw_text[start:end]
+    if start >= 0 and end > start:
+        return raw_text[start:end]
     return None
+
 
 llm = ChatOpenAI(
     model="deepseek-v4-flash",
@@ -59,7 +71,7 @@ chat_agent = create_agent(
 
 
 async def run_chat(query: str, history: list | None = None) -> dict:
-    """Legal QA: returns {"reply": str, "sources": list}"""
+    """非流式法律咨询，返回完整回复和引用来源"""
     messages = []
     for h in (history or []):
         if h.get("role") == "user":
@@ -75,7 +87,7 @@ async def run_chat(query: str, history: list | None = None) -> dict:
     result = await chat_agent.ainvoke({"messages": messages})
     all_msgs = result["messages"]
 
-    # tool call trace
+    # 打印工具调用追踪日志
     for m in all_msgs:
         name = getattr(m, "name", "")
         if isinstance(m, ToolMessage):
@@ -99,10 +111,9 @@ async def run_chat(query: str, history: list | None = None) -> dict:
     print(f"  [reply] {reply[:200]}...")
     return {"reply": reply, "sources": sources[:5]}
 
-# -*- coding: utf-8 -*-
 
 async def run_chat_stream(query, history=None):
-    """Legal QA streaming: yields SSE dicts"""
+    """流式法律咨询，通过 async generator 逐事件产出 SSE 数据"""
     messages = []
     for h in (history or []):
         if h.get("role") == "user":
@@ -124,7 +135,8 @@ async def run_chat_stream(query, history=None):
                 yield {"type": "thinking_reasoning", "content": pending.strip()}
                 pending = ""
             tool_name = event.get("name", "unknown")
-            label_map = {"search_laws": "search_laws", "search_web": "search_web", "search_legal": "search_legal", "verify_legal": "verify_legal"}
+            label_map = {"search_laws": "search_laws", "search_web": "search_web",
+                         "search_legal": "search_legal", "verify_legal": "verify_legal"}
             label = label_map.get(tool_name, tool_name)
             print(f"  [Stream] thinking: {label}")
             yield {"type": "thinking", "label": label}
@@ -149,7 +161,7 @@ async def run_chat_stream(query, history=None):
             chunk = event["data"]["chunk"]
             if chunk.content:
                 pending += chunk.content
-    # Flush final answer in small batches for typing effect
+    # 将最终回复分批输出，产生打字机效果
     if pending.strip():
         print(f"  [Stream] final answer: {pending[:80]}...")
         batch_size = 8
@@ -212,7 +224,7 @@ async def run_contract_analysis(raw_text: str) -> dict:
     result = await contract_agent.ainvoke({"messages": messages}, config={"recursion_limit": 12})
     all_msgs = result["messages"]
 
-    # tool call trace
+    # 打印工具调用追踪日志
     for m in all_msgs:
         name = getattr(m, "name", "")
         if isinstance(m, ToolMessage):
@@ -234,7 +246,7 @@ async def run_contract_analysis(raw_text: str) -> dict:
         raise ValueError(f"JSON not found in agent response: {reply[:300]}")
     data = json.loads(m.group())
 
-    # Post-process: match key_phrase against raw_text to find exact quote
+    # 后处理：将 key_phrase 与原文模糊匹配，定位精确引用文本
     risk_points = data.get("risk_points", [])
     for i, rp in enumerate(risk_points):
         kp = rp.get("key_phrase", "")
@@ -258,6 +270,7 @@ async def run_contract_analysis(raw_text: str) -> dict:
         "chat_reply": data.get("chat_reply", ""),
     }
 
+
 async def run_contract_analysis_stream(raw_text):
     """Contract review streaming: yields SSE dicts"""
     query = f"请审查以下合同文本：\n\n{raw_text}"
@@ -277,7 +290,8 @@ async def run_contract_analysis_stream(raw_text):
                 pending = ""
                 flushed_pos = len(full_reply)
             tool_name = event.get("name", "unknown")
-            label_map = {"search_laws": "search_laws", "search_web": "search_web", "search_legal": "search_legal", "verify_legal": "verify_legal"}
+            label_map = {"search_laws": "search_laws", "search_web": "search_web",
+                         "search_legal": "search_legal", "verify_legal": "verify_legal"}
             label = label_map.get(tool_name, tool_name)
             print(f"  [Stream] thinking: {label}")
             yield {"type": "thinking", "label": label}
@@ -294,7 +308,7 @@ async def run_contract_analysis_stream(raw_text):
             else:
                 output = str(output)
             print(f"  [Stream] tool_done: {tool_name}")
-            # Stream tool result in chunks for progressive display
+            # 逐块流式传输工具返回结果，实现渐进式展示
             chunk_size = 30
             for j in range(0, len(output), chunk_size):
                 yield {"type": "tool_result_chunk", "tool": tool_name, "content": output[j:j+chunk_size], "first": j == 0}
@@ -305,23 +319,25 @@ async def run_contract_analysis_stream(raw_text):
             if chunk.content:
                 full_reply += chunk.content
                 pending += chunk.content
-                # Stream reasoning tokens unless JSON has started
+                # 流式输出推理思考文字，除非 JSON 已经开始
                 if not (re.search(r'\{\s*"', full_reply) or full_reply.rstrip().endswith('{')):
                     for ch in chunk.content:
                         yield {"type": "thinking_reasoning_token", "content": ch}
                         await asyncio.sleep(0.01)
-    # Extract JSON and flush final reasoning
+    # 提取 JSON 并输出最后的推理文字
     print(f"  [Stream] final pending len: {len(pending)}")
-    # Flush final reasoning (text between last tool end and JSON start)
+    # 输出最终推理文字（最后一个工具调用结束到 JSON 开始之间的文本）
     m = re.search(r'\{\s*"chat_reply"|\{\s*"risk_points"', full_reply)
     if m:
         reasoning_tail = full_reply[flushed_pos:m.start()].strip()
-        reasoning_tail = re.sub(r'```\w*\s*\n?\s*$', '', reasoning_tail).strip()
+        reasoning_tail = re.sub(r'```\w*\s*\n?\s*$', '',
+                                reasoning_tail).strip()
         reasoning_tail = re.sub(r'```$', '', reasoning_tail).strip()
         if reasoning_tail:
-            print(f"  [Stream] reasoning flush (final): {reasoning_tail[:80]}...")
+            print(
+                f"  [Stream] reasoning flush (final): {reasoning_tail[:80]}...")
             yield {"type": "thinking_reasoning", "content": reasoning_tail}
-    # Find JSON start by locating {"chat_reply" (not just first { which may be in reasoning)
+    # 定位 JSON 起始位置：查找 {"chat_reply" 而非第一个 {（推理文字中也可能包含 {）
     m = re.search(r'\{\s*"chat_reply"', full_reply)
     if not m:
         m = re.search(r'\{\s*"risk_points"', full_reply)
@@ -329,24 +345,25 @@ async def run_contract_analysis_stream(raw_text):
         yield {"type": "error", "message": "JSON not found in agent response"}
         return
     start_json = m.start()
-    # Parse JSON: raw_decode first, fallback to json-repair for robustness
+    # 解析 JSON：先用 raw_decode，失败后用 json-repair 容错修复
     json_candidate = full_reply[start_json:]
     data = None
     end_idx = 0
-    # Attempt 1: direct raw_decode
+    # 方案1：直接 raw_decode
     try:
         decoder = json.JSONDecoder()
         data, end_idx = decoder.raw_decode(json_candidate)
     except json.JSONDecodeError:
         pass
-    # Attempt 2: json-repair (handles unescaped chars, missing commas, etc.)
+    # 方案2：json-repair 容错（处理未转义字符、缺失逗号等问题）
     if data is None:
         try:
-            # Find JSON boundaries (from first { to matching })
+            # 定位 JSON 边界（从第一个 { 到匹配的 }）
             brace_depth = 0
             close_idx = -1
             for i, ch in enumerate(json_candidate):
-                if ch == '{': brace_depth += 1
+                if ch == '{':
+                    brace_depth += 1
                 elif ch == '}':
                     brace_depth -= 1
                     if brace_depth == 0:
@@ -361,27 +378,35 @@ async def run_contract_analysis_stream(raw_text):
             pass
     if data is None:
         snippet = json_candidate[:200]
-        print(f"  [Stream] all parse attempts failed, first 200 chars: {snippet}")
+        print(
+            f"  [Stream] all parse attempts failed, first 200 chars: {snippet}")
         yield {"type": "error", "message": "JSON parse error: unable to parse agent response"}
         return
     json_str = full_reply[start_json:start_json + end_idx]
     print(f"  [Stream] json parsed OK, len={len(json_str)}")
-    # Stream chat_reply progressively (flexible whitespace around colon)
+    # 逐字符流式输出 chat_reply 内容
     m = re.search(r'"chat_reply"\s*:\s*"', json_str)
     if m:
-        print(f"  [Stream] chat_reply marker found at {m.start()}, streaming...")  
+        print(
+            f"  [Stream] chat_reply marker found at {m.start()}, streaming...")
         i = m.end()
         batch = ""
         while i < len(json_str):
             ch = json_str[i]
             if ch == '\\' and i + 1 < len(json_str):
                 nc = json_str[i + 1]
-                if nc == 'n': batch += '\n'
-                elif nc == 't': batch += '\t'
-                elif nc == '\\': batch += '\\'
-                elif nc == '"': batch += '"'
-                elif nc == 'u': i += 5
-                else: batch += nc
+                if nc == 'n':
+                    batch += '\n'
+                elif nc == 't':
+                    batch += '\t'
+                elif nc == '\\':
+                    batch += '\\'
+                elif nc == '"':
+                    batch += '"'
+                elif nc == 'u':
+                    i += 5
+                else:
+                    batch += nc
                 i += 2
             elif ch == '"':
                 break
@@ -397,18 +422,22 @@ async def run_contract_analysis_stream(raw_text):
         print(f"  [Stream] chat_reply streaming done")
     else:
         print("  [Stream] WARN: chat_reply marker not found in JSON")
-    # Post-process risk_points
+    # 后处理风险点：将 key_phrase 与原文模糊匹配
     risk_points = data.get("risk_points", [])
     for i, rp in enumerate(risk_points):
         kp = rp.get("key_phrase", "")
         if kp:
             matched = fuzzy_match(raw_text, kp)
-            if matched: rp["quote"] = matched
+            if matched:
+                rp["quote"] = matched
             else:
-                print(f"  [contract stream] WARN: key_phrase not matched: {kp[:50]}")
+                print(
+                    f"  [contract stream] WARN: key_phrase not matched: {kp[:50]}")
                 rp["quote"] = kp
-        elif rp.get("quote"): pass
-        else: rp["quote"] = ""
+        elif rp.get("quote"):
+            pass
+        else:
+            rp["quote"] = ""
     print(f"  [contract stream] risks found: {len(risk_points)}")
     chat_reply = data.get("chat_reply", "")
     chat_reply = chat_reply.strip()

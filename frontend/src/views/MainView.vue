@@ -260,6 +260,7 @@ const thinkingLabel = computed(() => {
 const msgContainer = ref(null)
 const showScrollBtn = ref(false)
 
+// 监听聊天区滚动事件，控制一键到底按钮显隐
 function onMsgScroll() {
   const el = msgContainer.value
   if (!el) return
@@ -312,9 +313,9 @@ const dragging = ref(false)
 const isNarrow = ref(false)
 function checkNarrow() {
   const wasNarrow = isNarrow.value
-  // Preview fullscreen threshold: 700px
+  // 预览区全屏临界宽度：700px
   isNarrow.value = window.innerWidth < 700
-  // Sidebar fit: need at least sidebar(260) + chat(400) + preview(280 if open)
+  // 侧边栏适配：最小需要侧边栏(260) + 聊天区(400) + 预览区(280)
   const needForSidebar = 260 + 400 + (showPreview.value && !isNarrow.value ? 280 : 0)
   sidebarFits.value = window.innerWidth >= needForSidebar
   if (!isNarrow.value && wasNarrow) forceSidebar.value = false
@@ -400,6 +401,7 @@ const highlightedContract = computed(() => {
 })
 
 // ---- 滚动 ----
+// 滚动聊天区到底部
 async function scrollToBottom() {
   await nextTick()
   if (msgContainer.value) {
@@ -412,6 +414,7 @@ async function scrollToBottom() {
 async function refreshConvList() {
   try { conversations.value = await listConversations() } catch {}
 }
+// 创建新对话：保存草稿、缓存活跃对话消息、清空界面
 async function newChat() {
   // 保存当前对话的输入框草稿
   if (currentConvId.value) {
@@ -419,7 +422,7 @@ async function newChat() {
   } else {
     draftInputs['__new__'] = input.value
   }
-  // Save in-progress messages before switching away (only for the active stream's conversation)
+  // 切换前保存当前对话中正在生成的消息（仅针对活跃流的对话）
   if (loading.value && activeStreamConvId.value && currentConvId.value === activeStreamConvId.value) {
     streamMessageCache.value = {
       ...streamMessageCache.value,
@@ -435,6 +438,7 @@ async function newChat() {
   forceSidebar.value = false
   input.value = draftInputs['__new__'] || ''
 }
+// 加载历史对话：缓存当前对话 → 恢复目标对话（缓存优先，否则查数据库）
 async function loadConversation(id) {
   showScrollBtn.value = false
   // 保存当前对话的输入框草稿
@@ -443,7 +447,7 @@ async function loadConversation(id) {
   } else {
     draftInputs['__new__'] = input.value
   }
-  // Save in-progress messages before switching away
+  // 切换前保存正在生成的消息到缓存
   if (loadingConvIds.value.has(currentConvId.value) && currentConvId.value !== id) {
     streamMessageCache.value = {
       ...streamMessageCache.value,
@@ -453,7 +457,7 @@ async function loadConversation(id) {
       },
     }
   }
-  // Restore cached messages if this conversation has an active stream
+  // 如果目标对话有活跃流，从缓存恢复消息
   if (streamMessageCache.value[id]) {
     const cache = streamMessageCache.value[id]
     messages.value = cache.messages
@@ -487,7 +491,7 @@ async function loadConversation(id) {
       }
       return msg
     })
-    // Skip greeting if stored as first message (backward compat)
+    // 跳过以问候语作为首条消息的旧数据（向后兼容）
     if (msgs.length && msgs[0].content && msgs[0].content.includes('AI 法律助手')) {
       msgs.shift()
     }
@@ -504,7 +508,7 @@ async function startRename(convId) {
   renamingConvId.value = convId
   renameText.value = conv.title
   await nextTick()
-  // Auto-focus the input so blur detection works immediately
+  // 自动聚焦输入框，确保失焦检测即时生效
   const input = document.querySelector('.conv-title-input')
   if (input) input.focus()
 }
@@ -523,6 +527,7 @@ function cancelRename() {
   renameText.value = ''
 }
 
+// 删除对话：若为当前对话则清空界面
 async function handleDeleteConv(id) {
   try {
     await deleteConversation(id)
@@ -533,6 +538,7 @@ async function handleDeleteConv(id) {
     await refreshConvList()
   } catch {}
 }
+// 确保当前有活跃对话，没有则自动创建
 async function ensureConversation() {
   if (!currentConvId.value) {
     const conv = await createConversation()
@@ -542,6 +548,7 @@ async function ensureConversation() {
 }
 
 const LOADING_DOTS = '<span class="loading-dots">…</span>'
+// 保存对话消息到后端数据库
 async function doSaveMessages(overrideConvId, userContent, assistantContent, fileName, contractData, thinkingChain) {
   const _cid = overrideConvId || currentConvId.value
   if (!_cid) return
@@ -550,9 +557,9 @@ async function doSaveMessages(overrideConvId, userContent, assistantContent, fil
     await refreshConvList()
   } catch {}
 }
-// Simple inline POST helper (avoid circular import)
+// 简易内联 POST 辅助函数（避免循环引用）
 
-// Strip markdown for plain-text copy
+// 去除 Markdown 格式标记，提取纯文本用于复制
 function stripMarkdown(md) {
   if (!md) return ''
   let text = md
@@ -566,6 +573,7 @@ function stripMarkdown(md) {
   return text.trim()
 }
 
+// 发送按钮处理：生成中则停止，否则发送文本或文件
 function handleSend() {
   if (_sendingLock.value) return
   if (loadingConvIds.value.has(currentConvId.value)) {
@@ -581,6 +589,7 @@ function handleSend() {
 }
 
 // ---- 消息操作 ----
+// 复制消息内容到剪贴板（支持纯文本 / Markdown 两种格式）
 async function copyMessage(idx, asMarkdown = false) {
   const msg = messages.value[idx]
   if (!msg || !msg.content) return
@@ -594,11 +603,12 @@ async function copyMessage(idx, asMarkdown = false) {
   }
 }
 
+// 删除单条消息（用户消息连带删除对应 LLM 回复）
 async function deleteMessage(idx) {
   const msg = messages.value[idx]
   if (!msg) return
   messages.value.splice(idx, 1)
-  // Sync with backend
+  // 同步到后端数据库
   if (currentConvId.value) {
     try {
       const exportable = messages.value
@@ -615,15 +625,16 @@ async function deleteMessage(idx) {
   }
 }
 
+// 重新生成 LLM 回复：删除旧回复 → 重跑对应请求
 async function regenerateMessage(idx) {
   const msg = messages.value[idx]
   if (!msg || msg.role !== 'assistant') return
-  // Find preceding user message
+  // 查找对应的上一条用户消息
   if (idx > 0 && messages.value[idx - 1].role === 'user') {
     const userMsg = messages.value[idx - 1]
-    // Remove the pair
+    // 移除该对消息
     messages.value.splice(idx - 1, 2)
-    // Sync removal to backend before re-sending
+    // 重新生成前先同步删除到后端
     if (currentConvId.value) {
       try {
         const exportable = messages.value
@@ -639,10 +650,10 @@ async function regenerateMessage(idx) {
       } catch {}
     }
     if (userMsg.file) {
-      // It was a file upload - re-send
+      // 文件上传消息，重新发送文件
       pendingFile.value = userMsg.file
       input.value = ''
-      // Extract instruction if any
+      // 提取用户附加的文字指令
       const displayText = userMsg.content
       const fileMark = '📄 上传合同：' + userMsg.file.name
       if (displayText.startsWith(fileMark)) {
@@ -653,26 +664,28 @@ async function regenerateMessage(idx) {
       }
       sendFile(input.value.trim() || null)
     } else {
-      // Text message
+      // 普通文本消息
       input.value = userMsg.content
       sendText()
     }
   }
 }
 
+// 进入消息编辑模式：将原内容填入输入框
 function editMessage(idx) {
   const msg = messages.value[idx]
   if (!msg || msg.role !== 'user') return
   editingIndex.value = idx
   editingText.value = msg.content
 }
+// 保存编辑后的用户消息并同步到后端
 async function saveEdit(idx) {
   const msg = messages.value[idx]
   if (!msg) return
   msg.content = editingText.value
   editingIndex.value = -1
   editingText.value = ''
-  // Sync to backend
+  // 同步到后端
   if (currentConvId.value) {
     try {
       const exportable = messages.value
@@ -693,12 +706,13 @@ function cancelEdit() {
   editingText.value = ''
 }
 
+// 停止当前对话的 LLM 生成
 function stopGeneration() {
   if (abortController.value) {
     abortController.value.abort()
     abortController.value = null
   }
-  // Flush any pending typewriter content immediately
+  // 立即清空打字机队列中未输出的内容
   const last = messages.value[messages.value.length - 1]
   if (last && last.role === 'assistant') {
     flushTypewriter(last)
@@ -708,6 +722,7 @@ function stopGeneration() {
   }
 }
 
+// 发送文本消息：创建/复用对话 → 调用流式 API → 逐字输出
 async function sendText() {
   const query = input.value.trim()
   if (!query || loadingConvIds.value.has(currentConvId.value) || (currentConvId.value === null && loadingConvIds.value.has('__pending__'))) return
@@ -857,11 +872,13 @@ async function sendText() {
 }
 
 // ---- 文件选择 ----
+// 文件上传回调：暂存文件引用到 pendingFile
 function handleFileChange(file) {
   pendingFile.value = file.raw
 }
 
 // ---- 合同审查发送 ----
+// 发送文件审查：上传合同 → 调用合同审查流式 API → 展示结果
 async function sendFile(instruction = null) {
   if (!pendingFile.value || loadingConvIds.value.has(currentConvId.value) || (currentConvId.value === null && loadingConvIds.value.has('__pending__'))) return
   const _pendingId = currentConvId.value
@@ -1017,6 +1034,7 @@ async function sendFile(instruction = null) {
   }
 }
 
+// 更新钉住的高亮气泡位置
 function updatePinnedBubble() {
   if (!pinnedMark || !tooltipEl) return
   const rect = pinnedMark.getBoundingClientRect()
@@ -1035,11 +1053,12 @@ function updatePinnedBubble() {
   tooltipEl.style.top = top + 'px'
 }
 
+// 合同预览区点击事件：钉住/取消气包
 function onContractClick(e) {
   const mark = e.target.closest('mark')
   if (!mark) return
   if (pinnedMark === mark) {
-    // Unpin
+    // 取消钉住
     pinnedMark.classList.remove('pinned')
     pinnedMark = null
     if (tooltipEl) tooltipEl.style.opacity = '0'
@@ -1048,17 +1067,17 @@ function onContractClick(e) {
       pinnedScrollHandler = null
     }
   } else {
-    // Unpin previous
+    // 取消钉住 previous
     if (pinnedMark) {
       pinnedMark.classList.remove('pinned')
       if (pinnedScrollHandler) {
         document.querySelector('.preview-body')?.removeEventListener('scroll', pinnedScrollHandler)
       }
     }
-    // Pin this one
+    // 钉住当前标记
     pinnedMark = mark
     mark.classList.add('pinned')
-    // Show bubble immediately (bypass debounce)
+    // 立即显示气泡（跳过防抖）
     if (tooltipEl) tooltipEl.style.opacity = '1'
     onContractHover(e)
     pinnedScrollHandler = () => updatePinnedBubble()
@@ -1077,7 +1096,7 @@ function onDividerDragStart(e) {
   const totalW = appLayout.offsetWidth
   let rafId = null
 
-  // Disable text selection during drag
+  // 拖拽分割条时禁用文本选择
   document.body.style.userSelect = 'none'
   document.body.style.cursor = 'col-resize'
 
@@ -1104,10 +1123,11 @@ function onDividerDragStart(e) {
   document.addEventListener('mouseup', onUp)
 }
 
+// 合同预览区悬停事件：显示高亮气泡
 function onContractHover(e) {
   const mark = e.target.closest('mark')
   if (!mark || !tooltipEl) return
-  // If a different mark is pinned, don't steal the bubble
+  // 如果已有其他标记被钉住，不抢占气泡
   if (pinnedMark && pinnedMark !== mark) return
   const bubble = mark.dataset.bubble
   if (!bubble) return
@@ -1123,13 +1143,13 @@ function onContractHover(e) {
     hoverTimer = setTimeout(show, 200)
   }
   const rect = mark.getBoundingClientRect()
-  // Use preview-panel bounds as the visible area
+  // 以预览面板边界作为可视区域
   const panel = document.querySelector('.preview-panel')
   const panelRect = panel ? panel.getBoundingClientRect() : { left: 0, right: window.innerWidth }
   const tipW = tooltipEl.offsetWidth
   const tipH = tooltipEl.offsetHeight
   const gap = 8
-  // Center over mark, clamp within preview panel
+  // 居中于标记上方，限制在预览面板内
   let left = rect.left + rect.width / 2 - tipW / 2
   left = Math.max(panelRect.left + 8, Math.min(left, panelRect.right - tipW - 8))
   let top = rect.top - tipH - gap
@@ -1178,6 +1198,7 @@ onUnmounted(() => {
   }
 })
 
+// 将合同审查结果挂载到消息对象上
 function pushContractAttach(msg, data, file) {
   msg.contractRawText = data.raw_text || ''
   msg.contractRiskPoints = data.risk_points || []
@@ -1194,6 +1215,7 @@ function pushContractResult(data) {
   })
 }
 
+// 打开合同预览面板
 function openContractPreview(msg) {
   previewData.value = msg.contractData
   showPreview.value = true

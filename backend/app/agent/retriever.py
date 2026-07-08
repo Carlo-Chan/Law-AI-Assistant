@@ -1,5 +1,5 @@
 """
-Law knowledge base retriever - ChromaDB + Ollama
+法律知识库检索器 —— ChromaDB 向量检索 + BM25 关键词检索
 """
 import chromadb
 import os as _os
@@ -19,10 +19,11 @@ _bm25_docs = None
 
 
 def _bm25_tokenize(text):
-    """Chinese word segmentation for BM25"""
+    """中文分词，用于 BM25 关键词检索"""
     return list(jieba.cut(text))
 
 
+# 初始化 ChromaDB 客户端和集合（懒加载）
 def _init():
     global _client, _collection, _ef
     if _client is not None:
@@ -38,9 +39,8 @@ def _init():
         _build_bm25()
 
 
-
 def _build_bm25():
-    """Build BM25 index from all documents in ChromaDB"""
+    """从 ChromaDB 全量文档构建 BM25 关键词索引"""
     global _bm25, _bm25_docs
     try:
         all_data = _collection.get(include=["documents", "metadatas"])
@@ -62,18 +62,23 @@ def _build_bm25():
 
 
 class LawRetriever:
+    """法律知识库检索器：向量语义检索 + BM25 关键词检索 + 精确法条匹配"""
 
     def _embed(self, text: str):
+        """调用 Ollama 生成单条文本的嵌入向量"""
         try:
             emb = _ef([text])[0]
             return [float(x) for x in emb]
         except Exception as ex:
-            raise RuntimeError(f"Ollama embedding failed (is Ollama running?): {ex}")
+            raise RuntimeError(
+                f"Ollama embedding failed (is Ollama running?): {ex}")
 
     def search(self, query: str, top_k: int = 5):
+        """向量语义检索：返回 top_k 条最相似的法律条文"""
         try:
             q_emb = self._embed(query)
-            results = _collection.query(query_embeddings=[q_emb], n_results=top_k)
+            results = _collection.query(
+                query_embeddings=[q_emb], n_results=top_k)
         except Exception:
             return []
         docs = []
@@ -88,14 +93,15 @@ class LawRetriever:
         return docs
 
     def search_by_articles(self, article_nums, law_aliases=None):
-        """search by article number with optional law name filter"""
+        """精确法条号检索：按条文号精确匹配，支持法律名过滤"""
         docs = []
         for law_kw, num in article_nums:
             try:
                 results = _collection.get(where={"article": num})
                 if results.get("documents"):
                     for i in range(len(results["documents"])):
-                        meta = results["metadatas"][i] if results.get("metadatas") else {}
+                        meta = results["metadatas"][i] if results.get(
+                            "metadatas") else {}
                         doc_law = meta.get("law", "")
                         if law_kw and law_aliases:
                             target_law = law_aliases.get(law_kw, "")
@@ -110,8 +116,9 @@ class LawRetriever:
             except Exception:
                 continue
         return docs
+
     def search_bm25(self, query: str, top_k: int = 5):
-        """BM25 keyword-based search"""
+        """BM25 关键词检索：基于词频和逆文档频率打分"""
         global _bm25, _bm25_docs
         if _bm25 is None or not _bm25_docs:
             return []
@@ -119,7 +126,8 @@ class LawRetriever:
             tokens = _bm25_tokenize(query)
             scores = _bm25.get_scores(tokens)
             # Get top_k indices
-            top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+            top_indices = sorted(range(len(scores)),
+                                 key=lambda i: scores[i], reverse=True)[:top_k]
             docs = []
             for idx in top_indices:
                 if scores[idx] > 0:
@@ -144,6 +152,7 @@ class LawRetriever:
         return (chr(10)+chr(10)).join(parts)
 
     def search_as_context(self, query: str, top_k: int = 5) -> str:
+        """便捷方法：检索并直接返回格式化后的上下文字符串"""
         results = self.search(query, top_k)
         return self.format_results(results)
 
@@ -151,6 +160,7 @@ class LawRetriever:
 _retriever = None
 
 
+# 获取检索器单例
 def get_retriever():
     global _retriever
     _init()
@@ -159,5 +169,5 @@ def get_retriever():
     return _retriever
 
 
-# Eager init to avoid ChromaDB SharedSystemClient bug in async context
+# 预初始化，避免 ChromaDB 在异步上下文中出现 SharedSystemClient 错误
 _init()

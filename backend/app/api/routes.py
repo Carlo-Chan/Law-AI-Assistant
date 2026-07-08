@@ -18,6 +18,7 @@ router = APIRouter()
 # 数据模型
 # ============================================================
 
+
 class ChatRequest(BaseModel):
     query: str
     history: List[dict] = []
@@ -48,6 +49,7 @@ class ContractAnalysisResponse(BaseModel):
 # ============================================================
 # 路由
 # ============================================================
+
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
@@ -118,6 +120,7 @@ async def analyze_contract_stream(file: UploadFile = File(...)):
 # 会话历史
 # ============================================================
 
+
 class ConvResponse(BaseModel):
     code: int = 200
     data: dict | list
@@ -146,6 +149,7 @@ async def get_conversation(conv_id: str):
 class UpdateTitleRequest(BaseModel):
     title: str
 
+
 @router.post("/conversations/{conv_id}/title", response_model=ConvResponse)
 async def update_title(conv_id: str, req: UpdateTitleRequest):
     history.update_title(conv_id, req.title)
@@ -157,10 +161,12 @@ async def rebuild_conv(conv_id: str, payload: dict):
     history.rebuild_messages(conv_id, payload.get("messages", []))
     return ConvResponse(code=200, data={"ok": True})
 
+
 @router.delete("/conversations/{conv_id}", response_model=ConvResponse)
 async def delete_conversation(conv_id: str):
     history.delete_conversation(conv_id)
     return ConvResponse(code=200, data={"ok": True})
+
 
 class SaveMessagesRequest(BaseModel):
     user_content: str
@@ -169,17 +175,20 @@ class SaveMessagesRequest(BaseModel):
     contract_data: dict | None = None
     thinking_chain: list | None = None
 
+
 @router.post("/conversations/{conv_id}/messages", response_model=ConvResponse)
 async def save_messages(conv_id: str, req: SaveMessagesRequest):
     history.add_message(conv_id, "user", req.user_content, req.file_name)
-    history.add_message(conv_id, "assistant", req.assistant_content, contract_data=req.contract_data, thinking_chain=req.thinking_chain)
+    history.add_message(conv_id, "assistant", req.assistant_content,
+                        contract_data=req.contract_data, thinking_chain=req.thinking_chain)
     return ConvResponse(code=200, data={"ok": True})
+
 
 class GreetingRequest(BaseModel):
     content: str
+
 
 @router.post("/conversations/{conv_id}/greeting", response_model=ConvResponse)
 async def save_greeting(conv_id: str, req: GreetingRequest):
     history.add_message(conv_id, "assistant", req.content)
     return ConvResponse(code=200, data={"ok": True})
-

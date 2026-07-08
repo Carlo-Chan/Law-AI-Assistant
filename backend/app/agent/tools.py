@@ -1,7 +1,9 @@
 ﻿"""
 Agent 工具集：本地法律检索 + 元典智库 + 联网搜索 + 幻觉校验
 """
-import json, httpx, re
+import json
+import httpx
+import re
 from langchain_core.tools import tool
 from langchain_tavily._utilities import TavilySearchAPIWrapper
 
@@ -19,6 +21,7 @@ _httpx_client = httpx.Client(
 # 法条号转换工具
 _CN_NUMS = "零一二三四五六七八九十百千"
 
+
 def _arabic_to_chinese(num_str):
     """将 '585' 转为 '五百八十五'"""
     try:
@@ -31,7 +34,8 @@ def _arabic_to_chinese(num_str):
             result = (_CN_NUMS[tens] if tens > 1 else "") + "十"
             if ones > 0:
                 result += _CN_NUMS[ones]
-            if result.startswith("一十"): result = "十" + result[2:]
+            if result.startswith("一十"):
+                result = "十" + result[2:]
             return result
         elif n < 1000:
             hundreds = n // 100
@@ -55,7 +59,6 @@ def _arabic_to_chinese(num_str):
         return num_str
 
 
-
 _LAW_ALIASES = {
     "民法典": "中华人民共和国民法典",
     "刑法": "中华人民共和国刑法",
@@ -70,6 +73,7 @@ _LAW_ALIASES = {
     "反家庭暴力法": "中华人民共和国反家庭暴力法",
     "反电信网络诈骗法": "中华人民共和国反电信网络诈骗法",
 }
+
 
 def _extract_article_numbers(query):
     """extract article numbers with law name, returns [(law_keyword_or_None, article_cn), ...]"""
@@ -90,6 +94,8 @@ def _extract_article_numbers(query):
         article_cn = "第" + (_arabic_to_chinese(m) if m.isdigit() else m) + "条"
         results.append((law_keyword, article_cn))
     return results
+
+
 def search_laws(query: str) -> str:
     """search local law database"""
     retriever = get_retriever()
@@ -99,7 +105,8 @@ def search_laws(query: str) -> str:
     article_nums = _extract_article_numbers(query)
     if article_nums:
         try:
-            exact_results = retriever.search_by_articles(article_nums, _LAW_ALIASES)
+            exact_results = retriever.search_by_articles(
+                article_nums, _LAW_ALIASES)
         except Exception:
             pass
     seen = set()
@@ -131,7 +138,7 @@ YUANDIAN_REST = "https://open.chineselaw.com/open"
 
 
 def _yd_rest(endpoint: str, body: dict) -> dict:
-    """Call 元典 REST API."""
+    """调用元典智库 REST API 接口"""
     r = _httpx_client.post(
         f"{YUANDIAN_REST}/{endpoint}",
         json=body,
@@ -146,7 +153,7 @@ def _yd_rest(endpoint: str, body: dict) -> dict:
 
 
 def _yd_mcp(tool_name: str, arguments: dict) -> dict:
-    """Call 元典 MCP JSON-RPC."""
+    """调用元典智库 MCP JSON-RPC 接口"""
     import uuid
     r = _httpx_client.post(
         YUANDIAN_MCP,
@@ -234,6 +241,7 @@ def search_legal(query: str) -> str:
 # Tool 3: 法律幻觉校验
 # ============================================================
 
+
 @tool
 def verify_legal(text: str) -> str:
     """校验一段法律文本中的法条引用是否真实、时效性是否正确。
@@ -274,7 +282,7 @@ _tavily = TavilySearchAPIWrapper(tavily_api_key=settings.tavily_api_key)
 
 @tool
 def search_web(query: str) -> str:
-    """联网搜索，获取最新法律新闻、司法解释与案例。"""
+    """联网搜索（Tavily API），获取最新法律新闻、司法解释与案例。"""
     if not settings.tavily_api_key or "your-api-key" in settings.tavily_api_key:
         return "Tavily Search API Key 未配置。"
 
@@ -318,4 +326,3 @@ def search_web(query: str) -> str:
 # ============================================================
 
 AGENT_TOOLS = [search_laws, search_legal, verify_legal, search_web]
-

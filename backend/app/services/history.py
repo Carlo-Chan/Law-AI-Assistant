@@ -1,7 +1,10 @@
 """
 会话历史持久化存储 — SQLite
 """
-import sqlite3, json, os, uuid
+import sqlite3
+import json
+import os
+import uuid
 from datetime import datetime
 from pathlib import Path
 from functools import lru_cache
@@ -50,7 +53,9 @@ _init_db()
 # CRUD
 # ============================================================
 
+
 def list_conversations() -> list[dict]:
+    """获取全部会话列表，按更新时间倒序"""
     with _get_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM conversations ORDER BY updated_at DESC"
@@ -59,6 +64,7 @@ def list_conversations() -> list[dict]:
 
 
 def create_conversation(title: str = "新对话") -> dict:
+    """创建新会话，返回会话 ID 和元信息"""
     cid = uuid.uuid4().hex[:12]
     now = datetime.now().isoformat()
     with _get_conn() as conn:
@@ -70,8 +76,10 @@ def create_conversation(title: str = "新对话") -> dict:
 
 
 def get_conversation(conv_id: str) -> dict | None:
+    """获取单个会话详情，含全部消息记录"""
     with _get_conn() as conn:
-        conv = conn.execute("SELECT * FROM conversations WHERE id=?", (conv_id,)).fetchone()
+        conv = conn.execute(
+            "SELECT * FROM conversations WHERE id=?", (conv_id,)).fetchone()
         if not conv:
             return None
         msgs = conn.execute(
@@ -103,35 +111,47 @@ def add_message(conv_id: str, role: str, content: str = "",
         conn.execute(
             "INSERT INTO messages (conversation_id, role, content, file_name, contract_data, thinking_chain, created_at) VALUES (?,?,?,?,?,?,?)",
             (conv_id, role, content, file_name,
-             json.dumps(contract_data, ensure_ascii=False) if contract_data else None,
-             json.dumps(thinking_chain, ensure_ascii=False) if thinking_chain else None,
+             json.dumps(contract_data,
+                        ensure_ascii=False) if contract_data else None,
+             json.dumps(thinking_chain,
+                        ensure_ascii=False) if thinking_chain else None,
              now),
         )
-        # Update conversation timestamp
-        conn.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
+        # 更新对话时间戳
+        conn.execute(
+            "UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
 
 
 def update_title(conv_id: str, title: str):
+    """更新会话标题"""
     with _get_conn() as conn:
-        conn.execute("UPDATE conversations SET title=? WHERE id=?", (title, conv_id))
+        conn.execute("UPDATE conversations SET title=? WHERE id=?",
+                     (title, conv_id))
 
 
 def rebuild_messages(conv_id: str, messages: list[dict]):
     "Delete all messages for a conversation and re-insert from list"
     with _get_conn() as conn:
-        conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv_id,))
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id=?", (conv_id,))
         now = datetime.now().isoformat()
         for m in messages:
             conn.execute(
                 "INSERT INTO messages (conversation_id, role, content, file_name, contract_data, thinking_chain, created_at) VALUES (?,?,?,?,?,?,?)",
                 (conv_id, m.get("role", ""), m.get("content", ""), m.get("file_name"),
-                 json.dumps(m.get("contract_data"), ensure_ascii=False) if m.get("contract_data") else None,
-                 json.dumps(m.get("thinking_chain"), ensure_ascii=False) if m.get("thinking_chain") else None,
+                 json.dumps(m.get("contract_data"), ensure_ascii=False) if m.get(
+                     "contract_data") else None,
+                 json.dumps(m.get("thinking_chain"), ensure_ascii=False) if m.get(
+                     "thinking_chain") else None,
                  now),
             )
-        conn.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
+        conn.execute(
+            "UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
+
 
 def delete_conversation(conv_id: str):
+    """删除会话及其全部消息"""
     with _get_conn() as conn:
-        conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv_id,))
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id=?", (conv_id,))
         conn.execute("DELETE FROM conversations WHERE id=?", (conv_id,))
