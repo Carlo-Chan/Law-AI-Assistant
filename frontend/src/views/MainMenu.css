@@ -1,0 +1,31 @@
+/* 统一弹出菜单样式（去除箭头，圆角框） */
+.menu-pop {
+  padding: 0 !important;
+  min-width: 130px !important;
+  border-radius: 10px !important;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12) !important;
+  border: 1px solid #e8eaed !important;
+}
+.menu-pop .el-popper__arrow {
+  display: none !important;
+}
+.menu-pop .el-dropdown-menu {
+  padding: 4px 0 !important;
+  border-radius: 10px !important;
+  overflow: hidden !important;
+}
+.menu-pop .el-dropdown-menu__item {
+  font-size: 13px;
+  padding: 8px 8px;
+  margin: 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+}
+.menu-pop .el-dropdown-menu__item:hover {
+  background: #f5f7fa;
+}
+.menu-pop .el-dropdown-menu__item .el-icon {
+  font-size: 16px;
+}

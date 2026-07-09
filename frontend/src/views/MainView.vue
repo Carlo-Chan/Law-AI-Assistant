@@ -250,9 +250,8 @@ const draftInputs = {}  // 按对话ID记忆输入框草稿
 const draftFiles = {}    // 按对话ID记忆已选文件
 const pendingFile = ref(null)
 const loadingConvIds = ref(new Set())
-const _sendingLock = ref(false)
-const loading = computed(() => loadingConvIds.value.has(currentConvId.value))
-const abortController = ref(null)
+const loading = computed(() => loadingConvIds.value.has(currentConvId.value || "__pending__"))
+const abortControllers = ref({})
 const editingIndex = ref(-1)
 const editingText = ref('')
 const dropdownOpenIndex = ref(-1)
@@ -317,7 +316,7 @@ let pinnedMark = null
 let pinnedScrollHandler = null
 let hoverTimer = null
 
-const canSend = computed(() => (input.value.trim() || pendingFile.value) && !loadingConvIds.value.has(currentConvId.value))
+const canSend = computed(() => (input.value.trim() || pendingFile.value) && !loadingConvIds.value.has(currentConvId.value || "__pending__"))
 
 // ---- Mock 降级数据 ----
 const MOCK_POINTS = [
@@ -501,12 +500,11 @@ async function doSaveMessages(overrideConvId, userContent, assistantContent, fil
 
 // 发送按钮处理：生成中则停止，否则发送文本或文件
 function handleSend() {
-  if (_sendingLock.value) return
-  if (loadingConvIds.value.has(currentConvId.value)) {
-    stopGeneration()
+  const _key = currentConvId.value || "__pending__"
+  if (loadingConvIds.value.has(_key)) {
+    stopGeneration(currentConvId.value)
     return
   }
-  _sendingLock.value = true
   if (pendingFile.value) {
     sendFile(input.value.trim() || null)
   } else {
@@ -606,10 +604,11 @@ function cancelEdit() {
 }
 
 // 停止当前对话的 LLM 生成
-function stopGeneration() {
-  if (abortController.value) {
-    abortController.value.abort()
-    abortController.value = null
+function stopGeneration(convId) {
+  const targetId = convId || '__pending__'
+  if (abortControllers.value[targetId]) {
+    abortControllers.value[targetId].abort()
+    delete abortControllers.value[targetId]
   }
   // 立即清空打字机队列中未输出的内容
   const last = messages.value[messages.value.length - 1]
@@ -624,19 +623,22 @@ function stopGeneration() {
 // 发送文本消息：创建/复用对话 → 调用流式 API → 逐字输出
 async function sendText() {
   const query = input.value.trim()
-  if (!query || loadingConvIds.value.has(currentConvId.value) || (currentConvId.value === null && loadingConvIds.value.has('__pending__'))) return
-  const _pendingId = currentConvId.value
-  loadingConvIds.value.add(_pendingId || '__pending__')
+  if (!query) return
+  const _pendingId = currentConvId.value || '__pending__'
+  if (loadingConvIds.value.has(_pendingId)) return
+  loadingConvIds.value.add(_pendingId)
+
+  input.value = ""
+  if (currentConvId.value) { delete draftInputs[currentConvId.value] } else { delete draftInputs["__new__"] }
+  messages.value.push({ role: "user", content: query })
+  await scrollToBottom()
 
   await ensureConversation()
   const _convId = currentConvId.value
-  loadingConvIds.value.delete(_pendingId || '__pending__')
+  loadingConvIds.value.delete(_pendingId)
   loadingConvIds.value.add(_convId)
   activeStreamConvId.value = _convId
 
-  messages.value.push({ role: 'user', content: query })
-  input.value = ''
-  if (_convId) { delete draftInputs[_convId]; delete draftFiles[_convId] } else { delete draftInputs['__new__']; delete draftFiles['__new__'] }
   await scrollToBottom()
 
   try {
@@ -658,8 +660,8 @@ async function sendText() {
     messages.value.push(_asstMsg)
     const asstMsgProxy = messages.value[messages.value.length - 1]
     const _isActive = () => currentConvId.value === _convId
-    abortController.value = new AbortController()
-    await chatStream(query, history, abortController.value.signal, {
+    const controller = new AbortController(); abortControllers.value[_convId] = controller
+    await chatStream(query, history, controller.signal, {
       onThinking(label) {
         _localSteps.push({ type: 'tool', label })
         if (_isActive()) {
@@ -760,8 +762,7 @@ async function sendText() {
     messages.value.push({ role: 'assistant', content: '### ⚠️ 请求失败\n\n请确认后端服务已启动。' })
   } finally {
     loadingConvIds.value.delete(_convId)
-    _sendingLock.value = false
-    abortController.value = null
+    delete abortControllers.value[_convId]
     activeStreamConvId.value = null
     const newCache = { ...streamMessageCache.value }
     delete newCache[_convId]
@@ -779,9 +780,10 @@ function handleFileChange(file) {
 // ---- 合同审查发送 ----
 // 发送文件审查：上传合同 → 调用合同审查流式 API → 展示结果
 async function sendFile(instruction = null) {
-  if (!pendingFile.value || loadingConvIds.value.has(currentConvId.value) || (currentConvId.value === null && loadingConvIds.value.has('__pending__'))) return
-  const _pendingId = currentConvId.value
-  loadingConvIds.value.add(_pendingId || '__pending__')
+  if (!pendingFile.value) return
+  const _pendingId = currentConvId.value || '__pending__'
+  if (loadingConvIds.value.has(_pendingId)) return
+  loadingConvIds.value.add(_pendingId)
 
   const displayContent = instruction
     ? `📄 上传合同：${pendingFile.value.name}\n${instruction}`
@@ -790,6 +792,7 @@ async function sendFile(instruction = null) {
 
   await ensureConversation()
   const _convId = currentConvId.value
+  loadingConvIds.value.delete(_pendingId)
   loadingConvIds.value.add(_convId)
   activeStreamConvId.value = _convId
 
@@ -819,8 +822,8 @@ async function sendFile(instruction = null) {
     messages.value.push(_asstMsg)
     const asstMsgProxy = messages.value[messages.value.length - 1]
     const _isActive = () => currentConvId.value === _convId
-    abortController.value = new AbortController()
-    await analyzeContractStream(fileToSend, abortController.value.signal, {
+    const controller2 = new AbortController(); abortControllers.value[_convId] = controller2
+    await analyzeContractStream(fileToSend, controller2.signal, {
       onThinking(label) {
         _localSteps.push({ type: 'tool', label })
         if (_isActive()) {
@@ -924,7 +927,6 @@ async function sendFile(instruction = null) {
     messages.value.push({ role: 'assistant', content: '### ⚠️ 合同审查失败\n\n' + errMsg })
   } finally {
     loadingConvIds.value.delete(_convId)
-    _sendingLock.value = false
     activeStreamConvId.value = null
     const newCache = { ...streamMessageCache.value }
     delete newCache[_convId]
