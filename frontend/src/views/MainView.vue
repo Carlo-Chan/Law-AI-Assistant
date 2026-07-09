@@ -962,7 +962,10 @@ function onContractClick(e) {
     // 取消钉住
     pinnedMark.classList.remove('pinned')
     pinnedMark = null
-    if (tooltipEl) tooltipEl.style.opacity = '0'
+    if (tooltipEl) {
+      tooltipEl.style.opacity = '0'
+      tooltipEl.style.pointerEvents = 'none'
+    }
     if (pinnedScrollHandler) {
       document.querySelector('.preview-body')?.removeEventListener('scroll', pinnedScrollHandler)
       pinnedScrollHandler = null
@@ -1068,7 +1071,10 @@ function onContractLeave(e) {
   clearTimeout(hoverTimer)
   if (!tooltipEl || pinnedMark) return
   hoverTimer = setTimeout(() => {
-    if (!pinnedMark) tooltipEl.style.opacity = '0'
+    if (!pinnedMark) {
+      tooltipEl.style.opacity = '0'
+      tooltipEl.style.pointerEvents = 'none'
+    }
   }, 100)
 }
 
