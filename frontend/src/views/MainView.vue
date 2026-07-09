@@ -12,10 +12,10 @@
               <span v-if="searchText" class="search-clear-btn" @click.stop="searchText = ''">✕</span>
             </template>
           </el-input>
-          <el-button :icon="ArrowLeft" circle size="small" @click="sidebarOpen = false; forceSidebar = false" />
+          <el-button text size="small" class="sidebar-close-btn" @click="sidebarOpen = false; forceSidebar = false"><el-icon><Fold /></el-icon></el-button>
         </div>
-        <el-button type="primary" class="new-chat-btn" @click="newChat">
-          <el-icon><Plus /></el-icon> 开启新对话
+        <el-button class="new-chat-btn" @click="newChat">
+          <el-icon><Edit /></el-icon> 开启新对话
         </el-button>
         <div class="conv-list">
           <div
@@ -35,12 +35,12 @@
               @click.stop
               ref="renameInput"
             />
-            <el-dropdown v-if="renamingConvId !== conv.id" trigger="click" @command="(cmd) => cmd === 'rename' ? startRename(conv.id) : handleDeleteConv(conv.id)" @visible-change="(v) => sidebarMenuConvId = v ? conv.id : null">
+            <el-dropdown v-if="renamingConvId !== conv.id" trigger="click" popper-class="menu-pop" @command="(cmd) => cmd === 'rename' ? startRename(conv.id) : handleDeleteConv(conv.id)" @visible-change="(v) => sidebarMenuConvId = v ? conv.id : null">
               <span :class="['conv-more', { 'conv-more-visible': sidebarMenuConvId === conv.id }]" @click.stop><el-icon><MoreFilled /></el-icon></span>
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item command="rename">
-                    <el-icon><Edit /></el-icon> 重命名
+                    <el-icon><EditPen /></el-icon> 重命名
                   </el-dropdown-item>
                   <el-dropdown-item command="delete">
                     <el-icon><Delete /></el-icon> 删除
@@ -58,9 +58,9 @@
     <div class="chat-panel" :class="{ 'with-preview': showPreview && !isNarrow, 'hidden-narrow': showPreview && isNarrow }">
       <div class="chat-header">
         <template v-if="!sidebarVisible">
-          <el-button :icon="Expand" circle size="small" class="toggle-btn" @click="sidebarOpen = true; forceSidebar = isNarrow" />
-          <el-button size="small" class="new-chat-header-btn" @click="newChat">
-            <el-icon><Plus /></el-icon> 新对话
+          <el-button :icon="Expand" text size="small" class="toggle-btn" @click="sidebarOpen = true; forceSidebar = isNarrow" />
+          <el-button text size="small" class="new-chat-header-btn" @click="newChat" title="新对话">
+            <el-icon><Edit /></el-icon>
           </el-button>
         </template>
         <h2>AI 法律助手</h2>
@@ -90,15 +90,16 @@
             </div>
           </div>
           <template v-else>
-          <div v-if="msg.role === 'user' && msg.file" class="file-badge">
-            <el-icon><Document /></el-icon> {{ msg.file.name }}
+          <div v-if="msg.role === 'user' && msg.file" class="msg-file-card">
+            <div class="msg-file-card-icon"><el-icon><Document /></el-icon></div>
+            <span class="msg-file-card-name">{{ msg.file.name }}</span>
           </div>
           <!-- thinking chain: live during streaming, or persisted -->
           <div v-if="msg.role === 'assistant' && i === messages.length - 1 && loading" class="thinking-chain">
             <div class="thinking-summary" @click="messages[messages.length-1].thinkingExpanded = !messages[messages.length-1].thinkingExpanded">
               <span class="thinking-dot" />
               <span>{{ thinkingLabel }}</span>
-              <span class="thinking-arrow">{{ messages[messages.length-1].thinkingExpanded ? '∨' : '>' }}</span>
+              <span class="thinking-arrow"><el-icon :class="{ rotated: messages[messages.length-1].thinkingExpanded }"><ArrowRight /></el-icon></span>
             </div>
             <div v-if="messages[messages.length-1].thinkingExpanded" class="thinking-details">
               <div v-for="(step, si) in thinkingSteps" :key="si" class="thinking-step">
@@ -114,7 +115,7 @@
           <div v-else-if="msg.thinkingChain?.length" class="thinking-chain">
             <div class="thinking-summary persisted" @click="msg.thinkingExpanded = !msg.thinkingExpanded">
               <span>{{ msg.thinkingChain.filter(s => s.type === 'tool' || s.type === 'reasoning').length }} 次思考步骤</span>
-              <span class="thinking-arrow">{{ msg.thinkingExpanded ? '∨' : '>' }}</span>
+              <span class="thinking-arrow"><el-icon :class="{ rotated: msg.thinkingExpanded }"><ArrowRight /></el-icon></span>
             </div>
             <div v-if="msg.thinkingExpanded" class="thinking-details">
               <div v-for="(step, si) in msg.thinkingChain" :key="si" class="thinking-step">
@@ -129,8 +130,18 @@
           </div>
           <div class="message-content" v-html="renderMd(msg.content)" />
           </template>
+          <transition name="contract-card-pop">
+            <div v-if="msg.contractRawText" class="contract-card" @click="openContractPreview(msg)">
+              <div class="contract-card-icon"><el-icon><Document /></el-icon></div>
+              <div class="contract-card-body">
+                <span class="contract-card-title">合同原文 · 风险标注</span>
+                <span class="contract-card-hint">点击查看高亮标注</span>
+              </div>
+              <el-icon class="contract-card-arrow"><ArrowRight /></el-icon>
+            </div>
+          </transition>
           <div v-if="msg.role === 'assistant' && editingIndex === -1" :class="['msg-actions', 'msg-actions-left', { 'msg-actions-visible': dropdownOpenIndex === i }]">
-            <el-dropdown trigger="click" @command="(cmd) => copyMessage(i, cmd === 'md')" @visible-change="(v) => dropdownOpenIndex = v ? i : -1">
+            <el-dropdown trigger="click" popper-class="menu-pop" @command="(cmd) => copyMessage(i, cmd === 'md')" @visible-change="(v) => dropdownOpenIndex = v ? i : -1">
               <span class="action-btn" title="复制"><el-icon><CopyDocument /></el-icon></span>
               <template #dropdown>
                 <el-dropdown-menu>
@@ -143,7 +154,7 @@
             <span class="action-btn" title="删除" @click="deleteMessage(i)"><el-icon><Delete /></el-icon></span>
           </div>
           <div v-if="msg.role === 'user' && editingIndex !== i" :class="['msg-actions', 'msg-actions-right', { 'msg-actions-visible': dropdownOpenIndex === i }]">
-            <el-dropdown trigger="click" @command="(cmd) => copyMessage(i, cmd === 'md')" @visible-change="(v) => dropdownOpenIndex = v ? i : -1">
+            <el-dropdown trigger="click" popper-class="menu-pop" @command="(cmd) => copyMessage(i, cmd === 'md')" @visible-change="(v) => dropdownOpenIndex = v ? i : -1">
               <span class="action-btn" title="复制"><el-icon><CopyDocument /></el-icon></span>
               <template #dropdown>
                 <el-dropdown-menu>
@@ -152,32 +163,31 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-            <span class="action-btn" title="编辑" @click="editMessage(i)"><el-icon><Edit /></el-icon></span>
+            <span class="action-btn" title="编辑" @click="editMessage(i)"><el-icon><EditPen /></el-icon></span>
             <span class="action-btn" title="删除" @click="deleteMessage(i)"><el-icon><Delete /></el-icon></span>
-          </div>
-          <div v-if="msg.contractRawText" class="contract-actions">
-            <el-button type="primary" size="small" @click="openContractPreview(msg)">
-              <el-icon><View /></el-icon> 查看合同标注
-            </el-button>
           </div>
         </div>
       </div>
 
-      <div class="chat-input-area">
+      <div class="chat-input-anchor" :class="{ 'input-floating': messages.length === 0, 'has-file': pendingFile }"><div class="chat-input-area">
         <transition name="fade">
           <div v-if="showScrollBtn" class="scroll-bottom-btn" @click="scrollToBottom">
             <el-icon><ArrowDown /></el-icon>
           </div>
         </transition>
-        <div v-if="pendingFile" class="file-tag">
-          <el-tag closable @close="pendingFile = null">{{ pendingFile.name }}</el-tag>
-        </div>
         <div class="input-row">
-          <div class="input-wrapper">
+          <div class="input-wrapper" :class="{ 'is-sending': loading }">
+            <transition name="file-expand">
+              <div v-if="pendingFile" class="file-card">
+              <div class="file-card-icon"><el-icon><Document /></el-icon></div>
+              <span class="file-card-name">{{ pendingFile.name }}</span>
+              <el-button text size="small" class="file-card-close" @click="pendingFile = null"><el-icon><Close /></el-icon></el-button>
+            </div>
+            </transition>
             <el-input
               v-model="input"
               type="textarea"
-              :rows="2"
+              :rows="3"
               placeholder="输入法律问题，或上传合同文件进行审查..."
               :disabled="loading"
               @keydown.enter.exact.prevent="handleSend"
@@ -189,14 +199,14 @@
                 :on-change="handleFileChange"
                 accept=".pdf,.doc,.docx,.txt"
               >
-                <el-button :icon="Upload" circle size="small" :disabled="loading" />
+                <el-button text size="small" class="upload-btn" :disabled="loading"><el-icon><Plus /></el-icon></el-button>
               </el-upload>
-              <el-button v-if="!loading" type="primary" :icon="Promotion" size="small" :disabled="!canSend" @click="handleSend" />
-              <el-button v-else type="danger" :icon="VideoPause" size="small" @click="handleSend" />
+              <el-button v-if="!loading" size="small" :disabled="!canSend" @click="handleSend" class="send-btn"><el-icon><Top /></el-icon></el-button>
+              <el-button v-else size="small" @click="handleSend" class="stop-btn"><span class="stop-square"></span></el-button>
             </div>
           </div>
         </div>
-      </div>
+      </div></div>
       <div v-if="frostedOverlay" class="frosted-overlay" @click="sidebarOpen = false; forceSidebar = false" />
     </div>
 
@@ -225,7 +235,7 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause, CopyDocument, Refresh, Edit, MoreFilled, ArrowDown, Search, ChatDotRound, CircleCheck } from '@element-plus/icons-vue'
+import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause, CopyDocument, Refresh, Edit, MoreFilled, ArrowDown, Search, ChatDotRound, CircleCheck, Top, EditPen, Fold, ArrowRight } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, chatStream, analyzeContractStream, rebuildMessages } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
@@ -235,6 +245,7 @@ import { pinyin } from 'pinyin-pro'
 const messages = ref([])
 const input = ref('')
 const draftInputs = {}  // 按对话ID记忆输入框草稿
+const draftFiles = {}    // 按对话ID记忆已选文件
 const pendingFile = ref(null)
 const loadingConvIds = ref(new Set())
 const _sendingLock = ref(false)
@@ -422,6 +433,9 @@ async function newChat() {
   } else {
     draftInputs['__new__'] = input.value
   }
+  // 保存当前文件
+  if (currentConvId.value) { draftFiles[currentConvId.value] = pendingFile.value }
+  else { draftFiles['__new__'] = pendingFile.value }
   // 切换前保存当前对话中正在生成的消息（仅针对活跃流的对话）
   if (loading.value && activeStreamConvId.value && currentConvId.value === activeStreamConvId.value) {
     streamMessageCache.value = {
@@ -436,6 +450,7 @@ async function newChat() {
   previewData.value = null
   sidebarOpen.value = false
   forceSidebar.value = false
+  pendingFile.value = draftFiles['__new__'] || null
   input.value = draftInputs['__new__'] || ''
 }
 // 加载历史对话：缓存当前对话 → 恢复目标对话（缓存优先，否则查数据库）
@@ -447,6 +462,9 @@ async function loadConversation(id) {
   } else {
     draftInputs['__new__'] = input.value
   }
+  // 保存当前文件
+  if (currentConvId.value) { draftFiles[currentConvId.value] = pendingFile.value }
+  else { draftFiles['__new__'] = pendingFile.value }
   // 切换前保存正在生成的消息到缓存
   if (loadingConvIds.value.has(currentConvId.value) && currentConvId.value !== id) {
     streamMessageCache.value = {
@@ -463,12 +481,14 @@ async function loadConversation(id) {
     messages.value = cache.messages
     thinkingSteps.value = cache.thinkingSteps || []
     currentConvId.value = id
+    pendingFile.value = draftFiles[id] || null
     input.value = draftInputs[id] || ''
     return
   }
   try {
     const conv = await getConversation(id)
     currentConvId.value = id
+    pendingFile.value = draftFiles[id] || null
     input.value = draftInputs[id] || ''
     const msgs = conv.messages.map(m => {
       const msg = { role: m.role, content: m.content }
@@ -737,7 +757,7 @@ async function sendText() {
 
   messages.value.push({ role: 'user', content: query })
   input.value = ''
-  if (_convId) delete draftInputs[_convId]; else delete draftInputs['__new__']
+  if (_convId) { delete draftInputs[_convId]; delete draftFiles[_convId] } else { delete draftInputs['__new__']; delete draftFiles['__new__'] }
   await scrollToBottom()
 
   try {
@@ -902,7 +922,7 @@ async function sendFile(instruction = null) {
   const fileToSend = pendingFile.value
   pendingFile.value = null
   input.value = ''
-  if (_convId) delete draftInputs[_convId]; else delete draftInputs['__new__']
+  if (_convId) { delete draftInputs[_convId]; delete draftFiles[_convId] } else { delete draftInputs['__new__']; delete draftFiles['__new__'] }
   await scrollToBottom()
 
   try {
@@ -1186,7 +1206,7 @@ onMounted(() => {
   refreshConvList()
   tooltipEl = document.createElement('div')
   tooltipEl.className = 'contract-tooltip'
-  tooltipEl.style.cssText = 'display:block;opacity:0;pointer-events:none;transition:opacity 0.15s ease;position:fixed;z-index:9999;max-width:300px;padding:10px 14px;background:#fff;color:#303133;font-size:13px;line-height:1.6;border-radius:8px;white-space:normal;word-break:break-word;pointer-events:none;box-shadow:0 4px 20px rgba(0,0,0,0.15);font-family:"Microsoft YaHei",sans-serif;'
+  tooltipEl.style.cssText = 'display:block;opacity:0;pointer-events:none;transition:opacity 0.15s ease;position:fixed;z-index:9999;max-width:300px;padding:10px 14px;background:#fff;color:#303133;font-size:14px;line-height:1.6;border-radius:10px;white-space:normal;word-break:break-word;pointer-events:none;box-shadow:0 4px 20px rgba(0,0,0,0.15);font-family:"Microsoft YaHei",sans-serif;'
   document.body.appendChild(tooltipEl)
 })
 
@@ -1224,6 +1244,11 @@ function openContractPreview(msg) {
 </script>
 
 <style scoped>
+/* 滚动条 */
+.chat-messages::-webkit-scrollbar,.conv-list::-webkit-scrollbar,.preview-body::-webkit-scrollbar{width:6px}
+.chat-messages::-webkit-scrollbar-track,.conv-list::-webkit-scrollbar-track,.preview-body::-webkit-scrollbar-track{background:transparent}
+.chat-messages::-webkit-scrollbar-thumb,.conv-list::-webkit-scrollbar-thumb,.preview-body::-webkit-scrollbar-thumb{background:#d0d5dd;border-radius:3px}
+.chat-messages::-webkit-scrollbar-thumb:hover,.conv-list::-webkit-scrollbar-thumb:hover,.preview-body::-webkit-scrollbar-thumb:hover{background:#b0b5bd}
 .app-layout {
   display: flex;
   height: 100vh;
@@ -1237,63 +1262,87 @@ function openContractPreview(msg) {
   flex-direction: column;
   min-width: 400px;
   transition: all 0.3s;
+  position: relative;
 }
 .chat-panel.with-preview {
   flex: 0 0 calc(var(--split-ratio) * 100%);
   min-width: 280px;
 }
 .chat-header {
-  padding: 16px 24px;
-  background: #1a1a2e;
-  color: #fff;
+  position: relative;
+  z-index: 20;
+  padding: 10px 20px;
+  min-height: 56px;
+  box-sizing: border-box;
+  background: #fff;
+  color: #303133;
   display: flex;
-  align-items: baseline;
-  gap: 12px;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
+  border-bottom: 1px solid #ebeef5;
 }
 
-.toggle-btn { flex-shrink: 0; }
-.new-chat-header-btn { margin-left: 6px; flex-shrink: 0; }
+.toggle-btn{flex-shrink:0;width:36px;height:36px;padding:0!important;border-radius:8px}.toggle-btn:hover{background:#f0f2f5!important}.toggle-btn :deep(.el-icon){font-size:20px}.new-chat-header-btn{margin-left:0;margin-right:10px;flex-shrink:0;width:36px;height:36px;padding:0!important;border-radius:8px}.new-chat-header-btn:hover{background:#f0f2f5!important}.new-chat-header-btn :deep(.el-icon){font-size:20px}
 .chat-header h2 {
   margin: 0;
   font-size: 18px;
+  font-weight: 600;
 }
 .subtitle {
   font-size: 13px;
-  color: #a6adc8;
+  color: #909399;
+  margin-left: 20px;
 }
 
 /* 欢迎页 */
 .welcome-screen {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: #f7f8fa;
+  position: relative;
+  background: radial-gradient(circle at 20% 50%, rgba(64,158,255,0.03) 0%, transparent 50%), radial-gradient(circle at 80% 50%, rgba(64,158,255,0.03) 0%, transparent 50%), #f8f9fb;
 }
 .welcome-content {
+  position: absolute;
+  bottom: calc(50% + 120px);
+  left: 50%;
+  transform: translateX(-50%);
   text-align: center;
+  max-width: 480px;
+  padding: 0 24px;
 }
 .welcome-content h1 {
-  font-size: 28px;
-  font-weight: 600;
-  color: #303133;
-  margin: 0 0 12px;
+  font-size: 32px;
+  font-weight: 700;
+  color: #1d2129;
+  margin: 0 0 16px;
+  letter-spacing: -0.5px;
 }
 .welcome-content p {
   font-size: 15px;
-  color: #909399;
+  color: #86909c;
   margin: 0;
+  line-height: 1.6;
 }
 .chat-messages {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 20px;
-  background: #f5f7fa;
+  padding: 20px 20px 140px 20px;
+  background: #f8f9fb;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.chat-messages > * {
+  width: 100%;
+  max-width: 768px;
 }
 .message {
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 .message.user {
   display: flex;
@@ -1305,34 +1354,57 @@ function openContractPreview(msg) {
   flex-direction: column;
   align-items: flex-start;
 }
-.file-badge {
-  font-size: 13px;
-  color: #909399;
-  margin-bottom: 4px;
+.msg-file-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  background: #f5f7fa;
+  border: 1px solid #e8eaed;
+  border-radius: 10px;
+  max-width: 100%;
+}
+.msg-file-card-icon {
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  background: #e6f0ff;
+  border-radius: 8px;
+  color: #409eff;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.msg-file-card-name {
+  font-size: 14px;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .message-content {
   display: block;
   width: fit-content;
   max-width: 90%;
-  padding: 12px 16px;
-  border-radius: 10px;
+  padding: 10px 16px;
+  border-radius: 16px;
   line-height: 1.7;
-  font-size: 14px;
+  font-size: 15px;
   overflow-wrap: anywhere;
   overflow: hidden;
 }
 .message.user .message-content {
-  background: #409EFF;
-  color: #fff;
+  background: #dfedff;
+  color: #1d2129;
   max-width: 75%;
 }
 .message.assistant .message-content {
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
-  max-width: 90%;
+  background: transparent;
+  box-shadow: none;
+  max-width: 100%;
+  padding: 0 4px;
 }
 
 .loading-dots {
@@ -1356,15 +1428,93 @@ function openContractPreview(msg) {
   0%, 100% { opacity: 0.25; }
   50% { opacity: 1; }
 }
-/* prevent pre/code blocks from overflowing during streaming */
+/* 防止代码块在流式输出时溢出 */
 .message-content :deep(pre),
 .message-content :deep(code) {
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
-.contract-actions {
-  margin-top: 8px;
+.contract-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0 20px 0;
+  padding: 14px 16px;
+  background: #f5f7fa;
+  border: 1px solid #e8eaed;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+.contract-card:hover {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  border-color: #d0d5dd;
+}
+.contract-card-icon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e6f0ff;
+  border-radius: 10px;
+  color: #409eff;
+  font-size: 22px;
+  flex-shrink: 0;
+}
+.contract-card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+.contract-card-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: #303133;
+}
+.contract-card-hint {
+  font-size: 12px;
+  color: #909399;
+}
+.contract-card-arrow {
+  color: #c0c4cc;
+  font-size: 16px;
+  flex-shrink: 0;
+  transition: color 0.2s;
+}
+.contract-card:hover .contract-card-arrow {
+  color: #409eff;
+}
+
+.contract-card-pop-enter-active {
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.contract-card-pop-leave-active {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.contract-card-pop-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+  max-height: 0;
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.contract-card-pop-enter-to {
+  opacity: 1;
+  transform: translateY(0);
+  max-height: 80px;
+}
+.contract-card-pop-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+  max-height: 0;
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 /* 消息操作按钮 */
@@ -1421,8 +1571,8 @@ function openContractPreview(msg) {
 }
 .edit-actions {
   position: absolute;
-  bottom: 8px;
-  right: 10px;
+  bottom: 12px;
+  right: 14px;
   display: flex;
   gap: 6px;
 }
@@ -1442,7 +1592,7 @@ function openContractPreview(msg) {
   bottom: 100%;
   left: 50%;
   transform: translateX(-50%);
-  margin-bottom: 8px;
+  margin-bottom: 12px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.08);
   transition: all 0.15s;
   z-index: 10;
@@ -1462,12 +1612,50 @@ function openContractPreview(msg) {
 }
 
 /* 输入区 */
+.chat-input-anchor {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 16px;
+  z-index: 10;
+  transition: bottom 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.chat-input-anchor.input-floating {
+  bottom: 50%;
+}
 .chat-input-area {
-  padding: 12px 20px;
+  transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  padding: 0 20px;
+  background: transparent;
+  display: flex;
+  justify-content: center;
+}
+.chat-input-anchor.input-floating .chat-input-area {
+  transform: translateY(50%);
+}
+.chat-input-anchor.input-floating.has-file .chat-input-area {
+  transform: translateY(calc(50% + 30px));
+}
+.chat-input-area .input-row {
+  max-width: 800px;
+  width: 100%;
+}
+.chat-input-area .input-wrapper {
   background: #fff;
-  border-top: 1px solid #ebeef5;
-  flex-shrink: 0;
-  position: relative;
+  border-radius: 16px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  padding: 6px 10px 6px 14px;
+}
+.chat-input-area :deep(.el-textarea__inner) {
+  border: none !important;
+  box-shadow: none !important;
+}
+.chat-input-area :deep(.el-textarea__inner:focus) {
+  border: none !important;
+  box-shadow: none !important;
+}
+.input-wrapper.is-sending {
+  background: #f5f7fa;
 }
 .input-row {
   display: flex;
@@ -1481,12 +1669,13 @@ function openContractPreview(msg) {
 .input-wrapper :deep(.el-textarea__inner) {
   padding-bottom: 36px;
   resize: none;
+  font-size: 15px;
 }
 .input-actions {
   position: absolute;
-  bottom: 6px;
-  left: 8px;
-  right: 8px;
+  bottom: 12px;
+  left: 15px;
+  right: 14px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1494,40 +1683,115 @@ function openContractPreview(msg) {
 .input-row .el-textarea {
   flex: 1;
 }
-.file-tag {
-  margin-bottom: 8px;
-  display: flex;
+.send-btn{width:36px!important;height:36px!important;padding:0!important;border-radius:50%!important;border:none!important;background:#409eff!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;min-width:0!important;flex-shrink:0}
+.send-btn:hover{background:#337ecc!important}
+.send-btn.is-disabled{background:#a0cfff!important}
+.send-btn :deep(.el-icon){color:#fff;font-size:20px;font-weight:900;stroke:#fff;stroke-width:60;display:flex;align-items:center;justify-content:center;line-height:1}
+.send-btn :deep(.el-icon svg){stroke:#fff;stroke-width:48px}
+.stop-btn{width:36px!important;height:36px!important;padding:0!important;border-radius:50%!important;border:none!important;background:#e34d59!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;min-width:0!important;flex-shrink:0}
+.stop-btn:hover{background:#c93542!important}
+.stop-square{width:12px;height:12px;background:#fff;border-radius:2px}
+.upload-btn{width:32px!important;height:32px!important;padding:0!important;border:none!important;color:#909399!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;min-width:0!important;border-radius:50%!important;flex-shrink:0}
+.upload-btn:hover{color:#409eff!important;background:#ecf5ff!important}
+.upload-btn.is-disabled{color:#c0c4cc!important}
+.upload-btn .el-icon{font-size:18px}
+.file-card {
+  display: inline-flex;
   align-items: center;
   gap: 10px;
+  margin-bottom: 10px;
+  max-width: 100%;
+  padding: 10px 12px;
+  background: #f5f7fa;
+  border-radius: 10px;
+  font-size: 14px;
+}
+.file-card-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e6f0ff;
+  border-radius: 8px;
+  color: #409eff;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.file-card-name {
+  flex: 1;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-card-close {
+  width: 28px !important;
+  height: 28px !important;
+  padding: 0 !important;
+  border: none !important;
+  color: #909399 !important;
+  min-width: 0 !important;
+  flex-shrink: 0;
+}
+.file-card-close:hover {
+  color: #606266 !important;
+  background: rgba(0,0,0,0.05) !important;
+  border-radius: 50% !important;
 }
 
-/* Thinking Chain */
+.file-expand-enter-active {
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+.file-expand-leave-active {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+.file-expand-enter-from,
+.file-expand-leave-to {
+  opacity: 0;
+  max-height: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.file-expand-enter-to,
+.file-expand-leave-from {
+  opacity: 1;
+  max-height: 64px;
+}
+
+
+/* 思维链 */
 .thinking-chain {
-  margin-bottom: 8px;
+  margin-bottom: 12px;
 }
 .thinking-summary.persisted {
   color: #606266;
-  background: #f5f7fa;
+  background: transparent;
   cursor: pointer;
 }
 .thinking-summary.persisted:hover {
-  background: #ebeef5;
+  background: transparent;
+  color: #409eff;
 }
 .thinking-summary {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
-  background: #f0f4ff;
-  border-radius: 6px;
+  padding: 4px 0;
+  background: transparent;
+  border-radius: 0;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 15px;
   color: #4a6cf7;
   user-select: none;
+  line-height: 1.3;
 }
 .thinking-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   background: #4a6cf7;
   animation: thinking-pulse 1.2s infinite;
@@ -1538,28 +1802,44 @@ function openContractPreview(msg) {
 }
 .thinking-arrow {
   color: #909399;
-  font-size: 12px;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: baseline;
+}
+.thinking-arrow .el-icon {
+  font-size: 14px;
+  padding-top: 1px;
+  display: inline-block;
+  will-change: transform;
+  transition: transform 0.2s ease;
+}
+.thinking-arrow .el-icon.rotated {
+  transform: rotate(90deg);
 }
 .thinking-details {
   margin-top: 4px;
-  padding: 8px 12px;
-  background: #f8f9fc;
-  border-radius: 6px;
+  padding: 4px 0;
+  background: transparent;
+  border-radius: 0;
 }
 .thinking-step {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 6px;
   padding: 3px 0;
-  font-size: 12px;
+  font-size: 14px;
   color: #909399;
+  line-height: 1.4;
 }
+.thinking-step-icon :deep(svg) { vertical-align: middle; }
 .thinking-step-icon {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   color: #909399;
-  font-size: 13px;
+  font-size: 15px;
+  line-height: 1;
   padding-top: 2px;
 }
 .thinking-step-text {
@@ -1621,19 +1901,24 @@ function openContractPreview(msg) {
   min-width: 280px;
   display: flex;
   flex-direction: column;
-  background: #fff;
+  background: linear-gradient(180deg, #f8f9fb 0%, #fff 6%);
   border-left: 1px solid #ebeef5;
   box-shadow: -2px 0 12px rgba(0,0,0,0.06);
 }
 .preview-header {
-  padding: 12px 16px;
+  padding: 10px 20px;
+  min-height: 56px;
+  box-sizing: border-box;
   display: flex;
   justify-content: space-between;
   align-items: center;
   border-bottom: 1px solid #ebeef5;
-  font-weight: 600;
-  font-size: 14px;
   flex-shrink: 0;
+}
+.preview-header span {
+  font-size: 18px;
+  font-weight: 600;
+  color: #303133;
 }
 .preview-body {
   flex: 1;
@@ -1642,7 +1927,7 @@ function openContractPreview(msg) {
 }
 .contract-text {
   font-family: 'SimSun', '宋体', serif;
-  font-size: 15px;
+  font-size: 17px;
   line-height: 2.2;
   white-space: pre-wrap;
 }
@@ -1663,18 +1948,18 @@ function openContractPreview(msg) {
   border-top: 1px solid #ebeef5;
   display: flex;
   gap: 18px;
-  font-size: 12px;
+  font-size: 14px;
   color: #909399;
   flex-shrink: 0;
 }
 .legend-item { display: flex; align-items: center; gap: 4px; }
-.legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+.legend-dot { width: 12px; height: 12px; border-radius: 2px; }
 .legend-dot.high   { background: rgba(220, 80, 80, 0.85); }
 .legend-dot.medium { background: rgba(245, 195, 50, 0.85); }
 .legend-dot.low    { background: rgba(144, 147, 153, 0.65); }
 
 /* 右侧滑入动画 */
-.slide-enter-active, .slide-leave-active { transition: all 0.3s ease; }
+.slide-enter-active, .slide-leave-active { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
 .slide-enter-from, .slide-leave-to { transform: translateX(100%); opacity: 0; }
 
 /* ---- 响应式：窄屏 ---- */
@@ -1700,8 +1985,8 @@ function openContractPreview(msg) {
 /* ---- 侧边栏 ---- */
 .sidebar {
   width: 260px;
-  background: #f8f9fb;
-  border-right: 1px solid #e4e7ed;
+  background: #f5f6f8;
+  border-right: 1px solid #e8eaed;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -1715,14 +2000,20 @@ function openContractPreview(msg) {
   border-bottom: 1px solid #ebeef5;
 }
 .sidebar-header .el-input { flex: 1; }
+.sidebar-close-btn{flex-shrink:0;width:36px;height:36px;padding:0!important;border-radius:8px}.sidebar-close-btn:hover{background:#e8ecf1!important}.sidebar-close-btn :deep(.el-icon){font-size:20px}
 .search-input {
   --el-input-height: 36px;
   --el-input-inner-height: 36px;
+}
+.search-input :deep(.el-input__wrapper) {
+  border-radius: 10px;
+  box-shadow: none;
 }
 .search-icon {
   margin-left: 0px;
   margin-right: 8px;
   color: #909399;
+  font-size: 18px;
 }
 .search-clear-btn {
   font-size: 14px;
@@ -1737,6 +2028,22 @@ function openContractPreview(msg) {
 .new-chat-btn {
   margin: 12px;
   width: calc(100% - 24px);
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid #e4e7ed;
+  background: #fff;
+  color: #303133;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  font-size: 14px;
+}
+.new-chat-btn:hover {
+  background: #f0f2f5;
+  color: #303133;
+  border-color: #dcdfe6;
+}
+.new-chat-btn :deep(.el-icon) {
+  font-size: 18px;
+  margin-right: 10px;
 }
 .conv-list {
   flex: 1;
@@ -1747,16 +2054,22 @@ function openContractPreview(msg) {
   display: flex;
   align-items: center;
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   margin-bottom: 2px;
   transition: background 0.15s;
+  position: relative;
 }
 .conv-item:hover { background: #e8ecf1; }
-.conv-item.active { background: #d4dce8; }
+.conv-item.active {
+  background: #e2e8f0;
+  border-left: 3px solid #409eff;
+  padding-left: 9px;
+  border-radius: 0 8px 8px 0;
+}
 .conv-title {
   flex: 1;
-  font-size: 13px;
+  font-size: 14px;
   color: #303133;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1814,7 +2127,7 @@ function openContractPreview(msg) {
 /* 侧边栏滑入动画 */
 .sidebar-slide-enter-active,
 .sidebar-slide-leave-active {
-  transition: width 0.25s ease, opacity 0.25s ease;
+  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
 }
 .sidebar-slide-enter-from,
@@ -1841,10 +2154,6 @@ function openContractPreview(msg) {
   box-shadow: 4px 0 20px rgba(0,0,0,0.15);
 }
 
-.chat-panel {
-  position: relative;
-}
-
 
 .contract-text :deep(mark.pinned) {
   outline: 2px solid #409EFF;
@@ -1852,4 +2161,38 @@ function openContractPreview(msg) {
   filter: brightness(0.85);
 }
 
+</style>
+
+<style>
+/* 统一弹出菜单样式（去除箭头，圆角框） */
+.menu-pop {
+  padding: 0 !important;
+  min-width: 130px !important;
+  border-radius: 10px !important;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12) !important;
+  border: 1px solid #e8eaed !important;
+}
+.menu-pop .el-popper__arrow {
+  display: none !important;
+}
+.menu-pop .el-dropdown-menu {
+  padding: 4px 0 !important;
+  border-radius: 10px !important;
+  overflow: hidden !important;
+}
+.menu-pop .el-dropdown-menu__item {
+  font-size: 13px;
+  padding: 8px 8px;
+  margin: 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+}
+.menu-pop .el-dropdown-menu__item:hover {
+  background: #f5f7fa;
+}
+.menu-pop .el-dropdown-menu__item .el-icon {
+  font-size: 16px;
+}
 </style>
