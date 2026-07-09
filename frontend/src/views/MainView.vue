@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="app-layout" :style="{ '--split-ratio': splitRatio }">
     <!-- 侧边栏 -->
     <transition name="sidebar-slide">
@@ -94,7 +94,7 @@
             <div class="msg-file-card-icon"><el-icon><Document /></el-icon></div>
             <span class="msg-file-card-name">{{ msg.file.name }}</span>
           </div>
-          <!-- thinking chain: live during streaming, or persisted -->
+          <!-- 思维链：流式输出时实时展示，或持久化保存 -->
           <div v-if="msg.role === 'assistant' && i === messages.length - 1 && loading" class="thinking-chain">
             <div class="thinking-summary" @click="messages[messages.length-1].thinkingExpanded = !messages[messages.length-1].thinkingExpanded">
               <span class="thinking-dot" />
@@ -236,10 +236,12 @@
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause, CopyDocument, Refresh, Edit, MoreFilled, ArrowDown, Search, ChatDotRound, CircleCheck, Top, EditPen, Fold, ArrowRight } from '@element-plus/icons-vue'
-import { marked } from 'marked'
 import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, chatStream, analyzeContractStream, rebuildMessages } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
-import { pinyin } from 'pinyin-pro'
+import { appendToTypewriter, flushTypewriter } from '../composables/useTypewriter'
+import { toExportable } from '../composables/messageExport'
+import { pinyinMatch, fuzzyMatch } from '../composables/useSearch'
+import { stripMarkdown, cleanFences, renderMd } from '../composables/useTextTools'
 
 // ---- 状态 ----
 const messages = ref([])
@@ -290,27 +292,6 @@ const forceSidebar = ref(false)
 const sidebarFits = ref(true)
 const sidebarVisible = computed(() => sidebarOpen.value && (sidebarFits.value || forceSidebar.value))
 const frostedOverlay = computed(() => isNarrow.value && forceSidebar.value && sidebarOpen.value)
-// 拼音模糊搜索：支持全拼、首字母、混合
-function pinyinMatch(title, query) {
-  const titlePinyin = pinyin(title, { toneType: 'none', type: 'array' }).join('').toLowerCase()
-  const titleInitials = pinyin(title, { toneType: 'none', type: 'array' }).map(s => s[0]).join('').toLowerCase()
-  return titlePinyin.includes(query) || titleInitials.includes(query)
-}
-// 模糊匹配：query 的每个字符按顺序在 title（或 title 对应拼音）中出现即可
-function fuzzyMatch(title, query) {
-  // 先在原标题上做字符级模糊匹配
-  let ti = 0
-  for (let qi = 0; qi < query.length; qi++) {
-    const qch = query[qi]
-    let found = false
-    while (ti < title.length) {
-      if (title[ti] === qch) { found = true; ti++; break }
-      ti++
-    }
-    if (!found) return false
-  }
-  return true
-}
 const filteredConvs = computed(() => {
   if (!searchText.value) return conversations.value
   const q = searchText.value.toLowerCase()
@@ -344,67 +325,6 @@ const MOCK_POINTS = [
   { quote: '每日按租金总额的 5% 支付违约金', level: 'high', bubble_text: '违约金比例畸高（日 5% 即月 150%），建议修改为 0.05%/日。' },
   { quote: '租赁期间的物业费由乙方承担', level: 'low', bubble_text: '属于常规条款，建议明确具体的物业费单价。' },
 ]
-
-// ---- 打字机队列机制 ----
-const typewriters = new WeakMap()
-
-function appendToTypewriter(msg, chunk, isActiveFn) {
-  if (msg.content === LOADING_DOTS) {
-    msg.content = ''
-  }
-  if (typeof msg.fullContent !== 'string') {
-    msg.fullContent = msg.content || ''
-  }
-  msg.fullContent += chunk
-
-  let tw = typewriters.get(msg)
-  if (!tw) {
-    tw = { queue: '', timer: null }
-    typewriters.set(msg, tw)
-  }
-  tw.queue += chunk
-
-  if (!tw.timer) {
-    tw.timer = setInterval(() => {
-      if (tw.queue.length > 0) {
-        let chars = 1
-        if (tw.queue.length > 200) chars = 10
-        else if (tw.queue.length > 50) chars = 4
-        else if (tw.queue.length > 20) chars = 2
-
-        msg.content += tw.queue.slice(0, chars)
-        tw.queue = tw.queue.slice(chars)
-
-        if (isActiveFn && isActiveFn()) {
-          scrollToBottom()
-        }
-      } else {
-        clearInterval(tw.timer)
-        tw.timer = null
-      }
-    }, 30)
-  }
-}
-
-function flushTypewriter(msg) {
-  const tw = typewriters.get(msg)
-  if (tw) {
-    if (tw.timer) clearInterval(tw.timer)
-    if (typeof msg.fullContent === 'string') {
-      msg.content = msg.fullContent
-    }
-    typewriters.delete(msg)
-  }
-}
-
-// ---- 渲染 ----
-function cleanFences(text) {
-  return text.replace(/```\w*\s*\n?/g, '').replace(/```/g, '')
-}
-function renderMd(text) {
-  if (!text) return ''
-  return marked.parse(text)
-}
 
 const highlightedContract = computed(() => {
   if (!previewData.value) return ''
@@ -579,20 +499,6 @@ async function doSaveMessages(overrideConvId, userContent, assistantContent, fil
 }
 // 简易内联 POST 辅助函数（避免循环引用）
 
-// 去除 Markdown 格式标记，提取纯文本用于复制
-function stripMarkdown(md) {
-  if (!md) return ''
-  let text = md
-  text = text.replace(/^#{1,6}\s+/gm, '')
-  text = text.replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
-  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-  text = text.replace(/`{1,3}[^`]*`{1,3}/g, '')
-  text = text.replace(/^[*-]\s+/gm, '')
-  text = text.replace(/^>\s+/gm, '')
-  text = text.replace(/\n{3,}/g, '\n\n')
-  return text.trim()
-}
-
 // 发送按钮处理：生成中则停止，否则发送文本或文件
 function handleSend() {
   if (_sendingLock.value) return
@@ -631,16 +537,7 @@ async function deleteMessage(idx) {
   // 同步到后端数据库
   if (currentConvId.value) {
     try {
-      const exportable = messages.value
-        .filter(m => m.role === 'user' || m.role === 'assistant')
-        .map(m => ({
-          role: m.role,
-          content: m.content,
-          file_name: m.file?.name || null,
-          contract_data: m.contractData || null,
-          thinking_chain: m.thinkingChain || null,
-        }))
-      await rebuildMessages(currentConvId.value, exportable)
+      await rebuildMessages(currentConvId.value, toExportable(messages.value))
     } catch {}
   }
 }
@@ -657,16 +554,7 @@ async function regenerateMessage(idx) {
     // 重新生成前先同步删除到后端
     if (currentConvId.value) {
       try {
-        const exportable = messages.value
-          .filter(m => m.role === 'user' || m.role === 'assistant')
-          .map(m => ({
-            role: m.role,
-            content: m.content,
-            file_name: m.file?.name || null,
-            contract_data: m.contractData || null,
-            thinking_chain: m.thinkingChain || null,
-          }))
-        await rebuildMessages(currentConvId.value, exportable)
+        await rebuildMessages(currentConvId.value, toExportable(messages.value))
       } catch {}
     }
     if (userMsg.file) {
@@ -708,16 +596,7 @@ async function saveEdit(idx) {
   // 同步到后端
   if (currentConvId.value) {
     try {
-      const exportable = messages.value
-        .filter(m => m.role === 'user' || m.role === 'assistant')
-        .map(m => ({
-          role: m.role,
-          content: m.content,
-          file_name: m.file?.name || null,
-          contract_data: m.contractData || null,
-          thinking_chain: m.thinkingChain || null,
-        }))
-      await rebuildMessages(currentConvId.value, exportable)
+      await rebuildMessages(currentConvId.value, toExportable(messages.value))
     } catch {}
   }
 }
@@ -848,7 +727,7 @@ async function sendText() {
           if (asstMsgProxy.fullContent && (!asstMsgProxy.content || asstMsgProxy.content === LOADING_DOTS)) {
             asstMsgProxy.content = asstMsgProxy.fullContent
           }
-          appendToTypewriter(asstMsgProxy, content, _isActive)
+          appendToTypewriter(asstMsgProxy, content, _isActive, scrollToBottom)
         } else {
           if (asstMsgProxy.content === LOADING_DOTS) asstMsgProxy.content = ''
           if (typeof asstMsgProxy.fullContent !== 'string') asstMsgProxy.fullContent = asstMsgProxy.content || ''
@@ -1009,7 +888,7 @@ async function sendFile(instruction = null) {
           if (asstMsgProxy.fullContent && (!asstMsgProxy.content || asstMsgProxy.content === LOADING_DOTS)) {
             asstMsgProxy.content = asstMsgProxy.fullContent
           }
-          appendToTypewriter(asstMsgProxy, content, _isActive)
+          appendToTypewriter(asstMsgProxy, content, _isActive, scrollToBottom)
         } else {
           if (asstMsgProxy.content === LOADING_DOTS) asstMsgProxy.content = ''
           if (typeof asstMsgProxy.fullContent !== 'string') asstMsgProxy.fullContent = asstMsgProxy.content || ''
@@ -1098,7 +977,10 @@ function onContractClick(e) {
     pinnedMark = mark
     mark.classList.add('pinned')
     // 立即显示气泡（跳过防抖）
-    if (tooltipEl) tooltipEl.style.opacity = '1'
+    if (tooltipEl) {
+      tooltipEl.style.opacity = '1'
+      tooltipEl.style.pointerEvents = 'auto'
+    }
     onContractHover(e)
     pinnedScrollHandler = () => updatePinnedBubble()
     document.querySelector('.preview-body')?.addEventListener('scroll', pinnedScrollHandler, { passive: true })
@@ -1195,8 +1077,12 @@ onMounted(() => {
     nextTick(checkNarrow)
     if (!val && pinnedMark) {
       pinnedMark.classList.remove("pinned")
+      if (tooltipEl) tooltipEl.style.pointerEvents = "none"
       pinnedMark = null
-      if (tooltipEl) tooltipEl.style.opacity = "0"
+      if (tooltipEl) {
+      tooltipEl.style.opacity = "0"
+      tooltipEl.style.pointerEvents = "none"
+    }
       if (pinnedScrollHandler) {
         document.querySelector(".preview-body")?.removeEventListener("scroll", pinnedScrollHandler)
         pinnedScrollHandler = null
@@ -1206,7 +1092,7 @@ onMounted(() => {
   refreshConvList()
   tooltipEl = document.createElement('div')
   tooltipEl.className = 'contract-tooltip'
-  tooltipEl.style.cssText = 'display:block;opacity:0;pointer-events:none;transition:opacity 0.15s ease;position:fixed;z-index:9999;max-width:300px;padding:10px 14px;background:#fff;color:#303133;font-size:14px;line-height:1.6;border-radius:10px;white-space:normal;word-break:break-word;pointer-events:none;box-shadow:0 4px 20px rgba(0,0,0,0.15);font-family:"Microsoft YaHei",sans-serif;'
+  tooltipEl.style.cssText = 'display:block;opacity:0;pointer-events:none;transition:opacity 0.15s ease;position:fixed;z-index:9999;max-width:300px;padding:10px 14px;background:#fff;color:#303133;font-size:14px;line-height:1.6;border-radius:10px;white-space:normal;word-break:break-word;box-shadow:0 4px 20px rgba(0,0,0,0.15);font-family:"Microsoft YaHei",sans-serif;'
   document.body.appendChild(tooltipEl)
 })
 
@@ -1392,7 +1278,6 @@ function openContractPreview(msg) {
   border-radius: 16px;
   line-height: 1.7;
   font-size: 15px;
-  overflow-wrap: anywhere;
   overflow: hidden;
 }
 .message.user .message-content {
@@ -1405,6 +1290,7 @@ function openContractPreview(msg) {
   box-shadow: none;
   max-width: 100%;
   padding: 0 4px;
+  user-select: text;
 }
 
 .loading-dots {
@@ -1824,13 +1710,14 @@ function openContractPreview(msg) {
 }
 .thinking-step {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   padding: 3px 0;
   font-size: 14px;
   color: #909399;
   line-height: 1.4;
 }
+.thinking-step-icon :deep(svg) { vertical-align: middle; }
 .thinking-step-icon :deep(svg) { vertical-align: middle; }
 .thinking-step-icon {
   flex-shrink: 0;
@@ -1839,8 +1726,8 @@ function openContractPreview(msg) {
   justify-content: center;
   color: #909399;
   font-size: 15px;
-  line-height: 1;
-  padding-top: 2px;
+  line-height: 1.4;
+  padding-top: 3px;
 }
 .thinking-step-text {
   word-break: break-all;

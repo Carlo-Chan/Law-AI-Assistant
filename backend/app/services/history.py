@@ -50,7 +50,7 @@ _init_db()
 
 
 # ============================================================
-# CRUD
+# 增删改查
 # ============================================================
 
 
@@ -130,7 +130,7 @@ def update_title(conv_id: str, title: str):
 
 
 def rebuild_messages(conv_id: str, messages: list[dict]):
-    "Delete all messages for a conversation and re-insert from list"
+    """删除指定会话的所有消息并从列表重新插入"""
     with _get_conn() as conn:
         conn.execute(
             "DELETE FROM messages WHERE conversation_id=?", (conv_id,))

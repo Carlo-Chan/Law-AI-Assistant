@@ -1,4 +1,4 @@
-﻿"""
+"""
 Agent 工具集：本地法律检索 + 元典智库 + 联网搜索 + 幻觉校验
 """
 import json
@@ -96,8 +96,9 @@ def _extract_article_numbers(query):
     return results
 
 
+@tool
 def search_laws(query: str) -> str:
-    """search local law database"""
+    """检索本地法律知识库（向量 + BM25 + 精确法条匹配三路召回）。"""
     retriever = get_retriever()
     vector_results = retriever.search(query, top_k=8)
     bm25_results = retriever.search_bm25(query, top_k=8)

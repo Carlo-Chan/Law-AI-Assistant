@@ -125,7 +125,7 @@ class LawRetriever:
         try:
             tokens = _bm25_tokenize(query)
             scores = _bm25.get_scores(tokens)
-            # Get top_k indices
+            # 获取 top_k 个结果的索引
             top_indices = sorted(range(len(scores)),
                                  key=lambda i: scores[i], reverse=True)[:top_k]
             docs = []

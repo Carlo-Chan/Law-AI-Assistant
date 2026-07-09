@@ -1,5 +1,8 @@
 ﻿/**
  * 后端 API 封装
+ *
+ * 重构要点：
+ * - 抽取 _readSSEStream 公共函数，消除 chatStream / analyzeContractStream 的重复 SSE 读取逻辑
  */
 import axios from 'axios'
 
@@ -47,6 +50,7 @@ export async function deleteConversation(id) {
   const { data } = await api.delete(`/conversations/${id}`)
   return data.data
 }
+
 /** 保存消息到会话 */
 export async function saveMessages(convId, userContent, assistantContent, fileName = null, contractData = null, thinkingChain = null) {
   await api.post(`/conversations/${convId}/messages`, {
@@ -62,48 +66,56 @@ export async function saveMessages(convId, userContent, assistantContent, fileNa
 export async function updateConvTitle(convId, title) {
   await api.post(`/conversations/${convId}/title`, { title })
 }
+
 /** 重建会话消息（用于删除单条消息后同步） */
 export async function rebuildMessages(convId, messages) {
   await api.post(`/conversations/${convId}/rebuild`, { messages })
 }
+
 /** 保存问候语 */
 export async function saveGreeting(convId, content) {
   await api.post(`/conversations/${convId}/greeting`, { content })
 }
 
-
-
-export async function chatStream(query, history, signal, { onThinking, onReasoning, onReasoningToken, onToolChunk, onToolResult, onToken, onDone, onError }) {
+/**
+ * 公共 SSE 流式读取函数
+ *
+ * 向指定 URL 发送请求，读取 SSE 响应流，按事件类型分发到对应回调。
+ * 支持 AbortSignal 中断生成。
+ *
+ * @param {string} url  SSE 端点 URL
+ * @param {RequestInit} fetchOptions  fetch 请求选项（method/body/headers）
+ * @param {AbortSignal} signal  中断信号
+ * @param {object} callbacks  事件回调集合
+ */
+async function _readSSEStream(url, fetchOptions, signal, {
+  onThinking, onReasoning, onReasoningToken, onToolChunk, onToolResult, onToken, onDone, onError,
+}) {
   try {
-    const res = await fetch("/api/chat/stream", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, history }),
-      signal,
-    })
+    const res = await fetch(url, { ...fetchOptions, signal })
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
-    let buf = ""
+    let buf = ''
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
       buf += decoder.decode(value, { stream: true })
-      const lines = buf.split("\n")
-      buf = lines.pop() || ""
+      const lines = buf.split('\n')
+      buf = lines.pop() || ''
       for (const line of lines) {
-        if (line.startsWith("data: ")) {
+        if (line.startsWith('data: ')) {
           try {
             const evt = JSON.parse(line.slice(6))
             switch (evt.type) {
-              case "thinking": onThinking?.(evt.label); break
-              case "thinking_reasoning": onReasoning?.(evt.content); break
-              case "thinking_reasoning_token": await onReasoningToken?.(evt.content); break
-              case "tool_result_chunk": onToolChunk?.(evt.tool, evt.content, evt.first); break
-              case "tool_result_end": break
-              case "tool_result": onToolResult?.(evt.tool, evt.output); break
-              case "token": await onToken?.(evt.content); break
-              case "done": onDone?.(evt); break
-              case "error": onError?.(evt.message); break
+              case 'thinking': onThinking?.(evt.label); break
+              case 'thinking_reasoning': onReasoning?.(evt.content); break
+              case 'thinking_reasoning_token': await onReasoningToken?.(evt.content); break
+              case 'tool_result_chunk': onToolChunk?.(evt.tool, evt.content, evt.first); break
+              case 'tool_result_end': break
+              case 'tool_result': onToolResult?.(evt.tool, evt.output); break
+              case 'token': await onToken?.(evt.content); break
+              case 'done': onDone?.(evt); break
+              case 'error': onError?.(evt.message); break
             }
           } catch {}
         }
@@ -113,53 +125,26 @@ export async function chatStream(query, history, signal, { onThinking, onReasoni
     if (e.name === 'AbortError') {
       onDone?.({ aborted: true })
     } else {
-      onError?.(e.message || "Network error")
+      onError?.(e.message || 'Network error')
     }
   }
 }
 
-export async function analyzeContractStream(file, signal, { onThinking, onReasoning, onReasoningToken, onToolChunk, onToolResult, onToken, onDone, onError }) {
-  try {
-    const formData = new FormData()
-    formData.append("file", file)
-    const res = await fetch("/api/analyze_contract/stream", {
-      method: "POST",
-      body: formData,
-      signal,
-    })
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ""
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      const lines = buf.split("\n")
-      buf = lines.pop() || ""
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          try {
-            const evt = JSON.parse(line.slice(6))
-            switch (evt.type) {
-              case "thinking": onThinking?.(evt.label); break
-              case "thinking_reasoning": onReasoning?.(evt.content); break
-              case "thinking_reasoning_token": await onReasoningToken?.(evt.content); break
-              case "tool_result_chunk": onToolChunk?.(evt.tool, evt.content, evt.first); break
-              case "tool_result_end": break
-              case "tool_result": onToolResult?.(evt.tool, evt.output); break
-              case "token": await onToken?.(evt.content); break
-              case "done": onDone?.(evt); break
-              case "error": onError?.(evt.message); break
-            }
-          } catch {}
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      onDone?.({ aborted: true })
-    } else {
-      onError?.(e.message || "Network error")
-    }
-  }
+/** 法律咨询流式接口 */
+export async function chatStream(query, history, signal, callbacks) {
+  return _readSSEStream('/api/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, history }),
+  }, signal, callbacks)
+}
+
+/** 合同审查流式接口 */
+export async function analyzeContractStream(file, signal, callbacks) {
+  const formData = new FormData()
+  formData.append('file', file)
+  return _readSSEStream('/api/analyze_contract/stream', {
+    method: 'POST',
+    body: formData,
+  }, signal, callbacks)
 }
