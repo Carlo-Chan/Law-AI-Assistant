@@ -17,7 +17,7 @@
         <el-button class="new-chat-btn" @click="newChat">
           <el-icon><Edit /></el-icon> 开启新对话
         </el-button>
-        <div class="conv-list">
+        <div v-if="filteredConvs.length" class="conv-list">
           <div
             v-for="conv in filteredConvs"
             :key="conv.id"
@@ -49,7 +49,9 @@
               </template>
             </el-dropdown>
           </div>
-          <div v-if="!filteredConvs.length" class="conv-empty">暂无历史对话</div>
+          </div>
+        <div v-if="!filteredConvs.length" class="conv-empty-wrap">
+          <span class="conv-empty">暂无历史对话</span>
         </div>
       </div>
     </transition>
@@ -1886,6 +1888,7 @@ function openContractPreview(msg) {
   flex-direction: column;
   flex-shrink: 0;
   overflow: hidden;
+  position: relative;
 }
 .sidebar-header {
   padding: 12px;
@@ -2004,11 +2007,23 @@ function openContractPreview(msg) {
   visibility: visible;
   opacity: 1;
 }
+.conv-empty-wrap {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.conv-empty-wrap > * {
+  pointer-events: auto;
+}
 .conv-empty {
-  padding: 20px;
-  text-align: center;
   color: #c0c4cc;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 /* main-area 包装 */
