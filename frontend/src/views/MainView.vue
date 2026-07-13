@@ -218,7 +218,7 @@
       <div v-if="showPreview" :class="['preview-panel', { 'preview-fullscreen': isNarrow }]">
         <div class="preview-header">
           <span>合同原文 · 风险标注</span>
-          <el-button :icon="Close" circle size="small" @click="showPreview = false" />
+          <el-button :icon="Close" text size="small" class="preview-close-btn" @click="showPreview = false" />
         </div>
         <div class="preview-body">
           <div class="contract-text" v-html="highlightedContract" @click="onContractClick" @mouseover="onContractHover" @mouseout="onContractLeave" />
@@ -369,8 +369,6 @@ async function newChat() {
   showScrollBtn.value = false
   showPreview.value = false
   previewData.value = null
-  sidebarOpen.value = false
-  forceSidebar.value = false
   pendingFile.value = draftFiles['__new__'] || null
   input.value = draftInputs['__new__'] || ''
 }
@@ -1179,7 +1177,7 @@ function openContractPreview(msg) {
   border-bottom: 1px solid #ebeef5;
 }
 
-.toggle-btn{flex-shrink:0;width:36px;height:36px;padding:0!important;border-radius:8px}.toggle-btn:hover{background:#f0f2f5!important}.toggle-btn :deep(.el-icon){font-size:20px}.new-chat-header-btn{margin-left:0;margin-right:10px;flex-shrink:0;width:36px;height:36px;padding:0!important;border-radius:8px}.new-chat-header-btn:hover{background:#f0f2f5!important}.new-chat-header-btn :deep(.el-icon){font-size:20px}
+.toggle-btn{flex-shrink:0;width:36px;height:36px;padding:0!important;border-radius:8px}.toggle-btn:hover{background:#f0f2f5!important}.toggle-btn :deep(.el-icon){font-size:20px}.new-chat-header-btn{margin-left:0;margin-right:10px;flex-shrink:0;width:36px;height:36px;padding:0!important;border-radius:8px}.new-chat-header-btn:hover{background:#f0f2f5!important}.new-chat-header-btn :deep(.el-icon){font-size:20px}.preview-close-btn{flex-shrink:0;width:36px;height:36px;padding:0!important;border-radius:8px}.preview-close-btn:hover{background:#f0f2f5!important}.preview-close-btn :deep(.el-icon){font-size:20px}
 .chat-header h2 {
   margin: 0;
   font-size: 18px;
