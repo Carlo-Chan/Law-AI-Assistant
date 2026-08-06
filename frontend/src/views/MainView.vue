@@ -189,7 +189,7 @@
             <el-input
               v-model="input"
               type="textarea"
-              :rows="3"
+              :autosize="{ minRows: 3, maxRows: 8 }"
               placeholder="输入法律问题，或上传合同文件进行审查..."
               :disabled="loading"
               @keydown.enter.exact.prevent="handleSend"
@@ -232,10 +232,24 @@
     </transition>
     </div>
   </div>
+  <!-- 确认弹窗（毛玻璃 + 圆角框） -->
+  <teleport to="body">
+    <transition name="confirm-fade">
+      <div v-if="confirmState.visible" class="confirm-overlay" @click.self="resolveConfirm(false)">
+        <div class="confirm-dialog">
+          <p class="confirm-message">{{ confirmState.message }}</p>
+          <div class="confirm-actions">
+            <el-button class="confirm-cancel-btn" @click="resolveConfirm(false)">{{ confirmState.cancelText || '取消' }}</el-button>
+            <el-button type="primary" class="confirm-ok-btn" @click="resolveConfirm(true)">{{ confirmState.okText || '确定' }}</el-button>
+          </div>
+        </div>
+      </div>
+    </transition>
+  </teleport>
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Upload, Promotion, Document, View, Close, ArrowLeft, Plus, Delete, Expand, VideoPause, CopyDocument, Refresh, Edit, MoreFilled, ArrowDown, Search, ChatDotRound, CircleCheck, Top, EditPen, Fold, ArrowRight } from '@element-plus/icons-vue'
 import { chat as chatApi, analyzeContract, listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, chatStream, analyzeContractStream, rebuildMessages } from '../utils/api'
@@ -257,6 +271,21 @@ const abortControllers = ref({})
 const editingIndex = ref(-1)
 const editingText = ref('')
 const dropdownOpenIndex = ref(-1)
+const confirmState = reactive({ visible: false, message: '', okText: '确定', cancelText: '取消' })
+let confirmResolve = null
+function showConfirm(message, { okText, cancelText } = {}) {
+  return new Promise((resolve) => {
+    confirmState.message = message
+    confirmState.okText = okText || '确定'
+    confirmState.cancelText = cancelText || '取消'
+    confirmState.visible = true
+    confirmResolve = resolve
+  })
+}
+function resolveConfirm(result) {
+  confirmState.visible = false
+  if (confirmResolve) { confirmResolve(result); confirmResolve = null }
+}
 const sidebarMenuConvId = ref(null)
 const renamingConvId = ref(null)
 const renameText = ref('')
@@ -468,6 +497,8 @@ function cancelRename() {
 
 // 删除对话：若为当前对话则清空界面
 async function handleDeleteConv(id) {
+  const ok = await showConfirm('删除后不可恢复', { okText: '删除', cancelText: '取消' })
+  if (!ok) return
   try {
     await deleteConversation(id)
     if (currentConvId.value === id) {
@@ -531,7 +562,17 @@ async function copyMessage(idx, asMarkdown = false) {
 async function deleteMessage(idx) {
   const msg = messages.value[idx]
   if (!msg) return
+  const ok = await showConfirm('删除后不可恢复', { okText: '删除', cancelText: '取消' })
+  if (!ok) return
   messages.value.splice(idx, 1)
+  // 所有消息删除后自动清理对话
+  if (!messages.value.length && currentConvId.value) {
+    try { await deleteConversation(currentConvId.value) } catch {}
+    currentConvId.value = null
+    messages.value = []
+    await refreshConvList()
+    return
+  }
   // 同步到后端数据库
   if (currentConvId.value) {
     try {
@@ -1201,11 +1242,11 @@ function openContractPreview(msg) {
 }
 .welcome-content {
   position: absolute;
-  bottom: calc(50% + 120px);
+  top: calc(50% - 192px);
   left: 50%;
   transform: translateX(-50%);
   text-align: center;
-  max-width: 480px;
+  max-width: 560px;
   padding: 0 24px;
 }
 .welcome-content h1 {
@@ -1220,6 +1261,7 @@ function openContractPreview(msg) {
   color: #86909c;
   margin: 0;
   line-height: 1.6;
+  white-space: nowrap;
 }
 .chat-messages {
   flex: 1;
@@ -1512,10 +1554,11 @@ function openContractPreview(msg) {
   right: 0;
   bottom: 16px;
   z-index: 10;
-  transition: bottom 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: bottom 0.5s cubic-bezier(0.4, 0, 0.2, 1), top 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .chat-input-anchor.input-floating {
-  bottom: 50%;
+  bottom: auto;
+  top: calc(50% - 50px);
 }
 .chat-input-area {
   transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1);
@@ -1523,12 +1566,6 @@ function openContractPreview(msg) {
   background: transparent;
   display: flex;
   justify-content: center;
-}
-.chat-input-anchor.input-floating .chat-input-area {
-  transform: translateY(50%);
-}
-.chat-input-anchor.input-floating.has-file .chat-input-area {
-  transform: translateY(calc(50% + 30px));
 }
 .chat-input-area .input-row {
   max-width: 800px;
@@ -1538,11 +1575,14 @@ function openContractPreview(msg) {
   background: #fff;
   border-radius: 16px;
   box-shadow: 0 2px 12px rgba(0,0,0,0.08);
-  padding: 6px 10px 6px 14px;
+  padding: 10px 5px 44px 5px;
+  position: relative;
+  transition: all 0.3s ease;
 }
 .chat-input-area :deep(.el-textarea__inner) {
   border: none !important;
   box-shadow: none !important;
+  transition: height 0.25s ease;
 }
 .chat-input-area :deep(.el-textarea__inner:focus) {
   border: none !important;
@@ -1561,18 +1601,18 @@ function openContractPreview(msg) {
   flex: 1;
 }
 .input-wrapper :deep(.el-textarea__inner) {
-  padding-bottom: 36px;
   resize: none;
   font-size: 15px;
 }
 .input-actions {
   position: absolute;
-  bottom: 12px;
-  left: 15px;
-  right: 14px;
+  bottom: 8px;
+  left: 10px;
+  right: 10px;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  padding: 0;
 }
 .input-row .el-textarea {
   flex: 1;
@@ -2102,5 +2142,63 @@ function openContractPreview(msg) {
 }
 .menu-pop .el-dropdown-menu__item .el-icon {
   font-size: 16px;
+}
+
+/* 确认弹窗 */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0,0,0,0.2);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.confirm-dialog {
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.12);
+  padding: 24px;
+  max-width: 360px;
+  width: 90%;
+}
+.confirm-message {
+  margin: 0 0 20px;
+  font-size: 14px;
+  color: #303133;
+  line-height: 1.6;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.confirm-cancel-btn {
+  border-radius: 8px !important;
+}
+.confirm-ok-btn {
+  border-radius: 8px !important;
+  background: #f56c6c !important;
+  border-color: #f56c6c !important;
+}
+.confirm-fade-enter-active,
+.confirm-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.confirm-fade-enter-active .confirm-dialog,
+.confirm-fade-leave-active .confirm-dialog {
+  transition: transform 0.2s ease;
+}
+.confirm-fade-enter-from,
+.confirm-fade-leave-to {
+  opacity: 0;
+}
+.confirm-fade-enter-from .confirm-dialog {
+  transform: scale(0.95);
+}
+.confirm-fade-leave-to .confirm-dialog {
+  transform: scale(0.95);
 }
 </style>
