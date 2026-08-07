@@ -9,7 +9,7 @@ from rank_bm25 import BM25Okapi
 import jieba
 
 _db = Path(__file__).resolve().parent.parent.parent / "chroma_db"
-_rel = _os.path.relpath(str(_db), _os.getcwd())
+_rel = str(_db)
 
 _client = None
 _collection = None
@@ -139,7 +139,7 @@ class LawRetriever:
     def format_results(self, results):
         """将结果列表格式化为 LLM 上下文文本"""
         if not results:
-            return "No relevant laws found."
+            return "未检索到相关法条。"
         parts = []
         for i, r in enumerate(results, 1):
             src = r["law"]

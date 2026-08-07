@@ -1,4 +1,4 @@
-﻿"""
+"""
 文档解析服务：从 PDF 和 Word 文件中提取纯文本
 """
 import io
@@ -14,8 +14,10 @@ class DocumentParser:
 
         if ext == ".pdf":
             return DocumentParser._parse_pdf(file_bytes)
-        elif ext in (".docx", ".doc"):
+        elif ext == ".docx":
             return DocumentParser._parse_docx(file_bytes)
+        elif ext == ".doc":
+            raise ValueError("不支持旧版 .doc 格式，请转换为 .docx 后重试")
         elif ext == ".txt":
             return file_bytes.decode("utf-8", errors="replace")
         else:

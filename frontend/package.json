@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.0",
-    "@kangc/v-md-editor": "^2.3.0",
     "axios": "^1.7.0",
     "element-plus": "^2.7.0",
     "marked": "^18.0.5",

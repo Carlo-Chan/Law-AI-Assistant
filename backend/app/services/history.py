@@ -3,11 +3,9 @@
 """
 import sqlite3
 import json
-import os
 import uuid
 from datetime import datetime
 from pathlib import Path
-from functools import lru_cache
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "history.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)

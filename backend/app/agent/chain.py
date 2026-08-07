@@ -26,15 +26,6 @@ from app.core.config import get_settings
 settings = get_settings()
 NL = chr(10)
 
-# 工具名称 -> 前端展示标签
-_TOOL_LABELS = {
-    "search_laws": "search_laws",
-    "search_web": "search_web",
-    "search_legal": "search_legal",
-    "verify_legal": "verify_legal",
-}
-
-
 # ============================================================
 # 公共工具函数
 # ============================================================
@@ -392,9 +383,8 @@ async def run_chat_stream(query, history=None):
             if evt:
                 yield evt
             tool_name = event.get("name", "unknown")
-            label = _TOOL_LABELS.get(tool_name, tool_name)
-            print(f"  [Stream] thinking: {label}")
-            yield {"type": "thinking", "label": label}
+            print(f"  [Stream] thinking: {tool_name}")
+            yield {"type": "thinking", "label": tool_name}
 
         elif kind == "on_tool_end":
             evt, pending = _flush_pending_reasoning(pending)
@@ -446,9 +436,8 @@ async def run_contract_analysis_stream(raw_text):
                 yield evt
                 flushed_pos = len(full_reply)
             tool_name = event.get("name", "unknown")
-            label = _TOOL_LABELS.get(tool_name, tool_name)
-            print(f"  [Stream] thinking: {label}")
-            yield {"type": "thinking", "label": label}
+            print(f"  [Stream] thinking: {tool_name}")
+            yield {"type": "thinking", "label": tool_name}
 
         elif kind == "on_tool_end":
             evt, pending = _flush_pending_reasoning(pending)

@@ -76,7 +76,7 @@ _LAW_ALIASES = {
 
 
 def _extract_article_numbers(query):
-    """extract article numbers with law name, returns [(law_keyword_or_None, article_cn), ...]"""
+    """提取问题中的法条号（含法律名关键词），返回 [(法律关键词或None, 中文法条号), ...]"""
     results = []
     cn_match = re.findall(r'第([零一二三四五六七八九十百千万\d]+)条', query)
     law_keyword = None
@@ -175,7 +175,7 @@ def _yd_mcp(tool_name: str, arguments: dict) -> dict:
 
 
 def _format_fatiao(items: list, max_items: int = 5) -> str:
-    """Format fatiao results into readable text."""
+    """将元典智库法条结果格式化为可读文本"""
     parts = []
     for i, f in enumerate(items[:max_items], 1):
         title = f.get("fgtitle", f.get("fgmc", ""))
