@@ -12,6 +12,7 @@ from langchain_tavily._utilities import TavilySearchAPIWrapper
 
 from app.agent.retriever import get_retriever
 from app.core.config import get_settings
+from app.core.errors import UPSTREAM_ERROR, PublicError, tool_failure
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -207,6 +208,7 @@ def search_legal(query: str) -> str:
         return "元典智库 API Key 未配置。"
 
     results = []
+    failures = []
     try:
         resp = _yd_rest(
             "law_vector_search",
@@ -218,7 +220,10 @@ def search_legal(query: str) -> str:
         )
         if resp.get("code") == 201:
             results = resp.get("extra", {}).get("fatiao", [])
-    except Exception:
+        else:
+            raise PublicError(UPSTREAM_ERROR)
+    except Exception as error:
+        failures.append(error)
         logger.warning("元典智库语义检索失败，尝试关键词检索", exc_info=True)
 
     if len(results) < 3:
@@ -231,6 +236,8 @@ def search_legal(query: str) -> str:
                     "sxx": "现行有效",
                 },
             )
+            if resp.get("error") or resp.get("result", {}).get("isError"):
+                raise PublicError(UPSTREAM_ERROR)
             content = resp.get("result", {}).get("content", [])
             if content:
                 data = json.loads(content[0]["text"])
@@ -239,10 +246,13 @@ def search_legal(query: str) -> str:
                 for item in extra:
                     if item.get("id", "") not in existing:
                         results.append(item)
-        except Exception:
+        except Exception as error:
+            failures.append(error)
             logger.warning("元典智库关键词检索失败，保留已有结果", exc_info=True)
 
     if not results:
+        if failures:
+            return tool_failure("专业法律检索", failures[-1])
         return "元典智库未检索到相关结果。"
     return _format_fatiao(results)
 
@@ -281,7 +291,7 @@ def verify_legal(text: str) -> str:
         return "法律引用校验结果:\n" + "\n".join(parts)
     except Exception as e:
         logger.warning("法律引用校验服务异常", exc_info=True)
-        return f"法律校验服务异常: {str(e)}"
+        return tool_failure("法律引用校验", e)
 
 
 # ============================================================
@@ -331,7 +341,7 @@ def search_web(query: str) -> str:
         return "\n\n".join(parts)
     except Exception as e:
         logger.warning("联网搜索服务异常", exc_info=True)
-        return f"搜索服务异常: {str(e)}"
+        return tool_failure("联网搜索", e)
 
 
 # 工具集汇总

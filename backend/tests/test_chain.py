@@ -156,7 +156,7 @@ async def test_non_stream_contract_analysis_rejects_missing_json(monkeypatch):
     )
     monkeypatch.setattr(chain, "contract_agent", agent)
 
-    with pytest.raises(ValueError, match="JSON"):
+    with pytest.raises(ValueError, match="审查报告格式异常"):
         await chain.run_contract_analysis("租金按月支付。")
 
 

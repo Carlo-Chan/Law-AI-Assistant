@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from app.agent import chain, retriever, tools
 from app.api import routes
 from app.core.config import Settings
+from app.core.errors import INTERNAL_ERROR, tool_failure
 from app.core.logging import SafeExceptionFormatter, configure_logging
 from app.main import app
 
@@ -195,10 +196,10 @@ def test_bm25_initialization_failure_is_logged_without_exception_details(
     assert private_content not in output
 
 
-def test_search_failure_keeps_return_value_and_logs_safe_warning(
+def test_search_failure_returns_safe_message_and_logs_safe_warning(
     application_logger, monkeypatch, capsys
 ):
-    """工具失败时保留旧的降级返回值，服务端日志不输出异常消息中的密钥。"""
+    """工具和服务端日志均不输出异常消息中的密钥，调用栈仍可定位。"""
     configure_logging()
     private_content = "sk-private-search-key"
     monkeypatch.setattr(
@@ -208,15 +209,18 @@ def test_search_failure_keeps_return_value_and_logs_safe_warning(
     result = tools.search_web.invoke({"query": "咨询问题"})
 
     output = capsys.readouterr().err
-    assert result == f"搜索服务异常: {private_content}"
+    assert result == tool_failure("联网搜索", RuntimeError())
+    assert private_content not in result
     assert "WARNING" in output
     assert "联网搜索服务异常" in output
     assert "RuntimeError" in output
     assert private_content not in output
 
 
-def test_api_failure_keeps_response_and_logs_safe_error(application_logger, monkeypatch, capsys):
-    """API 异常增加 ERROR 留痕，不改变 HTTP 响应，也不向日志写入用户正文。"""
+def test_api_failure_returns_safe_response_and_logs_safe_error(
+    application_logger, monkeypatch, capsys
+):
+    """API 返回固定错误并保留 ERROR 定位信息，响应和日志均不泄露用户正文。"""
     configure_logging()
     private_content = "用户与供应商异常中的敏感正文"
     monkeypatch.setattr(routes, "run_chat", AsyncMock(side_effect=RuntimeError(private_content)))
@@ -226,8 +230,9 @@ def test_api_failure_keeps_response_and_logs_safe_error(application_logger, monk
 
     output = capsys.readouterr().err
     assert response.status_code == 500
-    assert response.json()["detail"] == private_content
+    assert response.json()["detail"] == INTERNAL_ERROR.message
+    assert private_content not in response.text
     assert "ERROR" in output
-    assert "法律咨询请求处理失败" in output
+    assert "API 请求处理失败" in output
     assert "RuntimeError" in output
     assert private_content not in output

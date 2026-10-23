@@ -25,6 +25,7 @@ from langchain_openai import ChatOpenAI
 
 from app.agent.tools import AGENT_TOOLS
 from app.core.config import get_settings
+from app.core.errors import INVALID_REPORT, PublicError
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -343,7 +344,7 @@ async def run_contract_analysis(raw_text: str) -> dict:
 
     data, _ = _parse_json_with_repair(reply)
     if data is None:
-        raise ValueError(f"JSON not found in agent response: {reply[:300]}")
+        raise PublicError(INVALID_REPORT)
 
     risk_points = _post_process_risks(raw_text, data.get("risk_points", []))
     logger.info("合同审查完成：风险点数=%d", len(risk_points))
@@ -469,7 +470,7 @@ async def run_contract_analysis_stream(raw_text):
     data, json_str = _parse_json_with_repair(full_reply)
     if data is None:
         logger.error("流式合同审查 JSON 解析失败，模型输出长度=%d", len(full_reply))
-        yield {"type": "error", "message": "JSON parse error: unable to parse agent response"}
+        yield INVALID_REPORT.stream_event()
         return
 
     logger.debug("流式合同审查 JSON 解析成功，长度=%d", len(json_str))

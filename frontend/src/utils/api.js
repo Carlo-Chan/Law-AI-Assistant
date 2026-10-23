@@ -113,7 +113,7 @@ async function _readSSEStream(
         const error = await res.json()
         if (typeof error.detail === 'string') message = error.detail
       } catch (error) {
-        console.warn('读取请求错误响应失败', error)
+        console.warn('读取请求错误响应失败，异常类型：', error.name)
       }
       onError?.(message)
       return
@@ -160,7 +160,7 @@ async function _readSSEStream(
                 break
             }
           } catch (error) {
-            console.warn('处理流式事件失败', error)
+            console.warn('处理流式事件失败，异常类型：', error.name)
           }
         }
       }
@@ -169,7 +169,7 @@ async function _readSSEStream(
     if (e.name === 'AbortError') {
       onDone?.({ aborted: true })
     } else {
-      onError?.(e.message || 'Network error')
+      onError?.('网络连接中断，请检查网络后重试。')
     }
   }
 }

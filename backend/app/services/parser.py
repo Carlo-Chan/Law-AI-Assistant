@@ -5,6 +5,8 @@
 import io
 from pathlib import Path
 
+from app.core.errors import LEGACY_DOCUMENT, UNSUPPORTED_DOCUMENT, PublicError
+
 
 class DocumentParser:
     """支持 PDF 和 DOCX 的文本提取"""
@@ -18,11 +20,11 @@ class DocumentParser:
         elif ext == ".docx":
             return DocumentParser._parse_docx(file_bytes)
         elif ext == ".doc":
-            raise ValueError("不支持旧版 .doc 格式，请转换为 .docx 后重试")
+            raise PublicError(LEGACY_DOCUMENT)
         elif ext == ".txt":
             return file_bytes.decode("utf-8", errors="replace")
         else:
-            raise ValueError(f"不支持的文件格式: {ext}（仅支持 PDF / DOCX / TXT）")
+            raise PublicError(UNSUPPORTED_DOCUMENT)
 
     @staticmethod
     def _parse_pdf(file_bytes: bytes) -> str:

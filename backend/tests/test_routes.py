@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import routes
+from app.core.errors import INTERNAL_ERROR
 from app.main import app
 
 
@@ -168,7 +169,7 @@ def test_chat_agent_failure_returns_http_error(client, monkeypatch):
     response = client.post("/api/chat", json={"query": "租房问题"})
 
     assert response.status_code == 500
-    assert response.json()["detail"] == "服务暂不可用"
+    assert response.json()["detail"] == INTERNAL_ERROR.message
 
 
 @pytest.mark.parametrize("endpoint", ["/api/analyze_contract", "/api/analyze_contract/stream"])
@@ -223,7 +224,7 @@ def test_contract_agent_failure_returns_http_error(client, monkeypatch):
     response = client.post("/api/analyze_contract", files={"file": ("合同.txt", b"contract")})
 
     assert response.status_code == 500
-    assert response.json()["detail"] == "合同审查失败"
+    assert response.json()["detail"] == INTERNAL_ERROR.message
 
 
 def _read_events(response):
@@ -287,5 +288,5 @@ def test_stream_failure_emits_error_event_after_existing_tokens(client, monkeypa
     assert response.status_code == 200
     assert _read_events(response) == [
         {"type": "token", "content": "已有内容"},
-        {"type": "error", "message": "生成中断"},
+        INTERNAL_ERROR.stream_event(),
     ]
