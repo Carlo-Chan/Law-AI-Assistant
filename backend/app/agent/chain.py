@@ -3,7 +3,7 @@
 
 重构要点：
 - 抽取 _build_history_messages 消除历史消息构建重复
-- 抽取 _log_tool_traces 统一工具调用日志打印
+- 抽取 _log_tool_traces 统一工具调用追踪日志
 - 抽取 _batch_yield 通用分批输出
 - 抽取 _parse_json_with_repair 统一 JSON 容错解析
 - 抽取 _post_process_risks 统一风险点后处理
@@ -15,6 +15,7 @@
 
 import asyncio
 import json
+import logging
 import re
 
 from json_repair import repair_json
@@ -26,6 +27,7 @@ from app.agent.tools import AGENT_TOOLS
 from app.core.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 NL = chr(10)
 
 # ============================================================
@@ -78,17 +80,14 @@ def _build_history_messages(history):
 
 
 def _log_tool_traces(all_msgs):
-    """打印工具调用追踪日志（非流式模式使用）"""
+    """记录工具名称及结果长度，不记录工具参数或返回正文。"""
     for m in all_msgs:
         name = getattr(m, "name", "")
         if isinstance(m, ToolMessage):
-            snippet = str(m.content)[:500].replace(NL, " ")
-            print(f"  [{name}] result: {snippet}")
+            logger.debug("工具调用完成：%s，结果长度=%d", name, len(str(m.content)))
         elif isinstance(m, AIMessage) and hasattr(m, "tool_calls") and m.tool_calls:
             for tc in m.tool_calls:
-                args = tc.get("args", {})
-                q = args.get("query", args.get("text", str(args)[:80]))
-                print(f"  [LLM call -> {tc.get('name', '?')}] {q}")
+                logger.debug("模型调用工具：%s", tc.get("name", "?"))
 
 
 async def _batch_yield(text, batch_size=8, delay=0.03):
@@ -119,7 +118,7 @@ def _parse_json_with_repair(text):
         data, end_idx = decoder.raw_decode(json_candidate)
         return data, json_candidate[:end_idx]
     except json.JSONDecodeError:
-        pass
+        logger.debug("审查 JSON 解析失败，尝试格式修复")
 
     # 方案2：json-repair 容错（处理未转义字符、缺失逗号等）
     try:
@@ -148,9 +147,10 @@ def _parse_json_with_repair(text):
             snippet = json_candidate[:close_idx]
             repaired = repair_json(snippet)
             data = json.loads(repaired)
+            logger.debug("审查 JSON 格式修复成功")
             return data, snippet
     except Exception:
-        pass
+        logger.warning("审查 JSON 格式修复失败")
 
     return None, None
 
@@ -164,7 +164,7 @@ def _post_process_risks(raw_text, risk_points, tag="contract"):
             if matched:
                 rp["quote"] = matched
             else:
-                print(f"  [{tag}] WARN: key_phrase not matched: {kp[:50]}")
+                logger.warning("风险引用未匹配原文：模式=%s，引用长度=%d", tag, len(kp))
                 rp["quote"] = kp
         elif rp.get("quote"):
             pass
@@ -190,7 +190,7 @@ def _extract_chat_reply_from_json(json_str):
 
 async def _stream_tool_result(tool_name, output):
     """将工具返回结果分块流式传输，yield SSE 事件"""
-    print(f"  [Stream] tool_done: {tool_name}")
+    logger.debug("流式工具调用完成：%s，结果长度=%d", tool_name, len(output))
     chunk_size = 30
     for j in range(0, len(output), chunk_size):
         yield {
@@ -206,7 +206,7 @@ async def _stream_tool_result(tool_name, output):
 def _flush_pending_reasoning(pending):
     """如果 pending 中有推理文字，返回需要 yield 的事件，并返回清空后的 pending"""
     if pending.strip():
-        print(f"  [Stream] reasoning flush: {pending[:80]}...")
+        logger.debug("输出工具调用前推理片段，长度=%d", len(pending))
         return {"type": "thinking_reasoning", "content": pending.strip()}, ""
     return None, pending
 
@@ -304,9 +304,7 @@ async def run_chat(query: str, history: list | None = None) -> dict:
     messages = _build_history_messages(history)
     messages.append(HumanMessage(content=query))
 
-    print(f"\n{chr(61) * 60}")
-    print(f"[Chat] user: {query[:150]}")
-    print(f"{chr(61) * 60}")
+    logger.info("开始法律咨询：输入长度=%d，历史消息数=%d", len(query), len(history or []))
 
     result = await chat_agent.ainvoke({"messages": messages})
     all_msgs = result["messages"]
@@ -322,7 +320,7 @@ async def run_chat(query: str, history: list | None = None) -> dict:
         if name and hasattr(m, "content") and m.content:
             sources.append({"tool": name, "snippet": str(m.content)[:200]})
 
-    print(f"  [reply] {reply[:200]}...")
+    logger.info("法律咨询完成：回复长度=%d，来源数=%d", len(reply), len(sources[:5]))
     return {"reply": reply, "sources": sources[:5]}
 
 
@@ -330,9 +328,7 @@ async def run_contract_analysis(raw_text: str) -> dict:
     """非流式合同审查，返回结构化结果"""
     query = f"请审查以下合同文本：\n\n{raw_text}"
 
-    print(f"\n{chr(61) * 60}")
-    print(f"[Contract] review request, text length: {len(raw_text)}")
-    print(f"{chr(61) * 60}")
+    logger.info("开始合同审查：原文长度=%d", len(raw_text))
 
     messages = [HumanMessage(content=query)]
     result = await contract_agent.ainvoke({"messages": messages}, config={"recursion_limit": 12})
@@ -350,7 +346,7 @@ async def run_contract_analysis(raw_text: str) -> dict:
         raise ValueError(f"JSON not found in agent response: {reply[:300]}")
 
     risk_points = _post_process_risks(raw_text, data.get("risk_points", []))
-    print(f"  [contract] risks found: {len(risk_points)}")
+    logger.info("合同审查完成：风险点数=%d", len(risk_points))
 
     return {
         "raw_text": raw_text,
@@ -368,9 +364,7 @@ async def run_chat_stream(query, history=None):
     """流式法律咨询，通过 async generator 逐事件产出 SSE 数据"""
     messages = _build_history_messages(history)
     messages.append(HumanMessage(content=query))
-    print(f"\n{chr(61) * 60}")
-    print(f"[Chat Stream] user: {query[:150]}")
-    print(f"{chr(61) * 60}")
+    logger.info("开始流式法律咨询：输入长度=%d，历史消息数=%d", len(query), len(history or []))
 
     pending = ""
     async for event in chat_agent.astream_events({"messages": messages}, version="v2"):
@@ -381,7 +375,7 @@ async def run_chat_stream(query, history=None):
             if evt:
                 yield evt
             tool_name = event.get("name", "unknown")
-            print(f"  [Stream] thinking: {tool_name}")
+            logger.debug("流式法律咨询调用工具：%s", tool_name)
             yield {"type": "thinking", "label": tool_name}
 
         elif kind == "on_tool_end":
@@ -404,19 +398,17 @@ async def run_chat_stream(query, history=None):
 
     # 将最终回复分批输出，产生打字机效果
     if pending.strip():
-        print(f"  [Stream] final answer: {pending[:80]}...")
+        logger.debug("开始输出最终咨询回复，长度=%d", len(pending))
         async for evt in _batch_yield(pending, batch_size=8, delay=0.03):
             yield evt
-    print("  [Stream] done")
+    logger.info("流式法律咨询完成：回复长度=%d", len(pending))
     yield {"type": "done"}
 
 
 async def run_contract_analysis_stream(raw_text):
     """流式合同审查，通过 async generator 逐事件产出 SSE 数据"""
     query = f"请审查以下合同文本：\n\n{raw_text}"
-    print(f"\n{chr(61) * 60}")
-    print(f"[Contract Stream] review request, text length: {len(raw_text)}")
-    print(f"{chr(61) * 60}")
+    logger.info("开始流式合同审查：原文长度=%d", len(raw_text))
     messages = [HumanMessage(content=query)]
 
     full_reply = ""
@@ -434,7 +426,7 @@ async def run_contract_analysis_stream(raw_text):
                 yield evt
                 flushed_pos = len(full_reply)
             tool_name = event.get("name", "unknown")
-            print(f"  [Stream] thinking: {tool_name}")
+            logger.debug("流式合同审查调用工具：%s", tool_name)
             yield {"type": "thinking", "label": tool_name}
 
         elif kind == "on_tool_end":
@@ -463,39 +455,38 @@ async def run_contract_analysis_stream(raw_text):
                         await asyncio.sleep(0.01)
 
     # 输出最终推理文字（最后一个工具调用结束到 JSON 开始之间的文本）
-    print(f"  [Stream] final pending len: {len(pending)}")
+    logger.debug("流式审查输出完毕，待处理文本长度=%d", len(pending))
     m = re.search(r'\{\s*"chat_reply"|\{\s*"risk_points"', full_reply)
     if m:
         reasoning_tail = full_reply[flushed_pos : m.start()].strip()
         reasoning_tail = re.sub(r"```\w*\s*\n?\s*$", "", reasoning_tail).strip()
         reasoning_tail = re.sub(r"```$", "", reasoning_tail).strip()
         if reasoning_tail:
-            print(f"  [Stream] reasoning flush (final): {reasoning_tail[:80]}...")
+            logger.debug("输出审查末尾推理片段，长度=%d", len(reasoning_tail))
             yield {"type": "thinking_reasoning", "content": reasoning_tail}
 
     # 解析 JSON（支持两级容错）
     data, json_str = _parse_json_with_repair(full_reply)
     if data is None:
-        snippet = full_reply[:200]
-        print(f"  [Stream] all parse attempts failed, first 200 chars: {snippet}")
+        logger.error("流式合同审查 JSON 解析失败，模型输出长度=%d", len(full_reply))
         yield {"type": "error", "message": "JSON parse error: unable to parse agent response"}
         return
 
-    print(f"  [Stream] json parsed OK, len={len(json_str)}")
+    logger.debug("流式合同审查 JSON 解析成功，长度=%d", len(json_str))
 
     # 逐字符流式输出 chat_reply 内容
     reply_text = _extract_chat_reply_from_json(json_str)
     if reply_text is not None:
-        print("  [Stream] chat_reply marker found, streaming...")
+        logger.debug("开始输出审查报告，长度=%d", len(reply_text))
         async for evt in _batch_yield(reply_text, batch_size=8, delay=0.03):
             yield evt
-        print("  [Stream] chat_reply streaming done")
+        logger.debug("审查报告流式输出完成")
     else:
-        print("  [Stream] WARN: chat_reply marker not found in JSON")
+        logger.warning("审查 JSON 中缺少文本类型的 chat_reply")
 
     # 后处理风险点
     risk_points = _post_process_risks(raw_text, data.get("risk_points", []), tag="contract stream")
-    print(f"  [contract stream] risks found: {len(risk_points)}")
+    logger.info("流式合同审查完成：风险点数=%d", len(risk_points))
 
     chat_reply = _normalize_chat_reply(data.get("chat_reply", ""))
     yield {

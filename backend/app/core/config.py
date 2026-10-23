@@ -3,6 +3,7 @@
 """
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -16,6 +17,7 @@ class Settings(BaseSettings):
 
     # --- 应用配置 ---
     app_env: str = "development"
+    app_log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     app_port: int = 8000
     app_cors_origins: str = "http://localhost:5173"
     database_url: str = "sqlite:///./data/app.db"

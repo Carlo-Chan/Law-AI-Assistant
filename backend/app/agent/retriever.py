@@ -2,6 +2,7 @@
 法律知识库检索器 —— ChromaDB 向量检索 + BM25 关键词检索
 """
 
+import logging
 import os as _os
 from pathlib import Path
 
@@ -10,6 +11,8 @@ import jieba
 from rank_bm25 import BM25Okapi
 
 from app.init_db import OllamaEmbeddingFunction
+
+logger = logging.getLogger(__name__)
 
 _db = Path(__file__).resolve().parent.parent.parent / "chroma_db"
 _rel = str(_db)
@@ -61,7 +64,9 @@ def _build_bm25():
                 }
             )
         _bm25 = BM25Okapi(tokenized_corpus)
-    except Exception:
+        logger.debug("BM25 索引构建完成：文档数=%d", len(_bm25_docs))
+    except Exception as error:
+        logger.warning("BM25 索引构建失败：异常类型=%s，暂不使用关键词召回", type(error).__name__)
         _bm25 = None
         _bm25_docs = []
 
@@ -83,6 +88,7 @@ class LawRetriever:
             q_emb = self._embed(query)
             results = _collection.query(query_embeddings=[q_emb], n_results=top_k)
         except Exception:
+            logger.warning("向量检索失败，返回空结果供其他召回路径降级处理", exc_info=True)
             return []
         docs = []
         for i in range(len(results["documents"][0])):
@@ -120,6 +126,7 @@ class LawRetriever:
                             }
                         )
             except Exception:
+                logger.warning("单条精确法条检索失败，继续处理其他条号", exc_info=True)
                 continue
         return docs
 
@@ -139,6 +146,7 @@ class LawRetriever:
                     docs.append(dict(_bm25_docs[idx]))
             return docs
         except Exception:
+            logger.warning("BM25 检索失败，返回空结果供其他召回路径降级处理", exc_info=True)
             return []
 
     def format_results(self, results):

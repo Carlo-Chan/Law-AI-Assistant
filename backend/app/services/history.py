@@ -3,6 +3,7 @@
 """
 
 import json
+import logging
 import os
 import sqlite3
 import uuid
@@ -10,6 +11,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = Path(
     os.environ.get(
@@ -29,6 +32,9 @@ def _get_conn() -> Iterator[sqlite3.Connection]:
         conn.execute("PRAGMA journal_mode=WAL")
         with conn:
             yield conn
+    except Exception:
+        logger.exception("历史数据库操作失败")
+        raise
     finally:
         conn.close()
 
@@ -101,6 +107,7 @@ def get_conversation(conv_id: str) -> dict | None:
             try:
                 md["thinking_chain"] = json.loads(md["thinking_chain"])
             except (json.JSONDecodeError, TypeError):
+                logger.warning("历史思维链格式无效，按空列表读取")
                 md["thinking_chain"] = []
         else:
             md["thinking_chain"] = []
@@ -152,6 +159,7 @@ def add_messages(conv_id: str, messages: list[dict]):
     """在同一事务中保存一组消息，任一写入失败则整组回滚。"""
     with _get_conn() as conn:
         _insert_messages(conn, conv_id, messages, datetime.now().isoformat())
+    logger.debug("会话消息保存完成：消息数=%d", len(messages))
 
 
 def add_message(
@@ -188,6 +196,7 @@ def rebuild_messages(conv_id: str, messages: list[dict]):
     with _get_conn() as conn:
         conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv_id,))
         _insert_messages(conn, conv_id, messages, datetime.now().isoformat())
+    logger.debug("会话消息重建完成：消息数=%d", len(messages))
 
 
 def delete_conversation(conv_id: str):

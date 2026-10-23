@@ -6,10 +6,14 @@ Law-AI-Assistant 后端入口
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import router as api_router
 from app.core.config import get_settings
+from app.core.logging import configure_logging
 
 settings = get_settings()
+configure_logging(settings.app_log_level)
+
+# 路由导入会预初始化检索器，需先配置日志以覆盖启动阶段的降级提示。
+from app.api.routes import router as api_router  # noqa: E402
 
 app = FastAPI(
     title="Law-AI-Assistant",

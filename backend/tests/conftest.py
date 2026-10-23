@@ -20,6 +20,7 @@ def pytest_configure(config):
     config.add_cleanup(environment.undo)
 
     environment.setenv("LAW_AI_SKIP_RETRIEVER_INIT", "1")
+    environment.setenv("APP_LOG_LEVEL", "INFO")
     environment.setenv(
         "LAW_AI_HISTORY_DB_PATH",
         str(Path(database_directory.name) / "history.db"),

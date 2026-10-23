@@ -3,6 +3,7 @@ API 路由：法律问答 + 合同审查
 """
 
 import json
+import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -19,6 +20,7 @@ from app.services import history
 from app.services.parser import DocumentParser
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -65,6 +67,7 @@ async def chat(request: ChatRequest):
         result = await run_chat(request.query, request.history)
         return ChatResponse(code=200, data=result)
     except Exception as e:
+        logger.exception("法律咨询请求处理失败")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
@@ -75,6 +78,7 @@ async def chat_stream(request: ChatRequest):
             async for event in run_chat_stream(request.query, request.history):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
+            logger.exception("流式法律咨询请求处理失败")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -94,6 +98,7 @@ async def analyze_contract(file: Annotated[UploadFile, File()]):
     try:
         result = await run_contract_analysis(raw_text)
     except Exception as e:
+        logger.exception("合同审查请求处理失败")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
     # 3. 构造响应
@@ -120,6 +125,7 @@ async def analyze_contract_stream(file: Annotated[UploadFile, File()]):
             async for event in run_contract_analysis_stream(raw_text):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
+            logger.exception("流式合同审查请求处理失败")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

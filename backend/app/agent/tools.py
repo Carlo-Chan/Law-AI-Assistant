@@ -3,6 +3,7 @@ Agent 工具集：本地法律检索 + 元典智库 + 联网搜索 + 幻觉校�
 """
 
 import json
+import logging
 import re
 
 import httpx
@@ -13,6 +14,7 @@ from app.agent.retriever import get_retriever
 from app.core.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 # ---- 共享 httpx 客户端（连接池复用，避免端口耗尽） ----
 _httpx_client = httpx.Client(
@@ -102,7 +104,7 @@ def search_laws(query: str) -> str:
         try:
             exact_results = retriever.search_by_articles(article_nums, _LAW_ALIASES)
         except Exception:
-            pass
+            logger.warning("精确法条检索失败，继续使用 BM25 与向量结果", exc_info=True)
     seen = set()
     all_results = []
     for r in exact_results:
@@ -120,11 +122,18 @@ def search_laws(query: str) -> str:
         if key not in seen:
             seen.add(key)
             all_results.append(r)
+    logger.debug(
+        "本地法条召回完成：精确=%d，BM25=%d，向量=%d，去重后=%d",
+        len(exact_results),
+        len(bm25_results),
+        len(vector_results),
+        len(all_results),
+    )
     return retriever.format_results(all_results)
 
 
 # ============================================================
-# Tool 2: 元典智库专业法律检索（语义 + 关键词双路召回）
+# 工具 2：元典智库专业法律检索（语义 + 关键词双路召回）
 # ============================================================
 
 YUANDIAN_MCP = "https://open.chineselaw.com/mcp/law/stream"
@@ -210,7 +219,7 @@ def search_legal(query: str) -> str:
         if resp.get("code") == 201:
             results = resp.get("extra", {}).get("fatiao", [])
     except Exception:
-        pass
+        logger.warning("元典智库语义检索失败，尝试关键词检索", exc_info=True)
 
     if len(results) < 3:
         try:
@@ -231,7 +240,7 @@ def search_legal(query: str) -> str:
                     if item.get("id", "") not in existing:
                         results.append(item)
         except Exception:
-            pass
+            logger.warning("元典智库关键词检索失败，保留已有结果", exc_info=True)
 
     if not results:
         return "元典智库未检索到相关结果。"
@@ -239,7 +248,7 @@ def search_legal(query: str) -> str:
 
 
 # ============================================================
-# Tool 3: 法律幻觉校验
+# 工具 3：法律幻觉校验
 # ============================================================
 
 
@@ -271,11 +280,12 @@ def verify_legal(text: str) -> str:
             parts.append(line)
         return "法律引用校验结果:\n" + "\n".join(parts)
     except Exception as e:
+        logger.warning("法律引用校验服务异常", exc_info=True)
         return f"法律校验服务异常: {str(e)}"
 
 
 # ============================================================
-# Tool 4: 联网搜索（Tavily Search API）
+# 工具 4：联网搜索（Tavily Search API）
 # ============================================================
 
 _tavily = TavilySearchAPIWrapper(tavily_api_key=settings.tavily_api_key)
@@ -320,6 +330,7 @@ def search_web(query: str) -> str:
             parts.append(f"[{i}] {title}\n{content}\n来源: {url}")
         return "\n\n".join(parts)
     except Exception as e:
+        logger.warning("联网搜索服务异常", exc_info=True)
         return f"搜索服务异常: {str(e)}"
 
 
