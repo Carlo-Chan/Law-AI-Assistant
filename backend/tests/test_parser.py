@@ -1,4 +1,5 @@
 """文档解析测试：使用内存样本验证文本提取和格式校验。"""
+
 import io
 
 import pytest
@@ -69,7 +70,7 @@ def _build_pdf(page_texts):
         f"<< /Type /Pages /Kids [{children}] /Count {len(page_texts)} >>".encode("ascii"),
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     ]
-    for page_id, text in zip(page_ids, page_texts):
+    for page_id, text in zip(page_ids, page_texts, strict=True):
         objects.append(
             (
                 "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
@@ -79,9 +80,7 @@ def _build_pdf(page_texts):
         )
         content = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode("ascii") if text else b""
         objects.append(
-            f"<< /Length {len(content)} >>\nstream\n".encode("ascii")
-            + content
-            + b"\nendstream"
+            f"<< /Length {len(content)} >>\nstream\n".encode("ascii") + content + b"\nendstream"
         )
 
     result = bytearray(b"%PDF-1.4\n")
@@ -95,8 +94,7 @@ def _build_pdf(page_texts):
         result.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
     result.extend(
         (
-            f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\n"
-            f"startxref\n{xref_offset}\n%%EOF\n"
+            f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
         ).encode("ascii")
     )
     return bytes(result)

@@ -18,7 +18,10 @@ import { pinyin } from 'pinyin-pro'
  */
 export function pinyinMatch(title, query) {
   const titlePinyin = pinyin(title, { toneType: 'none', type: 'array' }).join('').toLowerCase()
-  const titleInitials = pinyin(title, { toneType: 'none', type: 'array' }).map(s => s[0]).join('').toLowerCase()
+  const titleInitials = pinyin(title, { toneType: 'none', type: 'array' })
+    .map((s) => s[0])
+    .join('')
+    .toLowerCase()
   return titlePinyin.includes(query) || titleInitials.includes(query)
 }
 
@@ -35,7 +38,11 @@ export function fuzzyMatch(title, query) {
     const qch = query[qi]
     let found = false
     while (ti < title.length) {
-      if (title[ti] === qch) { found = true; ti++; break }
+      if (title[ti] === qch) {
+        found = true
+        ti++
+        break
+      }
       ti++
     }
     if (!found) return false

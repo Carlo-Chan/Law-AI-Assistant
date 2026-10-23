@@ -1,4 +1,5 @@
 """pytest 公共配置：隔离测试数据库、API 配置与外部网络。"""
+
 import socket
 import sys
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 _SOCKET_CONNECT = socket.socket.connect
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 
 def pytest_configure(config):
     """在收集测试前配置隔离环境，结束后恢复环境并清理临时数据库。"""

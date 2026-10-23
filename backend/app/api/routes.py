@@ -1,15 +1,22 @@
 """
 API 路由：法律问答 + 合同审查
 """
-from fastapi import APIRouter, UploadFile, File, HTTPException
+
+import json
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Literal
-import json
 
-from app.agent.chain import run_chat, run_contract_analysis, run_chat_stream, run_contract_analysis_stream
-from app.services.parser import DocumentParser
+from app.agent.chain import (
+    run_chat,
+    run_chat_stream,
+    run_contract_analysis,
+    run_contract_analysis_stream,
+)
 from app.services import history
+from app.services.parser import DocumentParser
 
 router = APIRouter()
 
@@ -21,7 +28,7 @@ router = APIRouter()
 
 class ChatRequest(BaseModel):
     query: str
-    history: List[dict] = []
+    history: list[dict] = []
 
 
 class ChatResponse(BaseModel):
@@ -37,7 +44,7 @@ class RiskPoint(BaseModel):
 
 class ContractAnalysisData(BaseModel):
     raw_text: str
-    risk_points: List[RiskPoint]
+    risk_points: list[RiskPoint]
     chat_reply: str
 
 
@@ -58,7 +65,7 @@ async def chat(request: ChatRequest):
         result = await run_chat(request.query, request.history)
         return ChatResponse(code=200, data=result)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/chat/stream")
@@ -69,24 +76,25 @@ async def chat_stream(request: ChatRequest):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @router.post("/analyze_contract", response_model=ContractAnalysisResponse)
-async def analyze_contract(file: UploadFile = File(...)):
+async def analyze_contract(file: Annotated[UploadFile, File()]):
     """合同审查：上传文件 -> 解析文本 -> AI 分析"""
     # 1. 读取并解析文件
     raw_bytes = await file.read()
     try:
         raw_text = DocumentParser.parse(raw_bytes, file.filename)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     # 2. 调用 AI 审查
     try:
         result = await run_contract_analysis(raw_text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
     # 3. 构造响应
     return ContractAnalysisResponse(
@@ -100,12 +108,12 @@ async def analyze_contract(file: UploadFile = File(...)):
 
 
 @router.post("/analyze_contract/stream")
-async def analyze_contract_stream(file: UploadFile = File(...)):
+async def analyze_contract_stream(file: Annotated[UploadFile, File()]):
     raw_bytes = await file.read()
     try:
         raw_text = DocumentParser.parse(raw_bytes, file.filename)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     async def generate():
         try:
@@ -113,6 +121,7 @@ async def analyze_contract_stream(file: UploadFile = File(...)):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
@@ -172,7 +181,7 @@ class RebuildMessage(BaseModel):
 
 
 class RebuildMessagesRequest(BaseModel):
-    messages: List[RebuildMessage]
+    messages: list[RebuildMessage]
 
 
 @router.post("/conversations/{conv_id}/rebuild", response_model=ConvResponse)
@@ -199,14 +208,16 @@ class SaveMessagesRequest(BaseModel):
 @router.post("/conversations/{conv_id}/messages", response_model=ConvResponse)
 async def save_messages(conv_id: str, req: SaveMessagesRequest):
     _require_conversation(conv_id)
-    history.add_messages(conv_id, [
-        {"role": "user", "content": req.user_content, "file_name": req.file_name},
-        {
-            "role": "assistant", "content": req.assistant_content,
-            "contract_data": req.contract_data, "thinking_chain": req.thinking_chain,
-        },
-    ])
+    history.add_messages(
+        conv_id,
+        [
+            {"role": "user", "content": req.user_content, "file_name": req.file_name},
+            {
+                "role": "assistant",
+                "content": req.assistant_content,
+                "contract_data": req.contract_data,
+                "thinking_chain": req.thinking_chain,
+            },
+        ],
+    )
     return ConvResponse(code=200, data={"ok": True})
-
-
-

@@ -1,4 +1,5 @@
 """API 测试：真实 SQLite 与内存 HTTP 请求配合，AI 调用全部替换为 mock。"""
+
 import json
 import sqlite3
 from contextlib import closing
@@ -36,11 +37,16 @@ def test_conversation_crud_round_trip(client):
     contract_data = {"raw_text": "合同原文", "risk_points": []}
     thinking_chain = [{"type": "tool", "content": "检索结果"}]
 
-    saved = client.post(f"{url}/messages", json={
-        "user_content": "帮我审查", "assistant_content": "审查报告",
-        "file_name": "租赁合同.pdf", "contract_data": contract_data,
-        "thinking_chain": thinking_chain,
-    })
+    saved = client.post(
+        f"{url}/messages",
+        json={
+            "user_content": "帮我审查",
+            "assistant_content": "审查报告",
+            "file_name": "租赁合同.pdf",
+            "contract_data": contract_data,
+            "thinking_chain": thinking_chain,
+        },
+    )
     assert saved.status_code == 200
     detail = client.get(url)
     assert detail.status_code == 200
@@ -120,7 +126,8 @@ def test_message_pair_save_rolls_back_if_assistant_insert_fails(client, history_
         """)
 
     response = client.post(
-        f"{url}/messages", json={"user_content": "新问题", "assistant_content": "新回复"},
+        f"{url}/messages",
+        json={"user_content": "新问题", "assistant_content": "新回复"},
     )
 
     assert response.status_code == 500
@@ -191,14 +198,16 @@ def test_contract_parses_upload_and_returns_risks(client, monkeypatch):
     """文件解析出的原文传入 AI，报告和高亮风险字段完整返回。"""
     raw_text = "甲方应退还押金。"
     result = {
-        "raw_text": raw_text, "chat_reply": "审查报告",
+        "raw_text": raw_text,
+        "chat_reply": "审查报告",
         "risk_points": [{"quote": "退还押金", "level": "low", "bubble_text": "明确时间"}],
     }
     agent = AsyncMock(return_value=result)
     monkeypatch.setattr(routes, "run_contract_analysis", agent)
 
     response = client.post(
-        "/api/analyze_contract", files={"file": ("合同.txt", raw_text.encode("utf-8"))},
+        "/api/analyze_contract",
+        files={"file": ("合同.txt", raw_text.encode("utf-8"))},
     )
 
     assert response.status_code == 200
@@ -220,7 +229,9 @@ def test_contract_agent_failure_returns_http_error(client, monkeypatch):
 def _read_events(response):
     """解码响应中的 SSE 数据帧。"""
     assert response.headers["content-type"].startswith("text/event-stream")
-    return [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+    return [
+        json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")
+    ]
 
 
 @pytest.mark.parametrize("mode", ["chat", "contract"])
@@ -247,7 +258,7 @@ def test_stream_preserves_event_order_and_unicode(client, monkeypatch, mode):
         monkeypatch.setattr(routes, "run_contract_analysis_stream", agent)
         response = client.post(
             "/api/analyze_contract/stream",
-            files={"file": ("合同.txt", "合同原文".encode("utf-8"))},
+            files={"file": ("合同.txt", "合同原文".encode())},
         )
         agent.assert_called_once_with("合同原文")
 
@@ -258,6 +269,7 @@ def test_stream_preserves_event_order_and_unicode(client, monkeypatch, mode):
 @pytest.mark.parametrize("mode", ["chat", "contract"])
 def test_stream_failure_emits_error_event_after_existing_tokens(client, monkeypatch, mode):
     """已开始的流使用错误帧报告失败，不能把错误吞掉或伪装成正常完成。"""
+
     async def generate(*args):
         yield {"type": "token", "content": "已有内容"}
         raise RuntimeError("生成中断")
@@ -268,7 +280,8 @@ def test_stream_failure_emits_error_event_after_existing_tokens(client, monkeypa
     else:
         monkeypatch.setattr(routes, "run_contract_analysis_stream", generate)
         response = client.post(
-            "/api/analyze_contract/stream", files={"file": ("合同.txt", b"contract")},
+            "/api/analyze_contract/stream",
+            files={"file": ("合同.txt", b"contract")},
         )
 
     assert response.status_code == 200

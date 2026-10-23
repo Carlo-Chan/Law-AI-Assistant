@@ -1,4 +1,5 @@
 """合同审查文本处理测试：覆盖原文匹配、JSON 容错和报告解码。"""
+
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -13,7 +14,11 @@ from app.agent import chain
     ("raw_text", "phrase", "expected"),
     [
         ("甲方有权没收全部押金。", "没收全部押金", "没收全部押金"),
-        ("违约金为每日 5%，按租金总额计算。", "违约金为每日，按租金总额计算", "违约金为每日 5%，按租金总额计算"),
+        (
+            "违约金为每日 5%，按租金总额计算。",
+            "违约金为每日，按租金总额计算",
+            "违约金为每日 5%，按租金总额计算",
+        ),
         ("甲方应当\n退还押金。", "甲方应当退还押金", "甲方应当\n退还押金"),
         ("租金为 2000 元，押金为 1000 元。", "1000 元", "1000 元"),
         ("Payment is due monthly.", "Payment is due monthly", "Payment is due monthly"),
@@ -126,9 +131,13 @@ def test_post_process_risks_preserves_risk_metadata():
 
 async def test_non_stream_contract_analysis_uses_json_repair(monkeypatch):
     """非流式审查也应容忍缺失逗号，与流式接口使用同一解析规则。"""
-    agent = SimpleNamespace(ainvoke=AsyncMock(return_value={
-        "messages": [AIMessage(content='{"chat_reply":"报告" "risk_points":[]}')],
-    }))
+    agent = SimpleNamespace(
+        ainvoke=AsyncMock(
+            return_value={
+                "messages": [AIMessage(content='{"chat_reply":"报告" "risk_points":[]}')],
+            }
+        )
+    )
     monkeypatch.setattr(chain, "contract_agent", agent)
 
     result = await chain.run_contract_analysis("租金按月支付。")
@@ -138,9 +147,13 @@ async def test_non_stream_contract_analysis_uses_json_repair(monkeypatch):
 
 async def test_non_stream_contract_analysis_rejects_missing_json(monkeypatch):
     """无可用 JSON 时抛出可供路由处理的异常。"""
-    agent = SimpleNamespace(ainvoke=AsyncMock(return_value={
-        "messages": [AIMessage(content="无法输出报告")],
-    }))
+    agent = SimpleNamespace(
+        ainvoke=AsyncMock(
+            return_value={
+                "messages": [AIMessage(content="无法输出报告")],
+            }
+        )
+    )
     monkeypatch.setattr(chain, "contract_agent", agent)
 
     with pytest.raises(ValueError, match="JSON"):
@@ -168,12 +181,16 @@ async def test_stream_contract_tokens_match_final_report(monkeypatch, needs_repa
 
     assert "".join(event["content"] for event in events if event["type"] == "token") == reply
     assert events[-1] == {
-        "type": "done", "raw_text": "合同原文", "risk_points": [], "chat_reply": reply,
+        "type": "done",
+        "raw_text": "合同原文",
+        "risk_points": [],
+        "chat_reply": reply,
     }
 
 
 async def test_stream_contract_reports_unusable_response(monkeypatch):
     """流式审查无法解析结果时发出错误帧，不发正常结束帧。"""
+
     async def generate(*args, **kwargs):
         yield {
             "event": "on_chat_model_stream",

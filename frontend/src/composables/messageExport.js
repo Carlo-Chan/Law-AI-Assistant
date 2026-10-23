@@ -13,8 +13,8 @@
  */
 export function toExportable(messages) {
   return messages
-    .filter(m => m.role === 'user' || m.role === 'assistant')
-    .map(m => ({
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => ({
       role: m.role,
       content: m.content,
       file_name: m.file?.name || null,

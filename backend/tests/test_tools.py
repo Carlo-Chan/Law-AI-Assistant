@@ -1,4 +1,5 @@
 """法条检索辅助函数测试：验证中文条号转换与法律名称归属。"""
+
 import pytest
 
 from app.agent.tools import _arabic_to_chinese, _extract_article_numbers

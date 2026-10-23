@@ -6,7 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write src index.html vite.config.js eslint.config.js package.json .prettierrc.json",
+    "format:check": "prettier --check src index.html vite.config.js eslint.config.js package.json .prettierrc.json"
+  },
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.0",
@@ -18,7 +24,13 @@
     "vue": "^3.4.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@vitejs/plugin-vue": "^5.0.0",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-vue": "^10.11.1",
+    "globals": "^16.5.0",
+    "prettier": "^3.9.10",
     "vite": "^5.2.0"
   }
 }

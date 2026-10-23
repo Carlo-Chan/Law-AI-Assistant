@@ -35,7 +35,8 @@ export function fuzzyFind(rawText, quote) {
   }
 
   let charCount = 0
-  let start = -1, end = -1
+  let start = -1,
+    end = -1
   let foundStart = false
 
   for (let i = 0; i < rawText.length; i++) {
@@ -58,8 +59,10 @@ export function fuzzyFind(rawText, quote) {
 }
 
 function longestCommonSubstring(a, b) {
-  const m = a.length, n = b.length
-  let maxLen = 0, endIdx = 0
+  const m = a.length,
+    n = b.length
+  let maxLen = 0,
+    endIdx = 0
   const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
@@ -79,11 +82,13 @@ function longestCommonSubstring(a, b) {
  * 根据风险等级返回 CSS 类名
  */
 export function getRiskClass(level) {
-  return {
-    high: 'risk-high',
-    medium: 'risk-medium',
-    low: 'risk-low',
-  }[level] || ''
+  return (
+    {
+      high: 'risk-high',
+      medium: 'risk-medium',
+      low: 'risk-low',
+    }[level] || ''
+  )
 }
 
 /**
@@ -94,16 +99,16 @@ export function getRiskClass(level) {
  */
 export function renderHighlightedContract(rawText, riskPoints) {
   const matches = riskPoints
-    .map(rp => {
-      const q = rp.quote || rp.key_phrase || ""
+    .map((rp) => {
+      const q = rp.quote || rp.key_phrase || ''
       const pos = fuzzyFind(rawText, q)
-      if (!pos) console.warn("[highlight] match failed:", q.slice(0, 40))
+      if (!pos) console.warn('[highlight] match failed:', q.slice(0, 40))
       return pos ? { ...rp, pos } : null
     })
     .filter(Boolean)
     .sort((a, b) => b.pos.start - a.pos.start)
 
-  if (!matches.length) return rawText.replace(/\n/g, "<br>")
+  if (!matches.length) return rawText.replace(/\n/g, '<br>')
 
   let result = rawText
   const shifts = []
@@ -114,15 +119,23 @@ export function renderHighlightedContract(rawText, riskPoints) {
       if (s.at < start) start += s.delta
       if (s.at < end) end += s.delta
     }
-    const bubble = escapeHtml(rp.bubble_text || "")
-    const openTag = '<mark class="risk-' + escapeHtml(rp.level) + '" data-bubble="' + bubble.replace(/"/g, "&quot;") + '" data-level="' + escapeHtml(rp.level) + '">'
-    const closeTag = "</mark>"
-    result = result.slice(0, start) + openTag + result.slice(start, end) + closeTag + result.slice(end)
+    const bubble = escapeHtml(rp.bubble_text || '')
+    const openTag =
+      '<mark class="risk-' +
+      escapeHtml(rp.level) +
+      '" data-bubble="' +
+      bubble.replace(/"/g, '&quot;') +
+      '" data-level="' +
+      escapeHtml(rp.level) +
+      '">'
+    const closeTag = '</mark>'
+    result =
+      result.slice(0, start) + openTag + result.slice(start, end) + closeTag + result.slice(end)
     shifts.push({ at: rp.pos.start, delta: openTag.length })
     shifts.push({ at: rp.pos.end, delta: closeTag.length })
   }
 
-  return result.replace(/\n/g, "<br>")
+  return result.replace(/\n/g, '<br>')
 }
 
 function escapeHtml(str) {

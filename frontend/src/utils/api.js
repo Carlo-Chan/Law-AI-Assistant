@@ -52,7 +52,14 @@ export async function deleteConversation(id) {
 }
 
 /** 保存消息到会话 */
-export async function saveMessages(convId, userContent, assistantContent, fileName = null, contractData = null, thinkingChain = null) {
+export async function saveMessages(
+  convId,
+  userContent,
+  assistantContent,
+  fileName = null,
+  contractData = null,
+  thinkingChain = null,
+) {
   await api.post(`/conversations/${convId}/messages`, {
     user_content: userContent,
     assistant_content: assistantContent,
@@ -83,9 +90,21 @@ export async function rebuildMessages(convId, messages) {
  * @param {AbortSignal} signal  中断信号
  * @param {object} callbacks  事件回调集合
  */
-async function _readSSEStream(url, fetchOptions, signal, {
-  onThinking, onReasoning, onReasoningToken, onToolChunk, onToolResult, onToken, onDone, onError,
-}) {
+async function _readSSEStream(
+  url,
+  fetchOptions,
+  signal,
+  {
+    onThinking,
+    onReasoning,
+    onReasoningToken,
+    onToolChunk,
+    onToolResult,
+    onToken,
+    onDone,
+    onError,
+  },
+) {
   try {
     const res = await fetch(url, { ...fetchOptions, signal })
     const reader = res.body.getReader()
@@ -102,17 +121,36 @@ async function _readSSEStream(url, fetchOptions, signal, {
           try {
             const evt = JSON.parse(line.slice(6))
             switch (evt.type) {
-              case 'thinking': onThinking?.(evt.label); break
-              case 'thinking_reasoning': onReasoning?.(evt.content); break
-              case 'thinking_reasoning_token': await onReasoningToken?.(evt.content); break
-              case 'tool_result_chunk': onToolChunk?.(evt.tool, evt.content, evt.first); break
-              case 'tool_result_end': break
-              case 'tool_result': onToolResult?.(evt.tool, evt.output); break
-              case 'token': await onToken?.(evt.content); break
-              case 'done': onDone?.(evt); break
-              case 'error': onError?.(evt.message); break
+              case 'thinking':
+                onThinking?.(evt.label)
+                break
+              case 'thinking_reasoning':
+                onReasoning?.(evt.content)
+                break
+              case 'thinking_reasoning_token':
+                await onReasoningToken?.(evt.content)
+                break
+              case 'tool_result_chunk':
+                onToolChunk?.(evt.tool, evt.content, evt.first)
+                break
+              case 'tool_result_end':
+                break
+              case 'tool_result':
+                onToolResult?.(evt.tool, evt.output)
+                break
+              case 'token':
+                await onToken?.(evt.content)
+                break
+              case 'done':
+                onDone?.(evt)
+                break
+              case 'error':
+                onError?.(evt.message)
+                break
             }
-          } catch {}
+          } catch (error) {
+            console.warn('处理流式事件失败', error)
+          }
         }
       }
     }
@@ -127,19 +165,29 @@ async function _readSSEStream(url, fetchOptions, signal, {
 
 /** 法律咨询流式接口 */
 export async function chatStream(query, history, signal, callbacks) {
-  return _readSSEStream('/api/chat/stream', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, history }),
-  }, signal, callbacks)
+  return _readSSEStream(
+    '/api/chat/stream',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, history }),
+    },
+    signal,
+    callbacks,
+  )
 }
 
 /** 合同审查流式接口 */
 export async function analyzeContractStream(file, signal, callbacks) {
   const formData = new FormData()
   formData.append('file', file)
-  return _readSSEStream('/api/analyze_contract/stream', {
-    method: 'POST',
-    body: formData,
-  }, signal, callbacks)
+  return _readSSEStream(
+    '/api/analyze_contract/stream',
+    {
+      method: 'POST',
+      body: formData,
+    },
+    signal,
+    callbacks,
+  )
 }

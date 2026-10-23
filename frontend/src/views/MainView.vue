@@ -9,10 +9,14 @@
               <el-icon class="search-icon"><Search /></el-icon>
             </template>
             <template #suffix>
-              <span v-if="searchText" class="search-clear-btn" @click.stop="searchText = ''">✕</span>
+              <span v-if="searchText" class="search-clear-btn" @click.stop="searchText = ''"
+                >✕</span
+              >
             </template>
           </el-input>
-          <el-button text size="small" class="sidebar-close-btn" @click="sidebarOpen = false; forceSidebar = false"><el-icon><Fold /></el-icon></el-button>
+          <el-button text size="small" class="sidebar-close-btn" @click="closeSidebar"
+            ><el-icon><Fold /></el-icon
+          ></el-button>
         </div>
         <el-button class="new-chat-btn" @click="newChat">
           <el-icon><Edit /></el-icon> 开启新对话
@@ -35,8 +39,20 @@
               @click.stop
               ref="renameInput"
             />
-            <el-dropdown v-if="renamingConvId !== conv.id" trigger="click" popper-class="menu-pop" @command="(cmd) => cmd === 'rename' ? startRename(conv.id) : handleDeleteConv(conv.id)" @visible-change="(v) => sidebarMenuConvId = v ? conv.id : null">
-              <span :class="['conv-more', { 'conv-more-visible': sidebarMenuConvId === conv.id }]" @click.stop><el-icon><MoreFilled /></el-icon></span>
+            <el-dropdown
+              v-if="renamingConvId !== conv.id"
+              trigger="click"
+              popper-class="menu-pop"
+              @command="
+                (cmd) => (cmd === 'rename' ? startRename(conv.id) : handleDeleteConv(conv.id))
+              "
+              @visible-change="(v) => (sidebarMenuConvId = v ? conv.id : null)"
+            >
+              <span
+                :class="['conv-more', { 'conv-more-visible': sidebarMenuConvId === conv.id }]"
+                @click.stop
+                ><el-icon><MoreFilled /></el-icon
+              ></span>
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item command="rename">
@@ -49,187 +65,307 @@
               </template>
             </el-dropdown>
           </div>
-          </div>
+        </div>
         <div v-if="!filteredConvs.length" class="conv-empty-wrap">
           <span class="conv-empty">暂无历史对话</span>
         </div>
       </div>
     </transition>
     <div class="main-area">
-    <!-- 左侧：对话区 -->
-    <div class="chat-panel" :class="{ 'with-preview': showPreview && !isNarrow, 'hidden-narrow': showPreview && isNarrow }">
-      <div class="chat-header">
-        <template v-if="!sidebarVisible">
-          <el-button :icon="Expand" text size="small" class="toggle-btn" @click="sidebarOpen = true; forceSidebar = isNarrow" />
-          <el-button text size="small" class="new-chat-header-btn" @click="newChat" title="新对话">
-            <el-icon><Edit /></el-icon>
-          </el-button>
-        </template>
-        <h2>AI 法律助手</h2>
-        <span class="subtitle">法律咨询 · 合同审查</span>
-      </div>
-
-      <div v-if="messages.length === 0" class="welcome-screen">
-        <div class="welcome-content">
-          <h1>AI 法律助手</h1>
-          <p>您可以向我咨询法律问题，或上传合同文件进行风险审查</p>
-        </div>
-      </div>
-      <div v-else class="chat-messages" ref="msgContainer" @scroll="onMsgScroll">
-        <div v-for="(msg, i) in messages" :key="i" :class="['message', msg.role]">
-          <div v-if="msg.role === 'user' && editingIndex === i" class="edit-inline">
-            <div class="edit-inline-wrapper">
-              <el-input
-                v-model="editingText"
-                type="textarea"
-                :autosize="{ minRows: 1, maxRows: 12 }"
-                @keydown.esc="cancelEdit"
-              />
-              <div class="edit-actions">
-                <el-button size="small" text @click="cancelEdit">取消</el-button>
-                <el-button size="small" type="primary" @click="saveEdit(i)">保存</el-button>
-              </div>
-            </div>
-          </div>
-          <template v-else>
-          <div v-if="msg.role === 'user' && msg.file" class="msg-file-card">
-            <div class="msg-file-card-icon"><el-icon><Document /></el-icon></div>
-            <span class="msg-file-card-name">{{ msg.file.name }}</span>
-          </div>
-          <!-- 思维链：流式输出时实时展示，或持久化保存 -->
-          <div v-if="msg.role === 'assistant' && i === messages.length - 1 && loading" class="thinking-chain">
-            <div class="thinking-summary" @click="messages[messages.length-1].thinkingExpanded = !messages[messages.length-1].thinkingExpanded">
-              <span class="thinking-dot" />
-              <span>{{ thinkingLabel }}</span>
-              <span class="thinking-arrow"><el-icon :class="{ rotated: messages[messages.length-1].thinkingExpanded }"><ArrowRight /></el-icon></span>
-            </div>
-            <div v-if="messages[messages.length-1].thinkingExpanded" class="thinking-details">
-              <div v-for="(step, si) in thinkingSteps" :key="si" class="thinking-step">
-                <span class="thinking-step-icon">
-                <el-icon v-if="step.type === 'tool'"><Search /></el-icon>
-                <el-icon v-else-if="step.type === 'reasoning'"><ChatDotRound /></el-icon>
-                <el-icon v-else><CircleCheck /></el-icon>
-              </span>
-                <span class="thinking-step-text">{{ cleanFences(step.label) }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span>
-              </div>
-            </div>
-          </div>
-          <div v-else-if="msg.thinkingChain?.length" class="thinking-chain">
-            <div class="thinking-summary persisted" @click="msg.thinkingExpanded = !msg.thinkingExpanded">
-              <span>{{ msg.thinkingChain.filter(s => s.type === 'tool' || s.type === 'reasoning').length }} 次思考步骤</span>
-              <span class="thinking-arrow"><el-icon :class="{ rotated: msg.thinkingExpanded }"><ArrowRight /></el-icon></span>
-            </div>
-            <div v-if="msg.thinkingExpanded" class="thinking-details">
-              <div v-for="(step, si) in msg.thinkingChain" :key="si" class="thinking-step">
-                <span class="thinking-step-icon">
-                <el-icon v-if="step.type === 'tool'"><Search /></el-icon>
-                <el-icon v-else-if="step.type === 'reasoning'"><ChatDotRound /></el-icon>
-                <el-icon v-else><CircleCheck /></el-icon>
-              </span>
-                <span class="thinking-step-text">{{ cleanFences(step.label) }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span>
-              </div>
-            </div>
-          </div>
-          <div class="message-content" v-html="renderMd(msg.content)" />
+      <!-- 左侧：对话区 -->
+      <div
+        class="chat-panel"
+        :class="{
+          'with-preview': showPreview && !isNarrow,
+          'hidden-narrow': showPreview && isNarrow,
+        }"
+      >
+        <div class="chat-header">
+          <template v-if="!sidebarVisible">
+            <el-button :icon="Expand" text size="small" class="toggle-btn" @click="openSidebar" />
+            <el-button
+              text
+              size="small"
+              class="new-chat-header-btn"
+              @click="newChat"
+              title="新对话"
+            >
+              <el-icon><Edit /></el-icon>
+            </el-button>
           </template>
-          <transition name="contract-card-pop">
-            <div v-if="msg.contractRawText" class="contract-card" @click="openContractPreview(msg)">
-              <div class="contract-card-icon"><el-icon><Document /></el-icon></div>
-              <div class="contract-card-body">
-                <span class="contract-card-title">合同原文 · 风险标注</span>
-                <span class="contract-card-hint">点击查看高亮标注</span>
+          <h2>AI 法律助手</h2>
+          <span class="subtitle">法律咨询 · 合同审查</span>
+        </div>
+
+        <div v-if="messages.length === 0" class="welcome-screen">
+          <div class="welcome-content">
+            <h1>AI 法律助手</h1>
+            <p>您可以向我咨询法律问题，或上传合同文件进行风险审查</p>
+          </div>
+        </div>
+        <div v-else class="chat-messages" ref="msgContainer" @scroll="onMsgScroll">
+          <div v-for="(msg, i) in messages" :key="i" :class="['message', msg.role]">
+            <div v-if="msg.role === 'user' && editingIndex === i" class="edit-inline">
+              <div class="edit-inline-wrapper">
+                <el-input
+                  v-model="editingText"
+                  type="textarea"
+                  :autosize="{ minRows: 1, maxRows: 12 }"
+                  @keydown.esc="cancelEdit"
+                />
+                <div class="edit-actions">
+                  <el-button size="small" text @click="cancelEdit">取消</el-button>
+                  <el-button size="small" type="primary" @click="saveEdit(i)">保存</el-button>
+                </div>
               </div>
-              <el-icon class="contract-card-arrow"><ArrowRight /></el-icon>
             </div>
-          </transition>
-          <div v-if="msg.role === 'assistant' && editingIndex === -1" :class="['msg-actions', 'msg-actions-left', { 'msg-actions-visible': dropdownOpenIndex === i }]">
-            <el-dropdown trigger="click" popper-class="menu-pop" @command="(cmd) => copyMessage(i, cmd === 'md')" @visible-change="(v) => dropdownOpenIndex = v ? i : -1">
-              <span class="action-btn" title="复制"><el-icon><CopyDocument /></el-icon></span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="text">复制纯文本</el-dropdown-item>
-                  <el-dropdown-item command="md">复制 Markdown</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-            <span class="action-btn" title="重新生成" @click="regenerateMessage(i)"><el-icon><Refresh /></el-icon></span>
-            <span class="action-btn" title="删除" @click="deleteMessage(i)"><el-icon><Delete /></el-icon></span>
-          </div>
-          <div v-if="msg.role === 'user' && editingIndex !== i" :class="['msg-actions', 'msg-actions-right', { 'msg-actions-visible': dropdownOpenIndex === i }]">
-            <el-dropdown trigger="click" popper-class="menu-pop" @command="(cmd) => copyMessage(i, cmd === 'md')" @visible-change="(v) => dropdownOpenIndex = v ? i : -1">
-              <span class="action-btn" title="复制"><el-icon><CopyDocument /></el-icon></span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="text">复制纯文本</el-dropdown-item>
-                  <el-dropdown-item command="md">复制 Markdown</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-            <span class="action-btn" title="编辑" @click="editMessage(i)"><el-icon><EditPen /></el-icon></span>
-            <span class="action-btn" title="删除" @click="deleteMessage(i)"><el-icon><Delete /></el-icon></span>
-          </div>
-        </div>
-      </div>
-
-      <div class="chat-input-anchor" :class="{ 'input-floating': messages.length === 0, 'has-file': pendingFile }"><div class="chat-input-area">
-        <transition name="fade">
-          <div v-if="showScrollBtn" class="scroll-bottom-btn" @click="scrollToBottom">
-            <el-icon><ArrowDown /></el-icon>
-          </div>
-        </transition>
-        <div class="input-row">
-          <div class="input-wrapper" :class="{ 'is-sending': loading }">
-            <transition name="file-expand">
-              <div v-if="pendingFile" class="file-card">
-              <div class="file-card-icon"><el-icon><Document /></el-icon></div>
-              <span class="file-card-name">{{ pendingFile.name }}</span>
-              <el-button text size="small" class="file-card-close" @click="pendingFile = null"><el-icon><Close /></el-icon></el-button>
-            </div>
-            </transition>
-            <el-input
-              v-model="input"
-              type="textarea"
-              :autosize="{ minRows: 3, maxRows: 8 }"
-              placeholder="输入法律问题，或上传合同文件进行审查..."
-              :disabled="loading"
-              @keydown.enter.exact.prevent="handleSend"
-            />
-            <div class="input-actions">
-              <el-upload
-                :auto-upload="false"
-                :show-file-list="false"
-                :on-change="handleFileChange"
-                accept=".pdf,.doc,.docx,.txt"
+            <template v-else>
+              <div v-if="msg.role === 'user' && msg.file" class="msg-file-card">
+                <div class="msg-file-card-icon"
+                  ><el-icon><Document /></el-icon
+                ></div>
+                <span class="msg-file-card-name">{{ msg.file.name }}</span>
+              </div>
+              <!-- 思维链：流式输出时实时展示，或持久化保存 -->
+              <div
+                v-if="msg.role === 'assistant' && i === messages.length - 1 && loading"
+                class="thinking-chain"
               >
-                <el-button text size="small" class="upload-btn" :disabled="loading"><el-icon><Plus /></el-icon></el-button>
-              </el-upload>
-              <el-button v-if="!loading" size="small" :disabled="!canSend" @click="handleSend" class="send-btn"><el-icon><Top /></el-icon></el-button>
-              <el-button v-else size="small" @click="handleSend" class="stop-btn"><span class="stop-square"></span></el-button>
+                <div
+                  class="thinking-summary"
+                  @click="
+                    messages[messages.length - 1].thinkingExpanded =
+                      !messages[messages.length - 1].thinkingExpanded
+                  "
+                >
+                  <span class="thinking-dot" />
+                  <span>{{ thinkingLabel }}</span>
+                  <span class="thinking-arrow"
+                    ><el-icon :class="{ rotated: messages[messages.length - 1].thinkingExpanded }"
+                      ><ArrowRight /></el-icon
+                  ></span>
+                </div>
+                <div v-if="messages[messages.length - 1].thinkingExpanded" class="thinking-details">
+                  <div v-for="(step, si) in thinkingSteps" :key="si" class="thinking-step">
+                    <span class="thinking-step-icon">
+                      <el-icon v-if="step.type === 'tool'"><Search /></el-icon>
+                      <el-icon v-else-if="step.type === 'reasoning'"><ChatDotRound /></el-icon>
+                      <el-icon v-else><CircleCheck /></el-icon>
+                    </span>
+                    <span class="thinking-step-text"
+                      >{{ cleanFences(step.label)
+                      }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span
+                    >
+                  </div>
+                </div>
+              </div>
+              <div v-else-if="msg.thinkingChain?.length" class="thinking-chain">
+                <div
+                  class="thinking-summary persisted"
+                  @click="msg.thinkingExpanded = !msg.thinkingExpanded"
+                >
+                  <span
+                    >{{
+                      msg.thinkingChain.filter((s) => s.type === 'tool' || s.type === 'reasoning')
+                        .length
+                    }}
+                    次思考步骤</span
+                  >
+                  <span class="thinking-arrow"
+                    ><el-icon :class="{ rotated: msg.thinkingExpanded }"><ArrowRight /></el-icon
+                  ></span>
+                </div>
+                <div v-if="msg.thinkingExpanded" class="thinking-details">
+                  <div v-for="(step, si) in msg.thinkingChain" :key="si" class="thinking-step">
+                    <span class="thinking-step-icon">
+                      <el-icon v-if="step.type === 'tool'"><Search /></el-icon>
+                      <el-icon v-else-if="step.type === 'reasoning'"><ChatDotRound /></el-icon>
+                      <el-icon v-else><CircleCheck /></el-icon>
+                    </span>
+                    <span class="thinking-step-text"
+                      >{{ cleanFences(step.label)
+                      }}{{ step.snippet ? '：\n' + step.snippet : '' }}</span
+                    >
+                  </div>
+                </div>
+              </div>
+              <div class="message-content" v-html="renderMd(msg.content)" />
+            </template>
+            <transition name="contract-card-pop">
+              <div
+                v-if="msg.contractRawText"
+                class="contract-card"
+                @click="openContractPreview(msg)"
+              >
+                <div class="contract-card-icon"
+                  ><el-icon><Document /></el-icon
+                ></div>
+                <div class="contract-card-body">
+                  <span class="contract-card-title">合同原文 · 风险标注</span>
+                  <span class="contract-card-hint">点击查看高亮标注</span>
+                </div>
+                <el-icon class="contract-card-arrow"><ArrowRight /></el-icon>
+              </div>
+            </transition>
+            <div
+              v-if="msg.role === 'assistant' && editingIndex === -1"
+              :class="[
+                'msg-actions',
+                'msg-actions-left',
+                { 'msg-actions-visible': dropdownOpenIndex === i },
+              ]"
+            >
+              <el-dropdown
+                trigger="click"
+                popper-class="menu-pop"
+                @command="(cmd) => copyMessage(i, cmd === 'md')"
+                @visible-change="(v) => (dropdownOpenIndex = v ? i : -1)"
+              >
+                <span class="action-btn" title="复制"
+                  ><el-icon><CopyDocument /></el-icon
+                ></span>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="text">复制纯文本</el-dropdown-item>
+                    <el-dropdown-item command="md">复制 Markdown</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <span class="action-btn" title="重新生成" @click="regenerateMessage(i)"
+                ><el-icon><Refresh /></el-icon
+              ></span>
+              <span class="action-btn" title="删除" @click="deleteMessage(i)"
+                ><el-icon><Delete /></el-icon
+              ></span>
+            </div>
+            <div
+              v-if="msg.role === 'user' && editingIndex !== i"
+              :class="[
+                'msg-actions',
+                'msg-actions-right',
+                { 'msg-actions-visible': dropdownOpenIndex === i },
+              ]"
+            >
+              <el-dropdown
+                trigger="click"
+                popper-class="menu-pop"
+                @command="(cmd) => copyMessage(i, cmd === 'md')"
+                @visible-change="(v) => (dropdownOpenIndex = v ? i : -1)"
+              >
+                <span class="action-btn" title="复制"
+                  ><el-icon><CopyDocument /></el-icon
+                ></span>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="text">复制纯文本</el-dropdown-item>
+                    <el-dropdown-item command="md">复制 Markdown</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <span class="action-btn" title="编辑" @click="editMessage(i)"
+                ><el-icon><EditPen /></el-icon
+              ></span>
+              <span class="action-btn" title="删除" @click="deleteMessage(i)"
+                ><el-icon><Delete /></el-icon
+              ></span>
             </div>
           </div>
         </div>
-      </div></div>
-      <div v-if="frostedOverlay" class="frosted-overlay" @click="sidebarOpen = false; forceSidebar = false" />
-    </div>
 
-    <!-- 拖拽分隔条 -->
-    <div v-if="showPreview" class="split-divider" :class="{ active: dragging }" @mousedown="onDividerDragStart"></div>
-    <transition name="slide">
-      <div v-if="showPreview" :class="['preview-panel', { 'preview-fullscreen': isNarrow }]">
-        <div class="preview-header">
-          <span>合同原文 · 风险标注</span>
-          <el-button :icon="Close" text size="small" class="preview-close-btn" @click="showPreview = false" />
-        </div>
-        <div class="preview-body">
-          <div class="contract-text" v-html="highlightedContract" @click="onContractClick" @mouseover="onContractHover" @mouseout="onContractLeave" />
-        </div>
-        <div class="preview-legend">
-          <span class="legend-item"><span class="legend-dot high"></span>高风险</span>
-          <span class="legend-item"><span class="legend-dot medium"></span>中风险</span>
-          <span class="legend-item"><span class="legend-dot low"></span>低风险</span>
-        </div>
+        <div
+          class="chat-input-anchor"
+          :class="{ 'input-floating': messages.length === 0, 'has-file': pendingFile }"
+          ><div class="chat-input-area">
+            <transition name="fade">
+              <div v-if="showScrollBtn" class="scroll-bottom-btn" @click="scrollToBottom">
+                <el-icon><ArrowDown /></el-icon>
+              </div>
+            </transition>
+            <div class="input-row">
+              <div class="input-wrapper" :class="{ 'is-sending': loading }">
+                <transition name="file-expand">
+                  <div v-if="pendingFile" class="file-card">
+                    <div class="file-card-icon"
+                      ><el-icon><Document /></el-icon
+                    ></div>
+                    <span class="file-card-name">{{ pendingFile.name }}</span>
+                    <el-button text size="small" class="file-card-close" @click="pendingFile = null"
+                      ><el-icon><Close /></el-icon
+                    ></el-button>
+                  </div>
+                </transition>
+                <el-input
+                  v-model="input"
+                  type="textarea"
+                  :autosize="{ minRows: 3, maxRows: 8 }"
+                  placeholder="输入法律问题，或上传合同文件进行审查..."
+                  :disabled="loading"
+                  @keydown.enter.exact.prevent="handleSend"
+                />
+                <div class="input-actions">
+                  <el-upload
+                    :auto-upload="false"
+                    :show-file-list="false"
+                    :on-change="handleFileChange"
+                    accept=".pdf,.doc,.docx,.txt"
+                  >
+                    <el-button text size="small" class="upload-btn" :disabled="loading"
+                      ><el-icon><Plus /></el-icon
+                    ></el-button>
+                  </el-upload>
+                  <el-button
+                    v-if="!loading"
+                    size="small"
+                    :disabled="!canSend"
+                    @click="handleSend"
+                    class="send-btn"
+                    ><el-icon><Top /></el-icon
+                  ></el-button>
+                  <el-button v-else size="small" @click="handleSend" class="stop-btn"
+                    ><span class="stop-square"></span
+                  ></el-button>
+                </div>
+              </div>
+            </div> </div
+        ></div>
+        <div v-if="frostedOverlay" class="frosted-overlay" @click="closeSidebar" />
       </div>
-    </transition>
+
+      <!-- 拖拽分隔条 -->
+      <div
+        v-if="showPreview"
+        class="split-divider"
+        :class="{ active: dragging }"
+        @mousedown="onDividerDragStart"
+      ></div>
+      <transition name="slide">
+        <div v-if="showPreview" :class="['preview-panel', { 'preview-fullscreen': isNarrow }]">
+          <div class="preview-header">
+            <span>合同原文 · 风险标注</span>
+            <el-button
+              :icon="Close"
+              text
+              size="small"
+              class="preview-close-btn"
+              @click="showPreview = false"
+            />
+          </div>
+          <div class="preview-body">
+            <div
+              class="contract-text"
+              v-html="highlightedContract"
+              @click="onContractClick"
+              @mouseover="onContractHover"
+              @mouseout="onContractLeave"
+            />
+          </div>
+          <div class="preview-legend">
+            <span class="legend-item"><span class="legend-dot high"></span>高风险</span>
+            <span class="legend-item"><span class="legend-dot medium"></span>中风险</span>
+            <span class="legend-item"><span class="legend-dot low"></span>低风险</span>
+          </div>
+        </div>
+      </transition>
     </div>
   </div>
   <!-- 确认弹窗（毛玻璃 + 圆角框） -->
@@ -239,8 +375,12 @@
         <div class="confirm-dialog">
           <p class="confirm-message">{{ confirmState.message }}</p>
           <div class="confirm-actions">
-            <el-button class="confirm-cancel-btn" @click="resolveConfirm(false)">{{ confirmState.cancelText || '取消' }}</el-button>
-            <el-button type="primary" class="confirm-ok-btn" @click="resolveConfirm(true)">{{ confirmState.okText || '确定' }}</el-button>
+            <el-button class="confirm-cancel-btn" @click="resolveConfirm(false)">{{
+              confirmState.cancelText || '取消'
+            }}</el-button>
+            <el-button type="primary" class="confirm-ok-btn" @click="resolveConfirm(true)">{{
+              confirmState.okText || '确定'
+            }}</el-button>
           </div>
         </div>
       </div>
@@ -251,8 +391,36 @@
 <script setup>
 import { ref, reactive, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Document, Close, Plus, Delete, Expand, CopyDocument, Refresh, Edit, MoreFilled, ArrowDown, Search, ChatDotRound, CircleCheck, Top, EditPen, Fold, ArrowRight } from '@element-plus/icons-vue'
-import { listConversations, createConversation, getConversation, deleteConversation, saveMessages, updateConvTitle, chatStream, analyzeContractStream, rebuildMessages } from '../utils/api'
+import {
+  Document,
+  Close,
+  Plus,
+  Delete,
+  Expand,
+  CopyDocument,
+  Refresh,
+  Edit,
+  MoreFilled,
+  ArrowDown,
+  Search,
+  ChatDotRound,
+  CircleCheck,
+  Top,
+  EditPen,
+  Fold,
+  ArrowRight,
+} from '@element-plus/icons-vue'
+import {
+  listConversations,
+  createConversation,
+  getConversation,
+  deleteConversation,
+  saveMessages,
+  updateConvTitle,
+  chatStream,
+  analyzeContractStream,
+  rebuildMessages,
+} from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
 import { appendToTypewriter, flushTypewriter } from '../composables/useTypewriter'
 import { toExportable } from '../composables/messageExport'
@@ -262,11 +430,11 @@ import { stripMarkdown, cleanFences, renderMd } from '../composables/useTextTool
 // ---- 状态 ----
 const messages = ref([])
 const input = ref('')
-const draftInputs = {}  // 按对话ID记忆输入框草稿
-const draftFiles = {}    // 按对话ID记忆已选文件
+const draftInputs = {} // 按对话ID记忆输入框草稿
+const draftFiles = {} // 按对话ID记忆已选文件
 const pendingFile = ref(null)
 const loadingConvIds = ref(new Set())
-const loading = computed(() => loadingConvIds.value.has(currentConvId.value || "__pending__"))
+const loading = computed(() => loadingConvIds.value.has(currentConvId.value || '__pending__'))
 const abortControllers = ref({})
 const editingIndex = ref(-1)
 const editingText = ref('')
@@ -284,7 +452,10 @@ function showConfirm(message, { okText, cancelText } = {}) {
 }
 function resolveConfirm(result) {
   confirmState.visible = false
-  if (confirmResolve) { confirmResolve(result); confirmResolve = null }
+  if (confirmResolve) {
+    confirmResolve(result)
+    confirmResolve = null
+  }
 }
 const sidebarMenuConvId = ref(null)
 const renamingConvId = ref(null)
@@ -320,12 +491,25 @@ const currentConvId = ref(null)
 const searchText = ref('')
 const forceSidebar = ref(false)
 const sidebarFits = ref(true)
-const sidebarVisible = computed(() => sidebarOpen.value && (sidebarFits.value || forceSidebar.value))
+
+function openSidebar() {
+  sidebarOpen.value = true
+  forceSidebar.value = isNarrow.value
+}
+
+function closeSidebar() {
+  sidebarOpen.value = false
+  forceSidebar.value = false
+}
+
+const sidebarVisible = computed(
+  () => sidebarOpen.value && (sidebarFits.value || forceSidebar.value),
+)
 const frostedOverlay = computed(() => isNarrow.value && forceSidebar.value && sidebarOpen.value)
 const filteredConvs = computed(() => {
   if (!searchText.value) return conversations.value
   const q = searchText.value.toLowerCase()
-  return conversations.value.filter(c => {
+  return conversations.value.filter((c) => {
     const t = c.title.toLowerCase()
     return t.includes(q) || pinyinMatch(c.title, q) || fuzzyMatch(t, q)
   })
@@ -347,14 +531,11 @@ let pinnedMark = null
 let pinnedScrollHandler = null
 let hoverTimer = null
 
-const canSend = computed(() => (input.value.trim() || pendingFile.value) && !loadingConvIds.value.has(currentConvId.value || "__pending__"))
-
-// ---- Mock 降级数据 ----
-const MOCK_POINTS = [
-  { quote: '如乙方提前退租，甲方有权没收全部押金并要求额外赔偿', level: 'high', bubble_text: '涉嫌霸王条款。违约金过高时可请求法院适当减少。' },
-  { quote: '每日按租金总额的 5% 支付违约金', level: 'high', bubble_text: '违约金比例畸高（日 5% 即月 150%），建议修改为 0.05%/日。' },
-  { quote: '租赁期间的物业费由乙方承担', level: 'low', bubble_text: '属于常规条款，建议明确具体的物业费单价。' },
-]
+const canSend = computed(
+  () =>
+    (input.value.trim() || pendingFile.value) &&
+    !loadingConvIds.value.has(currentConvId.value || '__pending__'),
+)
 
 const highlightedContract = computed(() => {
   if (!previewData.value) return ''
@@ -373,7 +554,11 @@ async function scrollToBottom() {
 // ---- 文本发送 ----
 // ---- 会话管理 ----
 async function refreshConvList() {
-  try { conversations.value = await listConversations() } catch {}
+  try {
+    conversations.value = await listConversations()
+  } catch (error) {
+    console.warn('刷新历史对话列表失败', error)
+  }
 }
 // 创建新对话：保存草稿、缓存活跃对话消息、清空界面
 async function newChat() {
@@ -384,13 +569,23 @@ async function newChat() {
     draftInputs['__new__'] = input.value
   }
   // 保存当前文件
-  if (currentConvId.value) { draftFiles[currentConvId.value] = pendingFile.value }
-  else { draftFiles['__new__'] = pendingFile.value }
+  if (currentConvId.value) {
+    draftFiles[currentConvId.value] = pendingFile.value
+  } else {
+    draftFiles['__new__'] = pendingFile.value
+  }
   // 切换前保存当前对话中正在生成的消息（仅针对活跃流的对话）
-  if (loading.value && activeStreamConvId.value && currentConvId.value === activeStreamConvId.value) {
+  if (
+    loading.value &&
+    activeStreamConvId.value &&
+    currentConvId.value === activeStreamConvId.value
+  ) {
     streamMessageCache.value = {
       ...streamMessageCache.value,
-      [currentConvId.value]: { messages: [...messages.value], thinkingSteps: [...thinkingSteps.value] },
+      [currentConvId.value]: {
+        messages: [...messages.value],
+        thinkingSteps: [...thinkingSteps.value],
+      },
     }
   }
   currentConvId.value = null
@@ -411,8 +606,11 @@ async function loadConversation(id) {
     draftInputs['__new__'] = input.value
   }
   // 保存当前文件
-  if (currentConvId.value) { draftFiles[currentConvId.value] = pendingFile.value }
-  else { draftFiles['__new__'] = pendingFile.value }
+  if (currentConvId.value) {
+    draftFiles[currentConvId.value] = pendingFile.value
+  } else {
+    draftFiles['__new__'] = pendingFile.value
+  }
   // 切换前保存正在生成的消息到缓存
   if (loadingConvIds.value.has(currentConvId.value) && currentConvId.value !== id) {
     streamMessageCache.value = {
@@ -438,24 +636,28 @@ async function loadConversation(id) {
     currentConvId.value = id
     pendingFile.value = draftFiles[id] || null
     input.value = draftInputs[id] || ''
-    const msgs = conv.messages.map(m => {
+    const msgs = conv.messages.map((m) => {
       const msg = { role: m.role, content: m.content }
       if (m.file_name) msg.file = { name: m.file_name }
       if (m.thinking_chain) {
         try {
-          msg.thinkingChain = typeof m.thinking_chain === 'string'
-            ? JSON.parse(m.thinking_chain) : m.thinking_chain
+          msg.thinkingChain =
+            typeof m.thinking_chain === 'string' ? JSON.parse(m.thinking_chain) : m.thinking_chain
           msg.thinkingExpanded = false
-        } catch {}
+        } catch (error) {
+          console.warn('解析历史思维链失败', error)
+        }
       }
       if (m.contract_data) {
         try {
-          const cd = typeof m.contract_data === 'string'
-            ? JSON.parse(m.contract_data) : m.contract_data
+          const cd =
+            typeof m.contract_data === 'string' ? JSON.parse(m.contract_data) : m.contract_data
           msg.contractData = cd
           msg.contractRawText = cd.raw_text || ''
           msg.contractRiskPoints = cd.risk_points || []
-        } catch {}
+        } catch (error) {
+          console.warn('解析历史合同审查数据失败', error)
+        }
       }
       return msg
     })
@@ -468,10 +670,12 @@ async function loadConversation(id) {
     await scrollToBottom()
     showPreview.value = false
     previewData.value = null
-  } catch { /* 忽略异常 */ }
+  } catch (error) {
+    console.warn('加载历史对话失败', error)
+  }
 }
 async function startRename(convId) {
-  const conv = conversations.value.find(c => c.id === convId)
+  const conv = conversations.value.find((c) => c.id === convId)
   if (!conv) return
   renamingConvId.value = convId
   renameText.value = conv.title
@@ -483,8 +687,12 @@ async function startRename(convId) {
 async function finishRename(convId) {
   const val = renameText.value.trim()
   if (val) {
-    try { await updateConvTitle(convId, val) } catch {}
-    const conv = conversations.value.find(c => c.id === convId)
+    try {
+      await updateConvTitle(convId, val)
+    } catch (error) {
+      console.warn('保存对话标题失败', error)
+    }
+    const conv = conversations.value.find((c) => c.id === convId)
     if (conv) conv.title = val
   }
   renamingConvId.value = null
@@ -506,7 +714,9 @@ async function handleDeleteConv(id) {
       messages.value = []
     }
     await refreshConvList()
-  } catch {}
+  } catch (error) {
+    console.warn('删除历史对话失败', error)
+  }
 }
 // 确保当前有活跃对话，没有则自动创建
 async function ensureConversation() {
@@ -519,19 +729,28 @@ async function ensureConversation() {
 
 const LOADING_DOTS = '<span class="loading-dots">…</span>'
 // 保存对话消息到后端数据库
-async function doSaveMessages(overrideConvId, userContent, assistantContent, fileName, contractData, thinkingChain) {
+async function doSaveMessages(
+  overrideConvId,
+  userContent,
+  assistantContent,
+  fileName,
+  contractData,
+  thinkingChain,
+) {
   const _cid = overrideConvId || currentConvId.value
   if (!_cid) return
   try {
     await saveMessages(_cid, userContent, assistantContent, fileName, contractData, thinkingChain)
     await refreshConvList()
-  } catch {}
+  } catch (error) {
+    console.warn('保存对话消息失败', error)
+  }
 }
 // 简易内联 POST 辅助函数（避免循环引用）
 
 // 发送按钮处理：生成中则停止，否则发送文本或文件
 function handleSend() {
-  const _key = currentConvId.value || "__pending__"
+  const _key = currentConvId.value || '__pending__'
   if (loadingConvIds.value.has(_key)) {
     stopGeneration(currentConvId.value)
     return
@@ -567,7 +786,11 @@ async function deleteMessage(idx) {
   messages.value.splice(idx, 1)
   // 所有消息删除后自动清理对话
   if (!messages.value.length && currentConvId.value) {
-    try { await deleteConversation(currentConvId.value) } catch {}
+    try {
+      await deleteConversation(currentConvId.value)
+    } catch (error) {
+      console.warn('删除空对话失败', error)
+    }
     currentConvId.value = null
     messages.value = []
     await refreshConvList()
@@ -577,7 +800,9 @@ async function deleteMessage(idx) {
   if (currentConvId.value) {
     try {
       await rebuildMessages(currentConvId.value, toExportable(messages.value))
-    } catch {}
+    } catch (error) {
+      console.warn('同步消息删除结果失败', error)
+    }
   }
 }
 
@@ -594,7 +819,9 @@ async function regenerateMessage(idx) {
     if (currentConvId.value) {
       try {
         await rebuildMessages(currentConvId.value, toExportable(messages.value))
-      } catch {}
+      } catch (error) {
+        console.warn('同步重新生成前的消息列表失败', error)
+      }
     }
     if (userMsg.file) {
       // 文件上传消息，重新发送文件
@@ -636,7 +863,9 @@ async function saveEdit(idx) {
   if (currentConvId.value) {
     try {
       await rebuildMessages(currentConvId.value, toExportable(messages.value))
-    } catch {}
+    } catch (error) {
+      console.warn('同步编辑后的消息失败', error)
+    }
   }
 }
 function cancelEdit() {
@@ -669,9 +898,13 @@ async function sendText() {
   if (loadingConvIds.value.has(_pendingId)) return
   loadingConvIds.value.add(_pendingId)
 
-  input.value = ""
-  if (currentConvId.value) { delete draftInputs[currentConvId.value] } else { delete draftInputs["__new__"] }
-  messages.value.push({ role: "user", content: query })
+  input.value = ''
+  if (currentConvId.value) {
+    delete draftInputs[currentConvId.value]
+  } else {
+    delete draftInputs['__new__']
+  }
+  messages.value.push({ role: 'user', content: query })
   await scrollToBottom()
 
   await ensureConversation()
@@ -683,25 +916,33 @@ async function sendText() {
   await scrollToBottom()
 
   try {
-    const isFirstMsg = messages.value.filter(m => m.role === 'user').length === 1
+    const isFirstMsg = messages.value.filter((m) => m.role === 'user').length === 1
     if (isFirstMsg) {
       try {
         const t = query
-        await updateConvTitle(_convId, t.length > 14 ? t.slice(0, 14) + "…" : t)
-      } catch {}
+        await updateConvTitle(_convId, t.length > 14 ? t.slice(0, 14) + '…' : t)
+      } catch (error) {
+        console.warn('自动命名咨询对话失败', error)
+      }
     }
     await refreshConvList()
     const history = messages.value
-      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
       .slice(0, -1)
-      .map(m => ({ role: m.role, content: m.content }))
+      .map((m) => ({ role: m.role, content: m.content }))
     const _localSteps = []
     thinkingSteps.value = []
-    const _asstMsg = { role: 'assistant', content: LOADING_DOTS, thinkingChain: [], thinkingExpanded: false }
+    const _asstMsg = {
+      role: 'assistant',
+      content: LOADING_DOTS,
+      thinkingChain: [],
+      thinkingExpanded: false,
+    }
     messages.value.push(_asstMsg)
     const asstMsgProxy = messages.value[messages.value.length - 1]
     const _isActive = () => currentConvId.value === _convId
-    const controller = new AbortController(); abortControllers.value[_convId] = controller
+    const controller = new AbortController()
+    abortControllers.value[_convId] = controller
     await chatStream(query, history, controller.signal, {
       onThinking(label) {
         _localSteps.push({ type: 'tool', label })
@@ -767,17 +1008,21 @@ async function sendText() {
       },
       async onToken(content) {
         if (_isActive()) {
-          if (asstMsgProxy.fullContent && (!asstMsgProxy.content || asstMsgProxy.content === LOADING_DOTS)) {
+          if (
+            asstMsgProxy.fullContent &&
+            (!asstMsgProxy.content || asstMsgProxy.content === LOADING_DOTS)
+          ) {
             asstMsgProxy.content = asstMsgProxy.fullContent
           }
           appendToTypewriter(asstMsgProxy, content, _isActive, scrollToBottom)
         } else {
           if (asstMsgProxy.content === LOADING_DOTS) asstMsgProxy.content = ''
-          if (typeof asstMsgProxy.fullContent !== 'string') asstMsgProxy.fullContent = asstMsgProxy.content || ''
+          if (typeof asstMsgProxy.fullContent !== 'string')
+            asstMsgProxy.fullContent = asstMsgProxy.content || ''
           asstMsgProxy.fullContent += content
         }
       },
-      async onDone(data) {
+      async onDone() {
         if (_isActive()) {
           flushTypewriter(asstMsgProxy)
         } else {
@@ -796,10 +1041,18 @@ async function sendText() {
         flushTypewriter(asstMsgProxy)
         asstMsgProxy.content = '### ⚠️ 请求失败\n\n' + msg
         if (_isActive()) thinkingSteps.value = [..._localSteps]
-        doSaveMessages(_convId, query, asstMsgProxy.content, null, null, asstMsgProxy.thinkingChain).catch(() => {})
+        doSaveMessages(
+          _convId,
+          query,
+          asstMsgProxy.content,
+          null,
+          null,
+          asstMsgProxy.thinkingChain,
+        ).catch((error) => console.warn('保存咨询失败记录时发生异常', error))
       },
     })
   } catch (e) {
+    console.warn('发送咨询消息失败', e)
     messages.value.push({ role: 'assistant', content: '### ⚠️ 请求失败\n\n请确认后端服务已启动。' })
   } finally {
     loadingConvIds.value.delete(_convId)
@@ -845,25 +1098,39 @@ async function sendFile(instruction = null) {
   const fileToSend = pendingFile.value
   pendingFile.value = null
   input.value = ''
-  if (_convId) { delete draftInputs[_convId]; delete draftFiles[_convId] } else { delete draftInputs['__new__']; delete draftFiles['__new__'] }
+  if (_convId) {
+    delete draftInputs[_convId]
+    delete draftFiles[_convId]
+  } else {
+    delete draftInputs['__new__']
+    delete draftFiles['__new__']
+  }
   await scrollToBottom()
 
   try {
-    const isFirstMsg = messages.value.filter(m => m.role === 'user').length === 1
+    const isFirstMsg = messages.value.filter((m) => m.role === 'user').length === 1
     if (isFirstMsg) {
       try {
-        const t = instruction || fileToSend.name.replace(/\.[^.]+$/, "")
-        await updateConvTitle(_convId, t.length > 14 ? t.slice(0, 14) + "…" : t)
-      } catch {}
+        const t = instruction || fileToSend.name.replace(/\.[^.]+$/, '')
+        await updateConvTitle(_convId, t.length > 14 ? t.slice(0, 14) + '…' : t)
+      } catch (error) {
+        console.warn('自动命名合同审查对话失败', error)
+      }
     }
     await refreshConvList()
     const _localSteps = []
     thinkingSteps.value = []
-    const _asstMsg = { role: 'assistant', content: LOADING_DOTS, thinkingChain: [], thinkingExpanded: false }
+    const _asstMsg = {
+      role: 'assistant',
+      content: LOADING_DOTS,
+      thinkingChain: [],
+      thinkingExpanded: false,
+    }
     messages.value.push(_asstMsg)
     const asstMsgProxy = messages.value[messages.value.length - 1]
     const _isActive = () => currentConvId.value === _convId
-    const controller2 = new AbortController(); abortControllers.value[_convId] = controller2
+    const controller2 = new AbortController()
+    abortControllers.value[_convId] = controller2
     await analyzeContractStream(fileToSend, controller2.signal, {
       onThinking(label) {
         _localSteps.push({ type: 'tool', label })
@@ -929,13 +1196,17 @@ async function sendFile(instruction = null) {
       },
       async onToken(content) {
         if (_isActive()) {
-          if (asstMsgProxy.fullContent && (!asstMsgProxy.content || asstMsgProxy.content === LOADING_DOTS)) {
+          if (
+            asstMsgProxy.fullContent &&
+            (!asstMsgProxy.content || asstMsgProxy.content === LOADING_DOTS)
+          ) {
             asstMsgProxy.content = asstMsgProxy.fullContent
           }
           appendToTypewriter(asstMsgProxy, content, _isActive, scrollToBottom)
         } else {
           if (asstMsgProxy.content === LOADING_DOTS) asstMsgProxy.content = ''
-          if (typeof asstMsgProxy.fullContent !== 'string') asstMsgProxy.fullContent = asstMsgProxy.content || ''
+          if (typeof asstMsgProxy.fullContent !== 'string')
+            asstMsgProxy.fullContent = asstMsgProxy.content || ''
           asstMsgProxy.fullContent += content
         }
       },
@@ -953,14 +1224,28 @@ async function sendFile(instruction = null) {
           thinkingSteps.value = [..._localSteps]
         }
         const finalContent = asstMsgProxy.fullContent || asstMsgProxy.content
-        await doSaveMessages(_convId, _userDisplayContent, finalContent, fileToSend.name, data, asstMsgProxy.thinkingChain)
+        await doSaveMessages(
+          _convId,
+          _userDisplayContent,
+          finalContent,
+          fileToSend.name,
+          data,
+          asstMsgProxy.thinkingChain,
+        )
         if (_isActive()) await scrollToBottom()
       },
       onError(msg) {
         flushTypewriter(asstMsgProxy)
         asstMsgProxy.content = '### ⚠️ 合同审查失败\n\n' + msg
         if (_isActive()) thinkingSteps.value = [..._localSteps]
-        doSaveMessages(_convId, _userDisplayContent, asstMsgProxy.content, fileToSend.name, null, asstMsgProxy.thinkingChain).catch(() => {})
+        doSaveMessages(
+          _convId,
+          _userDisplayContent,
+          asstMsgProxy.content,
+          fileToSend.name,
+          null,
+          asstMsgProxy.thinkingChain,
+        ).catch((error) => console.warn('保存合同审查失败记录时发生异常', error))
       },
     })
   } catch (e) {
@@ -1029,7 +1314,9 @@ function onContractClick(e) {
     }
     onContractHover(e)
     pinnedScrollHandler = () => updatePinnedBubble()
-    document.querySelector('.preview-body')?.addEventListener('scroll', pinnedScrollHandler, { passive: true })
+    document
+      .querySelector('.preview-body')
+      ?.addEventListener('scroll', pinnedScrollHandler, { passive: true })
   }
 }
 
@@ -1108,7 +1395,7 @@ function onContractHover(e) {
   tooltipEl.style.top = top + 'px'
 }
 
-function onContractLeave(e) {
+function onContractLeave() {
   clearTimeout(hoverTimer)
   if (!tooltipEl || pinnedMark) return
   hoverTimer = setTimeout(() => {
@@ -1121,19 +1408,19 @@ function onContractLeave(e) {
 
 onMounted(() => {
   checkNarrow()
-  window.addEventListener("resize", checkNarrow)
+  window.addEventListener('resize', checkNarrow)
   watch(showPreview, (val) => {
     nextTick(checkNarrow)
     if (!val && pinnedMark) {
-      pinnedMark.classList.remove("pinned")
-      if (tooltipEl) tooltipEl.style.pointerEvents = "none"
+      pinnedMark.classList.remove('pinned')
+      if (tooltipEl) tooltipEl.style.pointerEvents = 'none'
       pinnedMark = null
       if (tooltipEl) {
-      tooltipEl.style.opacity = "0"
-      tooltipEl.style.pointerEvents = "none"
-    }
+        tooltipEl.style.opacity = '0'
+        tooltipEl.style.pointerEvents = 'none'
+      }
       if (pinnedScrollHandler) {
-        document.querySelector(".preview-body")?.removeEventListener("scroll", pinnedScrollHandler)
+        document.querySelector('.preview-body')?.removeEventListener('scroll', pinnedScrollHandler)
         pinnedScrollHandler = null
       }
     }
@@ -1141,12 +1428,13 @@ onMounted(() => {
   refreshConvList()
   tooltipEl = document.createElement('div')
   tooltipEl.className = 'contract-tooltip'
-  tooltipEl.style.cssText = 'display:block;opacity:0;pointer-events:none;transition:opacity 0.15s ease;position:fixed;z-index:9999;max-width:300px;padding:10px 14px;background:#fff;color:#303133;font-size:14px;line-height:1.6;border-radius:10px;white-space:normal;word-break:break-word;box-shadow:0 4px 20px rgba(0,0,0,0.15);font-family:"Microsoft YaHei",sans-serif;'
+  tooltipEl.style.cssText =
+    'display:block;opacity:0;pointer-events:none;transition:opacity 0.15s ease;position:fixed;z-index:9999;max-width:300px;padding:10px 14px;background:#fff;color:#303133;font-size:14px;line-height:1.6;border-radius:10px;white-space:normal;word-break:break-word;box-shadow:0 4px 20px rgba(0,0,0,0.15);font-family:"Microsoft YaHei",sans-serif;'
   document.body.appendChild(tooltipEl)
 })
 
 onUnmounted(() => {
-  window.removeEventListener("resize", checkNarrow)
+  window.removeEventListener('resize', checkNarrow)
   if (tooltipEl) {
     tooltipEl.remove()
     tooltipEl = null
@@ -1162,28 +1450,36 @@ function pushContractAttach(msg, data, file) {
   }
 }
 
-function pushContractResult(data) {
-  messages.value.push({
-    role: 'assistant',
-    content: data.chat_reply,
-    contractData: data,
-  })
-}
-
 // 打开合同预览面板
 function openContractPreview(msg) {
   previewData.value = msg.contractData
   showPreview.value = true
 }
-
 </script>
 
 <style scoped>
 /* 滚动条 */
-.chat-messages::-webkit-scrollbar,.conv-list::-webkit-scrollbar,.preview-body::-webkit-scrollbar{width:6px}
-.chat-messages::-webkit-scrollbar-track,.conv-list::-webkit-scrollbar-track,.preview-body::-webkit-scrollbar-track{background:transparent}
-.chat-messages::-webkit-scrollbar-thumb,.conv-list::-webkit-scrollbar-thumb,.preview-body::-webkit-scrollbar-thumb{background:#d0d5dd;border-radius:3px}
-.chat-messages::-webkit-scrollbar-thumb:hover,.conv-list::-webkit-scrollbar-thumb:hover,.preview-body::-webkit-scrollbar-thumb:hover{background:#b0b5bd}
+.chat-messages::-webkit-scrollbar,
+.conv-list::-webkit-scrollbar,
+.preview-body::-webkit-scrollbar {
+  width: 6px;
+}
+.chat-messages::-webkit-scrollbar-track,
+.conv-list::-webkit-scrollbar-track,
+.preview-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-messages::-webkit-scrollbar-thumb,
+.conv-list::-webkit-scrollbar-thumb,
+.preview-body::-webkit-scrollbar-thumb {
+  background: #d0d5dd;
+  border-radius: 3px;
+}
+.chat-messages::-webkit-scrollbar-thumb:hover,
+.conv-list::-webkit-scrollbar-thumb:hover,
+.preview-body::-webkit-scrollbar-thumb:hover {
+  background: #b0b5bd;
+}
 .app-layout {
   display: flex;
   height: 100vh;
@@ -1218,7 +1514,47 @@ function openContractPreview(msg) {
   border-bottom: 1px solid #ebeef5;
 }
 
-.toggle-btn{flex-shrink:0;width:36px;height:36px;padding:0!important;border-radius:8px}.toggle-btn:hover{background:#f0f2f5!important}.toggle-btn :deep(.el-icon){font-size:20px}.new-chat-header-btn{margin-left:0;margin-right:10px;flex-shrink:0;width:36px;height:36px;padding:0!important;border-radius:8px}.new-chat-header-btn:hover{background:#f0f2f5!important}.new-chat-header-btn :deep(.el-icon){font-size:20px}.preview-close-btn{flex-shrink:0;width:36px;height:36px;padding:0!important;border-radius:8px}.preview-close-btn:hover{background:#f0f2f5!important}.preview-close-btn :deep(.el-icon){font-size:20px}
+.toggle-btn {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0 !important;
+  border-radius: 8px;
+}
+.toggle-btn:hover {
+  background: #f0f2f5 !important;
+}
+.toggle-btn :deep(.el-icon) {
+  font-size: 20px;
+}
+.new-chat-header-btn {
+  margin-left: 0;
+  margin-right: 10px;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0 !important;
+  border-radius: 8px;
+}
+.new-chat-header-btn:hover {
+  background: #f0f2f5 !important;
+}
+.new-chat-header-btn :deep(.el-icon) {
+  font-size: 20px;
+}
+.preview-close-btn {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0 !important;
+  border-radius: 8px;
+}
+.preview-close-btn:hover {
+  background: #f0f2f5 !important;
+}
+.preview-close-btn :deep(.el-icon) {
+  font-size: 20px;
+}
 .chat-header h2 {
   margin: 0;
   font-size: 18px;
@@ -1238,7 +1574,9 @@ function openContractPreview(msg) {
   align-items: center;
   justify-content: center;
   position: relative;
-  background: radial-gradient(circle at 20% 50%, rgba(64,158,255,0.03) 0%, transparent 50%), radial-gradient(circle at 80% 50%, rgba(64,158,255,0.03) 0%, transparent 50%), #f8f9fb;
+  background:
+    radial-gradient(circle at 20% 50%, rgba(64, 158, 255, 0.03) 0%, transparent 50%),
+    radial-gradient(circle at 80% 50%, rgba(64, 158, 255, 0.03) 0%, transparent 50%), #f8f9fb;
 }
 .welcome-content {
   position: absolute;
@@ -1350,8 +1688,13 @@ function openContractPreview(msg) {
   animation: breathe 1.5s ease-in-out infinite;
 }
 @keyframes breathe {
-  0%, 100% { opacity: 0.25; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .message-content :deep(.loading-dots) {
@@ -1361,8 +1704,13 @@ function openContractPreview(msg) {
   animation: breathe 1.5s ease-in-out infinite;
 }
 @keyframes breathe {
-  0%, 100% { opacity: 0.25; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 /* 防止代码块在流式输出时溢出 */
 .message-content :deep(pre),
@@ -1381,10 +1729,12 @@ function openContractPreview(msg) {
   border: 1px solid #e8eaed;
   border-radius: 12px;
   cursor: pointer;
-  transition: box-shadow 0.2s, border-color 0.2s;
+  transition:
+    box-shadow 0.2s,
+    border-color 0.2s;
 }
 .contract-card:hover {
-  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   border-color: #d0d5dd;
 }
 .contract-card-icon {
@@ -1529,14 +1879,14 @@ function openContractPreview(msg) {
   left: 50%;
   transform: translateX(-50%);
   margin-bottom: 12px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   transition: all 0.15s;
   z-index: 10;
 }
 .scroll-bottom-btn:hover {
   color: #409eff;
   border-color: #409eff;
-  box-shadow: 0 2px 12px rgba(64,158,255,0.2);
+  box-shadow: 0 2px 12px rgba(64, 158, 255, 0.2);
 }
 .fade-enter-active,
 .fade-leave-active {
@@ -1554,7 +1904,9 @@ function openContractPreview(msg) {
   right: 0;
   bottom: 16px;
   z-index: 10;
-  transition: bottom 0.5s cubic-bezier(0.4, 0, 0.2, 1), top 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    bottom 0.5s cubic-bezier(0.4, 0, 0.2, 1),
+    top 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .chat-input-anchor.input-floating {
   bottom: auto;
@@ -1574,7 +1926,7 @@ function openContractPreview(msg) {
 .chat-input-area .input-wrapper {
   background: #fff;
   border-radius: 16px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
   padding: 10px 5px 44px 5px;
   position: relative;
   transition: all 0.3s ease;
@@ -1617,18 +1969,85 @@ function openContractPreview(msg) {
 .input-row .el-textarea {
   flex: 1;
 }
-.send-btn{width:36px!important;height:36px!important;padding:0!important;border-radius:50%!important;border:none!important;background:#409eff!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;min-width:0!important;flex-shrink:0}
-.send-btn:hover{background:#337ecc!important}
-.send-btn.is-disabled{background:#a0cfff!important}
-.send-btn :deep(.el-icon){color:#fff;font-size:20px;font-weight:900;stroke:#fff;stroke-width:60;display:flex;align-items:center;justify-content:center;line-height:1}
-.send-btn :deep(.el-icon svg){stroke:#fff;stroke-width:48px}
-.stop-btn{width:36px!important;height:36px!important;padding:0!important;border-radius:50%!important;border:none!important;background:#e34d59!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;min-width:0!important;flex-shrink:0}
-.stop-btn:hover{background:#c93542!important}
-.stop-square{width:12px;height:12px;background:#fff;border-radius:2px}
-.upload-btn{width:32px!important;height:32px!important;padding:0!important;border:none!important;color:#909399!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;min-width:0!important;border-radius:50%!important;flex-shrink:0}
-.upload-btn:hover{color:#409eff!important;background:#ecf5ff!important}
-.upload-btn.is-disabled{color:#c0c4cc!important}
-.upload-btn .el-icon{font-size:18px}
+.send-btn {
+  width: 36px !important;
+  height: 36px !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  border: none !important;
+  background: #409eff !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 0 !important;
+  flex-shrink: 0;
+}
+.send-btn:hover {
+  background: #337ecc !important;
+}
+.send-btn.is-disabled {
+  background: #a0cfff !important;
+}
+.send-btn :deep(.el-icon) {
+  color: #fff;
+  font-size: 20px;
+  font-weight: 900;
+  stroke: #fff;
+  stroke-width: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.send-btn :deep(.el-icon svg) {
+  stroke: #fff;
+  stroke-width: 48px;
+}
+.stop-btn {
+  width: 36px !important;
+  height: 36px !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  border: none !important;
+  background: #e34d59 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 0 !important;
+  flex-shrink: 0;
+}
+.stop-btn:hover {
+  background: #c93542 !important;
+}
+.stop-square {
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border-radius: 2px;
+}
+.upload-btn {
+  width: 32px !important;
+  height: 32px !important;
+  padding: 0 !important;
+  border: none !important;
+  color: #909399 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 0 !important;
+  border-radius: 50% !important;
+  flex-shrink: 0;
+}
+.upload-btn:hover {
+  color: #409eff !important;
+  background: #ecf5ff !important;
+}
+.upload-btn.is-disabled {
+  color: #c0c4cc !important;
+}
+.upload-btn .el-icon {
+  font-size: 18px;
+}
 .file-card {
   display: inline-flex;
   align-items: center;
@@ -1670,7 +2089,7 @@ function openContractPreview(msg) {
 }
 .file-card-close:hover {
   color: #606266 !important;
-  background: rgba(0,0,0,0.05) !important;
+  background: rgba(0, 0, 0, 0.05) !important;
   border-radius: 50% !important;
 }
 
@@ -1695,7 +2114,6 @@ function openContractPreview(msg) {
   opacity: 1;
   max-height: 64px;
 }
-
 
 /* 思维链 */
 .thinking-chain {
@@ -1731,8 +2149,13 @@ function openContractPreview(msg) {
   animation: thinking-pulse 1.2s infinite;
 }
 @keyframes thinking-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
 }
 .thinking-arrow {
   color: #909399;
@@ -1765,8 +2188,12 @@ function openContractPreview(msg) {
   color: #909399;
   line-height: 1.4;
 }
-.thinking-step-icon :deep(svg) { vertical-align: middle; }
-.thinking-step-icon :deep(svg) { vertical-align: middle; }
+.thinking-step-icon :deep(svg) {
+  vertical-align: middle;
+}
+.thinking-step-icon :deep(svg) {
+  vertical-align: middle;
+}
 .thinking-step-icon {
   flex-shrink: 0;
   display: inline-flex;
@@ -1792,7 +2219,7 @@ function openContractPreview(msg) {
   background: #1e1e2e;
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
 }
 .terminal-header {
   background: #181825;
@@ -1801,16 +2228,51 @@ function openContractPreview(msg) {
   align-items: center;
   gap: 6px;
 }
-.dot { width: 8px; height: 8px; border-radius: 50%; }
-.red  { background: #ff5f56; }
-.yellow { background: #ffbd2e; }
-.green { background: #27c93f; }
-.terminal-title { margin-left: 6px; color: #a6adc8; font-size: 12px; }
-.terminal-body { padding: 12px 16px; font-family: 'Consolas', monospace; font-size: 13px; }
-.terminal-line { color: #cdd6f4; margin: 2px 0; }
-.prompt { color: #a6e3a1; margin-right: 8px; }
-.cursor { animation: blink 1s infinite; opacity: 0.6; }
-@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.red {
+  background: #ff5f56;
+}
+.yellow {
+  background: #ffbd2e;
+}
+.green {
+  background: #27c93f;
+}
+.terminal-title {
+  margin-left: 6px;
+  color: #a6adc8;
+  font-size: 12px;
+}
+.terminal-body {
+  padding: 12px 16px;
+  font-family: 'Consolas', monospace;
+  font-size: 13px;
+}
+.terminal-line {
+  color: #cdd6f4;
+  margin: 2px 0;
+}
+.prompt {
+  color: #a6e3a1;
+  margin-right: 8px;
+}
+.cursor {
+  animation: blink 1s infinite;
+  opacity: 0.6;
+}
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
 
 /* 右侧预览 */
 .split-divider {
@@ -1838,7 +2300,7 @@ function openContractPreview(msg) {
   flex-direction: column;
   background: linear-gradient(180deg, #f8f9fb 0%, #fff 6%);
   border-left: 1px solid #ebeef5;
-  box-shadow: -2px 0 12px rgba(0,0,0,0.06);
+  box-shadow: -2px 0 12px rgba(0, 0, 0, 0.06);
 }
 .preview-header {
   padding: 10px 20px;
@@ -1873,10 +2335,18 @@ function openContractPreview(msg) {
   transition: background 0.2s;
   position: relative;
 }
-.contract-text :deep(mark.risk-high)   { background: #eb9e9e; }
-.contract-text :deep(mark.risk-medium) { background: #fae198; }
-.contract-text :deep(mark.risk-low)    { background: #d8d9db; }
-.contract-text :deep(mark):hover { filter: brightness(0.88); }
+.contract-text :deep(mark.risk-high) {
+  background: #eb9e9e;
+}
+.contract-text :deep(mark.risk-medium) {
+  background: #fae198;
+}
+.contract-text :deep(mark.risk-low) {
+  background: #d8d9db;
+}
+.contract-text :deep(mark):hover {
+  filter: brightness(0.88);
+}
 
 .preview-legend {
   padding: 10px 16px;
@@ -1887,15 +2357,36 @@ function openContractPreview(msg) {
   color: #909399;
   flex-shrink: 0;
 }
-.legend-item { display: flex; align-items: center; gap: 4px; }
-.legend-dot { width: 12px; height: 12px; border-radius: 2px; }
-.legend-dot.high   { background: rgba(220, 80, 80, 0.85); }
-.legend-dot.medium { background: rgba(245, 195, 50, 0.85); }
-.legend-dot.low    { background: rgba(144, 147, 153, 0.65); }
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.legend-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+}
+.legend-dot.high {
+  background: rgba(220, 80, 80, 0.85);
+}
+.legend-dot.medium {
+  background: rgba(245, 195, 50, 0.85);
+}
+.legend-dot.low {
+  background: rgba(144, 147, 153, 0.65);
+}
 
 /* 右侧滑入动画 */
-.slide-enter-active, .slide-leave-active { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
-.slide-enter-from, .slide-leave-to { transform: translateX(100%); opacity: 0; }
+.slide-enter-active,
+.slide-leave-active {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.slide-enter-from,
+.slide-leave-to {
+  transform: translateX(100%);
+  opacity: 0;
+}
 
 /* ---- 响应式：窄屏 ---- */
 .chat-panel.hidden-narrow {
@@ -1935,8 +2426,22 @@ function openContractPreview(msg) {
   align-items: center;
   border-bottom: 1px solid #ebeef5;
 }
-.sidebar-header .el-input { flex: 1; }
-.sidebar-close-btn{flex-shrink:0;width:36px;height:36px;padding:0!important;border-radius:8px}.sidebar-close-btn:hover{background:#e8ecf1!important}.sidebar-close-btn :deep(.el-icon){font-size:20px}
+.sidebar-header .el-input {
+  flex: 1;
+}
+.sidebar-close-btn {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0 !important;
+  border-radius: 8px;
+}
+.sidebar-close-btn:hover {
+  background: #e8ecf1 !important;
+}
+.sidebar-close-btn :deep(.el-icon) {
+  font-size: 20px;
+}
 .search-input {
   --el-input-height: 36px;
   --el-input-inner-height: 36px;
@@ -1969,7 +2474,7 @@ function openContractPreview(msg) {
   border: 1px solid #e4e7ed;
   background: #fff;
   color: #303133;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   font-size: 14px;
 }
 .new-chat-btn:hover {
@@ -1996,7 +2501,9 @@ function openContractPreview(msg) {
   transition: background 0.15s;
   position: relative;
 }
-.conv-item:hover { background: #e8ecf1; }
+.conv-item:hover {
+  background: #e8ecf1;
+}
 .conv-item.active {
   background: #e2e8f0;
   border-left: 3px solid #409eff;
@@ -2075,7 +2582,9 @@ function openContractPreview(msg) {
 /* 侧边栏滑入动画 */
 .sidebar-slide-enter-active,
 .sidebar-slide-leave-active {
-  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    width 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
 }
 .sidebar-slide-enter-from,
@@ -2089,7 +2598,7 @@ function openContractPreview(msg) {
   position: absolute;
   inset: 0;
   z-index: 100;
-  background: rgba(255,255,255,0.6);
+  background: rgba(255, 255, 255, 0.6);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
 }
@@ -2099,16 +2608,14 @@ function openContractPreview(msg) {
   position: absolute !important;
   z-index: 200;
   height: 100%;
-  box-shadow: 4px 0 20px rgba(0,0,0,0.15);
+  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.15);
 }
 
-
 .contract-text :deep(mark.pinned) {
-  outline: 2px solid #409EFF;
+  outline: 2px solid #409eff;
   outline-offset: 1px;
   filter: brightness(0.85);
 }
-
 </style>
 
 <style>
@@ -2117,7 +2624,7 @@ function openContractPreview(msg) {
   padding: 0 !important;
   min-width: 130px !important;
   border-radius: 10px !important;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.12) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12) !important;
   border: 1px solid #e8eaed !important;
 }
 .menu-pop .el-popper__arrow {
@@ -2149,7 +2656,7 @@ function openContractPreview(msg) {
   position: fixed;
   inset: 0;
   z-index: 9999;
-  background: rgba(0,0,0,0.2);
+  background: rgba(0, 0, 0, 0.2);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
   display: flex;
@@ -2159,7 +2666,7 @@ function openContractPreview(msg) {
 .confirm-dialog {
   background: #fff;
   border-radius: 14px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.12);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
   padding: 24px;
   max-width: 360px;
   width: 90%;

@@ -1,12 +1,15 @@
 """
 法律知识库检索器 —— ChromaDB 向量检索 + BM25 关键词检索
 """
-import chromadb
+
 import os as _os
 from pathlib import Path
-from app.init_db import OllamaEmbeddingFunction
-from rank_bm25 import BM25Okapi
+
+import chromadb
 import jieba
+from rank_bm25 import BM25Okapi
+
+from app.init_db import OllamaEmbeddingFunction
 
 _db = Path(__file__).resolve().parent.parent.parent / "chroma_db"
 _rel = str(_db)
@@ -49,12 +52,14 @@ def _build_bm25():
         for i, doc in enumerate(all_data["documents"]):
             tokens = _bm25_tokenize(doc)
             tokenized_corpus.append(tokens)
-            _bm25_docs.append({
-                "content": doc,
-                "law": all_data["metadatas"][i].get("law", ""),
-                "article": all_data["metadatas"][i].get("article", ""),
-                "hierarchy": all_data["metadatas"][i].get("hierarchy", ""),
-            })
+            _bm25_docs.append(
+                {
+                    "content": doc,
+                    "law": all_data["metadatas"][i].get("law", ""),
+                    "article": all_data["metadatas"][i].get("article", ""),
+                    "hierarchy": all_data["metadatas"][i].get("hierarchy", ""),
+                }
+            )
         _bm25 = BM25Okapi(tokenized_corpus)
     except Exception:
         _bm25 = None
@@ -70,26 +75,26 @@ class LawRetriever:
             emb = _ef([text])[0]
             return [float(x) for x in emb]
         except Exception as ex:
-            raise RuntimeError(
-                f"Ollama embedding failed (is Ollama running?): {ex}")
+            raise RuntimeError(f"Ollama embedding failed (is Ollama running?): {ex}") from ex
 
     def search(self, query: str, top_k: int = 5):
         """向量语义检索：返回 top_k 条最相似的法律条文"""
         try:
             q_emb = self._embed(query)
-            results = _collection.query(
-                query_embeddings=[q_emb], n_results=top_k)
+            results = _collection.query(query_embeddings=[q_emb], n_results=top_k)
         except Exception:
             return []
         docs = []
         for i in range(len(results["documents"][0])):
             meta = results["metadatas"][0][i]
-            docs.append({
-                "content": results["documents"][0][i],
-                "law": meta.get("law", ""),
-                "article": meta.get("article", ""),
-                "hierarchy": meta.get("hierarchy", ""),
-            })
+            docs.append(
+                {
+                    "content": results["documents"][0][i],
+                    "law": meta.get("law", ""),
+                    "article": meta.get("article", ""),
+                    "hierarchy": meta.get("hierarchy", ""),
+                }
+            )
         return docs
 
     def search_by_articles(self, article_nums, law_aliases=None):
@@ -100,19 +105,20 @@ class LawRetriever:
                 results = _collection.get(where={"article": num})
                 if results.get("documents"):
                     for i in range(len(results["documents"])):
-                        meta = results["metadatas"][i] if results.get(
-                            "metadatas") else {}
+                        meta = results["metadatas"][i] if results.get("metadatas") else {}
                         doc_law = meta.get("law", "")
                         if law_kw and law_aliases:
                             target_law = law_aliases.get(law_kw, "")
                             if target_law and doc_law != target_law:
                                 continue
-                        docs.append({
-                            "content": results["documents"][i],
-                            "law": doc_law,
-                            "article": meta.get("article", ""),
-                            "hierarchy": meta.get("hierarchy", ""),
-                        })
+                        docs.append(
+                            {
+                                "content": results["documents"][i],
+                                "law": doc_law,
+                                "article": meta.get("article", ""),
+                                "hierarchy": meta.get("hierarchy", ""),
+                            }
+                        )
             except Exception:
                 continue
         return docs
@@ -126,8 +132,7 @@ class LawRetriever:
             tokens = _bm25_tokenize(query)
             scores = _bm25.get_scores(tokens)
             # 获取 top_k 个结果的索引
-            top_indices = sorted(range(len(scores)),
-                                 key=lambda i: scores[i], reverse=True)[:top_k]
+            top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
             docs = []
             for idx in top_indices:
                 if scores[idx] > 0:
@@ -149,7 +154,7 @@ class LawRetriever:
                 src += " " + r["article"]
             line = "[" + str(i) + "] [" + src + "]" + chr(10) + r["content"]
             parts.append(line)
-        return (chr(10)+chr(10)).join(parts)
+        return (chr(10) + chr(10)).join(parts)
 
     def search_as_context(self, query: str, top_k: int = 5) -> str:
         """便捷方法：检索并直接返回格式化后的上下文字符串"""

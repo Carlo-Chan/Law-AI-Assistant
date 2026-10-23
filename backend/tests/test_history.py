@@ -1,4 +1,5 @@
 """会话历史存储测试：验证持久化、会话隔离、事务和连接释放。"""
+
 import json
 import sqlite3
 from contextlib import closing
@@ -6,6 +7,7 @@ from datetime import datetime
 from unittest.mock import Mock
 
 import pytest
+
 
 @pytest.fixture
 def tracked_connections(monkeypatch):
@@ -68,7 +70,8 @@ def test_list_conversations_orders_by_latest_message(history_store, monkeypatch)
     first = history_store.create_conversation("旧会话")
     second = history_store.create_conversation("新会话")
     assert [item["id"] for item in history_store.list_conversations()] == [
-        second["id"], first["id"],
+        second["id"],
+        first["id"],
     ]
 
     history_store.add_message(first["id"], "user", "继续咨询")
@@ -89,16 +92,22 @@ def test_messages_preserve_order_and_optional_fields(history_store):
     thinking_chain = [{"type": "tool", "label": "search_laws", "content": "检索完成"}]
     history_store.add_message(conversation["id"], "user", "请审查合同", "租赁合同.docx")
     history_store.add_message(
-        conversation["id"], "assistant", "审查报告",
-        contract_data=contract_data, thinking_chain=thinking_chain,
+        conversation["id"],
+        "assistant",
+        "审查报告",
+        contract_data=contract_data,
+        thinking_chain=thinking_chain,
     )
 
     messages = history_store.get_conversation(conversation["id"])["messages"]
 
     assert len(messages) == 2
     assert messages[0] == {
-        "role": "user", "content": "请审查合同", "file_name": "租赁合同.docx",
-        "contract_data": None, "thinking_chain": [],
+        "role": "user",
+        "content": "请审查合同",
+        "file_name": "租赁合同.docx",
+        "contract_data": None,
+        "thinking_chain": [],
     }
     assert messages[1]["role"] == "assistant"
     assert messages[1]["content"] == "审查报告"
@@ -151,7 +160,8 @@ def test_rebuild_replaces_messages_and_preserves_other_conversations(history_sto
     replacement = [
         {"role": "user", "content": "修改后的问题", "file_name": "合同.pdf"},
         {
-            "role": "assistant", "content": "新的回复",
+            "role": "assistant",
+            "content": "新的回复",
             "contract_data": {"raw_text": "合同原文", "risk_points": []},
             "thinking_chain": [{"type": "tool", "content": "法律检索"}],
         },
@@ -165,7 +175,8 @@ def test_rebuild_replaces_messages_and_preserves_other_conversations(history_sto
     assert rebuilt["created_at"] == target["created_at"]
     assert rebuilt["updated_at"] == datetime(2026, 10, 23, 9).isoformat()
     assert [message["content"] for message in rebuilt["messages"]] == [
-        "修改后的问题", "新的回复",
+        "修改后的问题",
+        "新的回复",
     ]
     assert rebuilt["messages"][0]["file_name"] == "合同.pdf"
     assert json.loads(rebuilt["messages"][1]["contract_data"]) == replacement[1]["contract_data"]
@@ -191,10 +202,13 @@ def test_rebuild_failure_preserves_original_messages(history_store, tracked_conn
     before = history_store.get_conversation(conversation["id"])
 
     with pytest.raises(sqlite3.IntegrityError):
-        history_store.rebuild_messages(conversation["id"], [
-            {"role": "user", "content": "已插入的新问题"},
-            {"role": "assistant", "content": None},
-        ])
+        history_store.rebuild_messages(
+            conversation["id"],
+            [
+                {"role": "user", "content": "已插入的新问题"},
+                {"role": "assistant", "content": None},
+            ],
+        )
 
     assert history_store.get_conversation(conversation["id"]) == before
     for connection in tracked_connections:
@@ -218,7 +232,8 @@ def test_delete_conversation_removes_its_messages_only(history_store):
     assert history_store.get_conversation(other["id"]) == other_before
     with closing(sqlite3.connect(history_store.DB_PATH)) as connection:
         count = connection.execute(
-            "SELECT COUNT(*) FROM messages WHERE conversation_id=?", (target["id"],),
+            "SELECT COUNT(*) FROM messages WHERE conversation_id=?",
+            (target["id"],),
         ).fetchone()[0]
     assert count == 0
 

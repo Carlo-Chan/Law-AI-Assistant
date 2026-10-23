@@ -1,6 +1,7 @@
 """
 文档解析服务：从 PDF 和 Word 文件中提取纯文本
 """
+
 import io
 from pathlib import Path
 
@@ -26,6 +27,7 @@ class DocumentParser:
     @staticmethod
     def _parse_pdf(file_bytes: bytes) -> str:
         import pdfplumber
+
         text_parts = []
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             for page in pdf.pages:
@@ -37,6 +39,7 @@ class DocumentParser:
     @staticmethod
     def _parse_docx(file_bytes: bytes) -> str:
         import docx
+
         doc = docx.Document(io.BytesIO(file_bytes))
         paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
         return "\n".join(paragraphs)

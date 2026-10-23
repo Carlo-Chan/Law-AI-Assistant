@@ -1,9 +1,11 @@
 """
 Agent 工具集：本地法律检索 + 元典智库 + 联网搜索 + 幻觉校验
 """
+
 import json
-import httpx
 import re
+
+import httpx
 from langchain_core.tools import tool
 from langchain_tavily._utilities import TavilySearchAPIWrapper
 
@@ -76,8 +78,8 @@ def _extract_article_numbers(query):
     results = []
     law_keyword = None
     previous_end = 0
-    for article_match in re.finditer(r'第([零一二三四五六七八九十百千万\d]+)条', query):
-        prefix = query[previous_end:article_match.start()]
+    for article_match in re.finditer(r"第([零一二三四五六七八九十百千万\d]+)条", query):
+        prefix = query[previous_end : article_match.start()]
         for law_match in _LAW_NAME_PATTERN.finditer(prefix):
             candidate = (law_match.group(1) or law_match.group(0)).strip()
             law_keyword = _LAW_NAME_KEYWORDS.get(candidate)
@@ -98,8 +100,7 @@ def search_laws(query: str) -> str:
     article_nums = _extract_article_numbers(query)
     if article_nums:
         try:
-            exact_results = retriever.search_by_articles(
-                article_nums, _LAW_ALIASES)
+            exact_results = retriever.search_by_articles(article_nums, _LAW_ALIASES)
         except Exception:
             pass
     seen = set()
@@ -148,6 +149,7 @@ def _yd_rest(endpoint: str, body: dict) -> dict:
 def _yd_mcp(tool_name: str, arguments: dict) -> dict:
     """调用元典智库 MCP JSON-RPC 接口"""
     import uuid
+
     r = _httpx_client.post(
         YUANDIAN_MCP,
         json={
@@ -197,11 +199,14 @@ def search_legal(query: str) -> str:
 
     results = []
     try:
-        resp = _yd_rest("law_vector_search", {
-            "query": query,
-            "rewrite_flag": True,
-            "return_num": 5,
-        })
+        resp = _yd_rest(
+            "law_vector_search",
+            {
+                "query": query,
+                "rewrite_flag": True,
+                "return_num": 5,
+            },
+        )
         if resp.get("code") == 201:
             results = resp.get("extra", {}).get("fatiao", [])
     except Exception:
@@ -209,11 +214,14 @@ def search_legal(query: str) -> str:
 
     if len(results) < 3:
         try:
-            resp = _yd_mcp("yuandian_rh_ft_search", {
-                "keyword": query,
-                "top_k": 5,
-                "sxx": "现行有效",
-            })
+            resp = _yd_mcp(
+                "yuandian_rh_ft_search",
+                {
+                    "keyword": query,
+                    "top_k": 5,
+                    "sxx": "现行有效",
+                },
+            )
             content = resp.get("result", {}).get("content", [])
             if content:
                 data = json.loads(content[0]["text"])

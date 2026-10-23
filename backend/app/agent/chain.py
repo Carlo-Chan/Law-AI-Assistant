@@ -12,13 +12,15 @@
 - 抽取 _extract_chat_reply_from_json 统一 chat_reply 提取
 - 抽取 _normalize_chat_reply 统一 chat_reply 清理
 """
+
+import asyncio
 import json
 import re
-import asyncio
+
 from json_repair import repair_json
 from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 
 from app.agent.tools import AGENT_TOOLS
 from app.core.config import get_settings
@@ -29,6 +31,7 @@ NL = chr(10)
 # ============================================================
 # 公共工具函数
 # ============================================================
+
 
 def _extract_chinese(s):
     """提取字符串中的中文字符"""
@@ -66,7 +69,7 @@ def fuzzy_match(raw_text, key_phrase):
 def _build_history_messages(history):
     """将前端传来的历史记录转换为 LangChain 消息对象列表"""
     messages = []
-    for h in (history or []):
+    for h in history or []:
         if h.get("role") == "user":
             messages.append(HumanMessage(content=h["content"]))
         elif h.get("role") == "assistant":
@@ -91,7 +94,7 @@ def _log_tool_traces(all_msgs):
 async def _batch_yield(text, batch_size=8, delay=0.03):
     """将文本分批输出，产生打字机效果，逐批 yield token 事件"""
     for j in range(0, len(text), batch_size):
-        yield {"type": "token", "content": text[j:j + batch_size]}
+        yield {"type": "token", "content": text[j : j + batch_size]}
         await asyncio.sleep(delay)
 
 
@@ -193,7 +196,7 @@ async def _stream_tool_result(tool_name, output):
         yield {
             "type": "tool_result_chunk",
             "tool": tool_name,
-            "content": output[j:j + chunk_size],
+            "content": output[j : j + chunk_size],
             "first": j == 0,
         }
         await asyncio.sleep(0.02)
@@ -258,7 +261,7 @@ CONTRACT_SYSTEM_PROMPT = (
     "\n\n---"
     "\n\n## 逐条风险分析"
     "\n\n### 🔴 风险点一：条款名称（第X条）"
-    "\n**原文：** \"逐字摘录的合同原文\""
+    '\n**原文：** "逐字摘录的合同原文"'
     "\n\n**分析：** 法律依据与风险说明"
     "\n\n**建议修改为：** 具体修改方案"
     "\n\n### 🟡 风险点二：..."
@@ -271,10 +274,10 @@ CONTRACT_SYSTEM_PROMPT = (
     "\n每个风险点包含三个字段，必须与chat_reply中的风险点一一对应："
     "\n- key_phrase: 从合同原文中逐字摘录（含标点），5-20字。必须能用Ctrl+F精确找到，不得改写、润色、调整语序。若有多处相同文字，多取几个字以区分上下文。"
     "\n- level: high/medium/low（high=违反法律强制性规定、霸王条款；medium=权利义务不对等、表述模糊；low=建议优化的常规条款）"
-    "\n- bubble_text: 不少于30字。格式为\"该条款存在XX风险。依据《XX法》第X条，……。建议修改为：……\"，严禁截断。"
+    '\n- bubble_text: 不少于30字。格式为"该条款存在XX风险。依据《XX法》第X条，……。建议修改为：……"，严禁截断。'
     "\n必须标注所有等级的风险条款，包括low等级，不得遗漏任何风险点。"
     "\n\n完整JSON示例（注意risk_points不能为空数组）："
-    "{\"chat_reply\": \"# 合同审查报告\\n...\", \"risk_points\": [{\"key_phrase\": \"逐字摘录的合同原文\", \"level\": \"high\", \"bubble_text\": \"该条款存在霸王条款风险。依据《民法典》第X条，……。建议修改为：……\"}]}"
+    '{"chat_reply": "# 合同审查报告\\n...", "risk_points": [{"key_phrase": "逐字摘录的合同原文", "level": "high", "bubble_text": "该条款存在霸王条款风险。依据《民法典》第X条，……。建议修改为：……"}]}'
     "\n\n再次强调：risk_points数组必须有内容，不能是空的！有多少个风险点就放多少个元素！"
 )
 
@@ -295,14 +298,15 @@ contract_agent = create_agent(
 # 非流式接口
 # ============================================================
 
+
 async def run_chat(query: str, history: list | None = None) -> dict:
     """非流式法律咨询，返回完整回复和引用来源"""
     messages = _build_history_messages(history)
     messages.append(HumanMessage(content=query))
 
-    print(f"\n{chr(61)*60}")
+    print(f"\n{chr(61) * 60}")
     print(f"[Chat] user: {query[:150]}")
-    print(f"{chr(61)*60}")
+    print(f"{chr(61) * 60}")
 
     result = await chat_agent.ainvoke({"messages": messages})
     all_msgs = result["messages"]
@@ -326,14 +330,12 @@ async def run_contract_analysis(raw_text: str) -> dict:
     """非流式合同审查，返回结构化结果"""
     query = f"请审查以下合同文本：\n\n{raw_text}"
 
-    print(f"\n{chr(61)*60}")
+    print(f"\n{chr(61) * 60}")
     print(f"[Contract] review request, text length: {len(raw_text)}")
-    print(f"{chr(61)*60}")
+    print(f"{chr(61) * 60}")
 
     messages = [HumanMessage(content=query)]
-    result = await contract_agent.ainvoke(
-        {"messages": messages}, config={"recursion_limit": 12}
-    )
+    result = await contract_agent.ainvoke({"messages": messages}, config={"recursion_limit": 12})
     all_msgs = result["messages"]
 
     _log_tool_traces(all_msgs)
@@ -361,13 +363,14 @@ async def run_contract_analysis(raw_text: str) -> dict:
 # 流式接口
 # ============================================================
 
+
 async def run_chat_stream(query, history=None):
     """流式法律咨询，通过 async generator 逐事件产出 SSE 数据"""
     messages = _build_history_messages(history)
     messages.append(HumanMessage(content=query))
-    print(f"\n{chr(61)*60}")
+    print(f"\n{chr(61) * 60}")
     print(f"[Chat Stream] user: {query[:150]}")
-    print(f"{chr(61)*60}")
+    print(f"{chr(61) * 60}")
 
     pending = ""
     async for event in chat_agent.astream_events({"messages": messages}, version="v2"):
@@ -404,16 +407,16 @@ async def run_chat_stream(query, history=None):
         print(f"  [Stream] final answer: {pending[:80]}...")
         async for evt in _batch_yield(pending, batch_size=8, delay=0.03):
             yield evt
-    print(f"  [Stream] done")
+    print("  [Stream] done")
     yield {"type": "done"}
 
 
 async def run_contract_analysis_stream(raw_text):
     """流式合同审查，通过 async generator 逐事件产出 SSE 数据"""
     query = f"请审查以下合同文本：\n\n{raw_text}"
-    print(f"\n{chr(61)*60}")
+    print(f"\n{chr(61) * 60}")
     print(f"[Contract Stream] review request, text length: {len(raw_text)}")
-    print(f"{chr(61)*60}")
+    print(f"{chr(61) * 60}")
     messages = [HumanMessage(content=query)]
 
     full_reply = ""
@@ -463,9 +466,9 @@ async def run_contract_analysis_stream(raw_text):
     print(f"  [Stream] final pending len: {len(pending)}")
     m = re.search(r'\{\s*"chat_reply"|\{\s*"risk_points"', full_reply)
     if m:
-        reasoning_tail = full_reply[flushed_pos:m.start()].strip()
-        reasoning_tail = re.sub(r'```\w*\s*\n?\s*$', '', reasoning_tail).strip()
-        reasoning_tail = re.sub(r'```$', '', reasoning_tail).strip()
+        reasoning_tail = full_reply[flushed_pos : m.start()].strip()
+        reasoning_tail = re.sub(r"```\w*\s*\n?\s*$", "", reasoning_tail).strip()
+        reasoning_tail = re.sub(r"```$", "", reasoning_tail).strip()
         if reasoning_tail:
             print(f"  [Stream] reasoning flush (final): {reasoning_tail[:80]}...")
             yield {"type": "thinking_reasoning", "content": reasoning_tail}
@@ -483,17 +486,15 @@ async def run_contract_analysis_stream(raw_text):
     # 逐字符流式输出 chat_reply 内容
     reply_text = _extract_chat_reply_from_json(json_str)
     if reply_text is not None:
-        print(f"  [Stream] chat_reply marker found, streaming...")
+        print("  [Stream] chat_reply marker found, streaming...")
         async for evt in _batch_yield(reply_text, batch_size=8, delay=0.03):
             yield evt
-        print(f"  [Stream] chat_reply streaming done")
+        print("  [Stream] chat_reply streaming done")
     else:
         print("  [Stream] WARN: chat_reply marker not found in JSON")
 
     # 后处理风险点
-    risk_points = _post_process_risks(
-        raw_text, data.get("risk_points", []), tag="contract stream"
-    )
+    risk_points = _post_process_risks(raw_text, data.get("risk_points", []), tag="contract stream")
     print(f"  [contract stream] risks found: {len(risk_points)}")
 
     chat_reply = _normalize_chat_reply(data.get("chat_reply", ""))

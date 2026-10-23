@@ -15,7 +15,7 @@
 | 依赖 | 版本要求 | 说明 |
 |------|---------|------|
 | Python | 3.10+ | 后端运行环境 |
-| Node.js | 18+ | 前端构建工具链 |
+| Node.js | 20.19+ / 22.13+ / 24+ | 前端运行与开发工具链，需满足 `frontend/package.json` 中的 engines 约束 |
 | DeepSeek API Key | — | 核心推理引擎，[获取地址](https://platform.deepseek.com/) |
 | Tavily API Key | — | 联网搜索（免费额度 1000 次/月），[获取地址](https://tavily.com/) |
 | 元典智库 API Key | — | 法律专业检索，[注册地址](https://open.chineselaw.com/) |
@@ -29,7 +29,7 @@ Law-AI-Assistant/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py              # FastAPI 入口，CORS 配置
-│   │   ├── init_db.py           # SQLite 数据库初始化建表
+│   │   ├── init_db.py           # ChromaDB 法律向量库初始化
 │   │   ├── agent/
 │   │   │   ├── chain.py         # LangChain Agent 编排，流式对话 / 合同审查链
 │   │   │   ├── retriever.py     # ChromaDB 向量检索 + BM25 + ArticleMap 精确匹配
@@ -43,19 +43,17 @@ Law-AI-Assistant/
 │   │       └── parser.py        # PDF / Word 文档文本提取
 │   ├── data/                    # SQLite 数据库 + 法律文本 Markdown 源文件
 │   ├── .env.example             # 环境变量模板
-│   └── requirements.txt         # Python 依赖
+│   ├── tests/                   # 后端自动化测试
+│   ├── pyproject.toml           # Ruff 检查与格式化配置
+│   ├── pytest.ini               # 测试收集与异步配置
+│   ├── requirements.txt         # Python 运行依赖
+│   └── requirements-dev.txt     # 开发与测试依赖
 ├── frontend/
 │   ├── src/
 │   │   ├── main.js              # 应用入口，Element Plus 注册
 │   │   ├── App.vue              # 根组件
 │   │   ├── views/
 │   │   │   └── MainView.vue     # 主页面（对话区 / 侧边栏 / 合同预览）
-│   │   ├── components/
-│   │   │   ├── ChatInput.vue    # 输入框（文本 / 文件上传 / 发送 / 停止）
-│   │   │   ├── ChatMessage.vue  # 消息气泡（Markdown 渲染 / 复制 / 重生成 / 编辑）
-│   │   │   ├── ContractPreview.vue  # 合同预览（高亮 / 气泡 / 钉住）
-│   │   │   ├── Sidebar.vue      # 侧边栏（搜索 / 重命名 / 删除）
-│   │   │   └── WelcomeScreen.vue    # 新对话欢迎页
 │   │   ├── utils/
 │   │   │   ├── api.js           # 前端 API 封装
 │   │   │   └── highlight.js     # 合同高亮算法（LCS 匹配 / mark 标签 / 重叠合并）
@@ -120,6 +118,34 @@ npm run dev
 ```
 
 前端启动后访问 http://localhost:5173 即可使用。
+
+## 后端开发检查
+
+在 `backend/` 目录中激活虚拟环境后，安装开发依赖并执行：
+
+```bash
+pip install -r requirements-dev.txt
+python -m ruff check .
+python -m ruff format . --check
+python -m pytest
+```
+
+需要统一代码格式时运行 `python -m ruff format .`。Ruff 以 Python 3.10 为兼容目标、行宽为 100，排除虚拟环境、`eval/`、数据与向量库目录。
+
+测试使用临时数据库和占位 API Keys，禁用 `.env` 读取及外部服务连接，无需启动 Ollama 或配置真实 API Keys。Windows 事件循环内部通信所需的套接字对保留可用。
+
+## 前端开发检查
+
+在 `frontend/` 目录中执行：
+
+```bash
+npm ci
+npm run lint
+npm run format:check
+npm run build
+```
+
+ESLint 检查 JavaScript 常见错误和 Vue 模板必要规则，Prettier 负责格式统一；通过 `eslint-config-prettier` 避免规则冲突。需要格式化时运行 `npm run format`。格式化保留模板空白语义，并沿用文件现有换行符以兼容 Windows 与 Git 的换行转换。
 
 ## 使用方式
 

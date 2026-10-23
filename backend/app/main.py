@@ -1,12 +1,13 @@
-﻿"""
+"""
 Law-AI-Assistant 后端入口
 启动命令：uvicorn app.main:app --reload --port 8000
 """
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.config import get_settings
 from app.api.routes import router as api_router
+from app.core.config import get_settings
 
 settings = get_settings()
 
