@@ -1,0 +1,57 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Python 检查与测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      PYTHONUTF8: '1'
+      PYTHONUNBUFFERED: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+    steps:
+      - name: 获取代码
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # 固定 v6，避免标签漂移
+        with:
+          persist-credentials: false
+
+      - name: 配置 Python 与依赖缓存
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # 固定 v6
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: 安装开发与测试依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip check
+
+      - name: 检查 Python 代码
+        run: python -m ruff check .
+
+      - name: 检查 Python 格式
+        run: python -m ruff format . --check
+
+      - name: 运行隔离测试
+        run: python -m pytest -q

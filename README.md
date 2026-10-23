@@ -1,5 +1,10 @@
 ﻿# AI 法律咨询与合同分析系统
 
+[![Backend CI](https://github.com/Carlo-Chan/Law-AI-Assistant/actions/workflows/backend.yml/badge.svg?branch=main)](https://github.com/Carlo-Chan/Law-AI-Assistant/actions/workflows/backend.yml)
+[![Frontend CI](https://github.com/Carlo-Chan/Law-AI-Assistant/actions/workflows/frontend.yml/badge.svg?branch=main)](https://github.com/Carlo-Chan/Law-AI-Assistant/actions/workflows/frontend.yml)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)
+
 基于 LangChain + DeepSeek V4 的多路召回智能法律助手，支持法律知识问答与合同风险自动审查。
 
 ## 功能简介
@@ -26,6 +31,7 @@
 
 ```
 Law-AI-Assistant/
+├── .github/workflows/           # 前后端自动检查与测试
 ├── backend/
 │   ├── app/
 │   │   ├── main.py              # FastAPI 入口，CORS 配置
@@ -146,6 +152,19 @@ npm run build
 ```
 
 ESLint 检查 JavaScript 常见错误和 Vue 模板必要规则，Prettier 负责格式统一；通过 `eslint-config-prettier` 避免规则冲突。需要格式化时运行 `npm run format`。格式化保留模板空白语义，并沿用文件现有换行符以兼容 Windows 与 Git 的换行转换。
+
+## 持续集成
+
+推送到 `main`、创建或更新 Pull Request 时，GitHub Actions 会分别运行后端与前端检查，也可在 Actions 页面手动触发。两个工作流均使用只读仓库权限，官方 Actions 固定到完整提交 SHA；同一分支或 PR 的旧运行会在新运行开始时取消。
+
+| 工作流 | 环境 | 检查内容 |
+|--------|------|---------|
+| Backend CI | Ubuntu / Python 3.13 | 安装开发依赖、`pip check`、Ruff 检查与格式校验、pytest |
+| Frontend CI | Ubuntu / Node.js 24 | `npm ci`、ESLint、Prettier 格式校验、生产构建 |
+
+后端测试不需要 GitHub Secrets、真实 API Keys、Ollama 或预先构建的向量库；数据库与外部调用由测试配置隔离。安装依赖仍需要网络，依赖下载缓存由工作流自动管理。CI 仅检查和构建，不会自动部署或修改业务数据。
+
+README 顶部的 CI 徽章展示 `main` 分支实际运行结果，新增工作流首次推送并运行之前不会显示成功状态。Python / Vue 徽章只标注项目技术版本，不代表全版本兼容测试；License 徽章待正式添加许可证后再补充。
 
 ## 使用方式
 
