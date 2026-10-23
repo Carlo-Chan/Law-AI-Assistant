@@ -4,7 +4,7 @@ API 路由：法律问答 + 合同审查
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List
+from typing import List, Literal
 import json
 
 from app.agent.chain import run_chat, run_contract_analysis, run_chat_stream, run_contract_analysis_stream
@@ -150,15 +150,35 @@ class UpdateTitleRequest(BaseModel):
     title: str
 
 
+def _require_conversation(conv_id: str):
+    """写入前检查目标会话，避免成功响应掩盖无效写入。"""
+    if not history.conversation_exists(conv_id):
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+
 @router.post("/conversations/{conv_id}/title", response_model=ConvResponse)
 async def update_title(conv_id: str, req: UpdateTitleRequest):
+    _require_conversation(conv_id)
     history.update_title(conv_id, req.title)
     return ConvResponse(code=200, data={"ok": True})
 
 
+class RebuildMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    file_name: str | None = None
+    contract_data: dict | None = None
+    thinking_chain: list | None = None
+
+
+class RebuildMessagesRequest(BaseModel):
+    messages: List[RebuildMessage]
+
+
 @router.post("/conversations/{conv_id}/rebuild", response_model=ConvResponse)
-async def rebuild_conv(conv_id: str, payload: dict):
-    history.rebuild_messages(conv_id, payload.get("messages", []))
+async def rebuild_conv(conv_id: str, payload: RebuildMessagesRequest):
+    _require_conversation(conv_id)
+    history.rebuild_messages(conv_id, [message.model_dump() for message in payload.messages])
     return ConvResponse(code=200, data={"ok": True})
 
 
@@ -178,9 +198,14 @@ class SaveMessagesRequest(BaseModel):
 
 @router.post("/conversations/{conv_id}/messages", response_model=ConvResponse)
 async def save_messages(conv_id: str, req: SaveMessagesRequest):
-    history.add_message(conv_id, "user", req.user_content, req.file_name)
-    history.add_message(conv_id, "assistant", req.assistant_content,
-                        contract_data=req.contract_data, thinking_chain=req.thinking_chain)
+    _require_conversation(conv_id)
+    history.add_messages(conv_id, [
+        {"role": "user", "content": req.user_content, "file_name": req.file_name},
+        {
+            "role": "assistant", "content": req.assistant_content,
+            "contract_data": req.contract_data, "thinking_chain": req.thinking_chain,
+        },
+    ])
     return ConvResponse(code=200, data={"ok": True})
 
 

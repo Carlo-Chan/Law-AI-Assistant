@@ -1,8 +1,8 @@
-﻿"""
+"""
 应用配置：从 .env 读取所有环境变量
 """
 import os
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
 
@@ -19,9 +19,7 @@ class Settings(BaseSettings):
     app_cors_origins: str = "http://localhost:5173"
     database_url: str = "sqlite:///./data/app.db"
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 
 @lru_cache()

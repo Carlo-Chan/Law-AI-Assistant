@@ -19,44 +19,31 @@ _httpx_client = httpx.Client(
 )
 
 # 法条号转换工具
-_CN_NUMS = "零一二三四五六七八九十百千"
+_CN_NUMS = "零一二三四五六七八九"
 
 
 def _arabic_to_chinese(num_str):
-    """将 '585' 转为 '五百八十五'"""
+    """将 0 至 9999 转为中文数词，不支持的输入保持原值。"""
     try:
-        n = int(num_str)
-        if n <= 10:
-            return _CN_NUMS[n]
-        elif n < 100:
-            tens = n // 10
-            ones = n % 10
-            result = (_CN_NUMS[tens] if tens > 1 else "") + "十"
-            if ones > 0:
-                result += _CN_NUMS[ones]
-            if result.startswith("一十"):
-                result = "十" + result[2:]
-            return result
-        elif n < 1000:
-            hundreds = n // 100
-            rest = n % 100
-            result = _CN_NUMS[hundreds] + "百"
-            if rest > 0:
-                result += _arabic_to_chinese(str(rest))
-            return result
-        elif n < 10000:
-            thousands = n // 1000
-            rest = n % 1000
-            result = _CN_NUMS[thousands] + "千"
-            if rest > 0:
-                if rest < 100:
-                    result += "零"
-                result += _arabic_to_chinese(str(rest))
-            return result
-        else:
-            return num_str
-    except:
+        number = int(num_str)
+    except (TypeError, ValueError):
         return num_str
+    if not 0 <= number < 10000:
+        return num_str
+    if number == 0:
+        return _CN_NUMS[0]
+
+    digits = str(number)
+    units = ("", "十", "百", "千")
+    parts = []
+    for position, character in enumerate(digits):
+        digit = int(character)
+        if digit:
+            parts.append(_CN_NUMS[digit] + units[len(digits) - position - 1])
+        elif parts[-1] != "零":
+            parts.append("零")
+    result = "".join(parts).rstrip("零")
+    return result[1:] if result.startswith("一十") else result
 
 
 _LAW_ALIASES = {
@@ -74,25 +61,30 @@ _LAW_ALIASES = {
     "反电信网络诈骗法": "中华人民共和国反电信网络诈骗法",
 }
 
+_LAW_NAME_KEYWORDS = {
+    **{alias: alias for alias in _LAW_ALIASES},
+    **{full_name: alias for alias, full_name in _LAW_ALIASES.items()},
+}
+_LAW_NAME_PATTERN = re.compile(
+    r"《([^》]+)》|"
+    + "|".join(re.escape(name) for name in sorted(_LAW_NAME_KEYWORDS, key=len, reverse=True))
+)
+
 
 def _extract_article_numbers(query):
-    """提取问题中的法条号（含法律名关键词），返回 [(法律关键词或None, 中文法条号), ...]"""
+    """逐处提取法条号并关联前文法律名，同一法律的连续条号沿用上下文。"""
     results = []
-    cn_match = re.findall(r'第([零一二三四五六七八九十百千万\d]+)条', query)
     law_keyword = None
-    law_match = re.search(r'《?([^》第]+?)》?\s*第', query)
-    if law_match:
-        candidate = law_match.group(1).strip()
-        if candidate in _LAW_ALIASES:
-            law_keyword = candidate
-        else:
-            for alias in sorted(_LAW_ALIASES, key=lambda x: -len(x)):
-                if alias in candidate or candidate in alias:
-                    law_keyword = alias
-                    break
-    for m in cn_match:
-        article_cn = "第" + (_arabic_to_chinese(m) if m.isdigit() else m) + "条"
+    previous_end = 0
+    for article_match in re.finditer(r'第([零一二三四五六七八九十百千万\d]+)条', query):
+        prefix = query[previous_end:article_match.start()]
+        for law_match in _LAW_NAME_PATTERN.finditer(prefix):
+            candidate = (law_match.group(1) or law_match.group(0)).strip()
+            law_keyword = _LAW_NAME_KEYWORDS.get(candidate)
+        number = article_match.group(1)
+        article_cn = "第" + (_arabic_to_chinese(number) if number.isdigit() else number) + "条"
         results.append((law_keyword, article_cn))
+        previous_end = article_match.end()
     return results
 
 

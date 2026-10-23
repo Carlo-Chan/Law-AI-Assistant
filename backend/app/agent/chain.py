@@ -37,7 +37,13 @@ def _extract_chinese(s):
 
 def fuzzy_match(raw_text, key_phrase):
     """将关键短语与原文进行模糊匹配，返回精确引用文本"""
+    if not key_phrase or not key_phrase.strip():
+        return None
+    if key_phrase in raw_text:
+        return key_phrase
     pc = _extract_chinese(key_phrase)
+    if not pc:
+        return None
     tc = _extract_chinese(raw_text)
     idx = tc.find(pc)
     if idx == -1:
@@ -116,8 +122,19 @@ def _parse_json_with_repair(text):
     try:
         brace_depth = 0
         close_idx = -1
+        in_string = False
+        escaped = False
         for i, ch in enumerate(json_candidate):
-            if ch == "{":
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+            elif ch == '"':
+                in_string = True
+            elif ch == "{":
                 brace_depth += 1
             elif ch == "}":
                 brace_depth -= 1
@@ -158,35 +175,14 @@ def _extract_chat_reply_from_json(json_str):
 
     返回提取的文本字符串，未找到则返回 None
     """
-    m = re.search(r'"chat_reply"\s*:\s*"', json_str)
-    if not m:
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError:
+        data, _ = _parse_json_with_repair(json_str)
+    if not isinstance(data, dict):
         return None
-
-    i = m.end()
-    result = []
-    while i < len(json_str):
-        ch = json_str[i]
-        if ch == "\\" and i + 1 < len(json_str):
-            nc = json_str[i + 1]
-            if nc == "n":
-                result.append("\n")
-            elif nc == "t":
-                result.append("\t")
-            elif nc == "\\":
-                result.append("\\")
-            elif nc == '"':
-                result.append('"')
-            elif nc == "u":
-                i += 5
-            else:
-                result.append(nc)
-            i += 2
-        elif ch == '"':
-            break
-        else:
-            result.append(ch)
-            i += 1
-    return "".join(result)
+    reply = data.get("chat_reply")
+    return reply if isinstance(reply, str) else None
 
 
 async def _stream_tool_result(tool_name, output):
@@ -347,10 +343,9 @@ async def run_contract_analysis(raw_text: str) -> dict:
         if isinstance(m, AIMessage) and m.content:
             reply = m.content
 
-    m = re.search(r"\{[\s\S]*\}", reply)
-    if not m:
+    data, _ = _parse_json_with_repair(reply)
+    if data is None:
         raise ValueError(f"JSON not found in agent response: {reply[:300]}")
-    data = json.loads(m.group())
 
     risk_points = _post_process_risks(raw_text, data.get("risk_points", []))
     print(f"  [contract] risks found: {len(risk_points)}")

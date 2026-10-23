@@ -170,4 +170,6 @@ def get_retriever():
 
 
 # 预初始化，避免 ChromaDB 在异步上下文中出现 SharedSystemClient 错误
-_init()
+# 测试环境可通过 LAW_AI_SKIP_RETRIEVER_INIT=1 跳过（此时检索器按需惰性初始化）
+if _os.environ.get("LAW_AI_SKIP_RETRIEVER_INIT") != "1":
+    _init()

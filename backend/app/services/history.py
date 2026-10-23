@@ -3,19 +3,31 @@
 """
 import sqlite3
 import json
+import os
 import uuid
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Iterator
+from contextlib import contextmanager
 
-DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "history.db"
+DB_PATH = Path(os.environ.get(
+    "LAW_AI_HISTORY_DB_PATH",
+    Path(__file__).resolve().parent.parent.parent / "data" / "history.db",
+))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
-def _get_conn() -> sqlite3.Connection:
+@contextmanager
+def _get_conn() -> Iterator[sqlite3.Connection]:
+    """管理数据库事务，成功时提交、异常时回滚，并始终关闭连接。"""
     conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def _init_db():
@@ -40,8 +52,6 @@ def _init_db():
             CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id);
 
         """)
-
-    conn.close()
 
 
 _init_db()
@@ -101,23 +111,46 @@ def get_conversation(conv_id: str) -> dict | None:
     }
 
 
+def conversation_exists(conv_id: str) -> bool:
+    """检查会话是否存在，避免校验写入目标时加载全部消息。"""
+    with _get_conn() as conn:
+        return conn.execute(
+            "SELECT 1 FROM conversations WHERE id=?", (conv_id,),
+        ).fetchone() is not None
+
+
+def _insert_messages(conn, conv_id, messages, now):
+    """在调用方事务内插入消息并更新会话时间。"""
+    for message in messages:
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, file_name, contract_data, thinking_chain, created_at) VALUES (?,?,?,?,?,?,?)",
+            (conv_id, message.get("role", ""), message.get("content", ""),
+             message.get("file_name"),
+             json.dumps(message["contract_data"], ensure_ascii=False)
+             if message.get("contract_data") else None,
+             json.dumps(message["thinking_chain"], ensure_ascii=False)
+             if message.get("thinking_chain") else None,
+             now),
+        )
+    conn.execute(
+        "UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id),
+    )
+
+
+def add_messages(conv_id: str, messages: list[dict]):
+    """在同一事务中保存一组消息，任一写入失败则整组回滚。"""
+    with _get_conn() as conn:
+        _insert_messages(conn, conv_id, messages, datetime.now().isoformat())
+
+
 def add_message(conv_id: str, role: str, content: str = "",
                 file_name: str | None = None, contract_data: dict | None = None,
                 thinking_chain: list | None = None):
-    now = datetime.now().isoformat()
-    with _get_conn() as conn:
-        conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, file_name, contract_data, thinking_chain, created_at) VALUES (?,?,?,?,?,?,?)",
-            (conv_id, role, content, file_name,
-             json.dumps(contract_data,
-                        ensure_ascii=False) if contract_data else None,
-             json.dumps(thinking_chain,
-                        ensure_ascii=False) if thinking_chain else None,
-             now),
-        )
-        # 更新对话时间戳
-        conn.execute(
-            "UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
+    """保存单条消息，复用批量写入的事务与序列化规则。"""
+    add_messages(conv_id, [{
+        "role": role, "content": content, "file_name": file_name,
+        "contract_data": contract_data, "thinking_chain": thinking_chain,
+    }])
 
 
 def update_title(conv_id: str, title: str):
@@ -132,19 +165,7 @@ def rebuild_messages(conv_id: str, messages: list[dict]):
     with _get_conn() as conn:
         conn.execute(
             "DELETE FROM messages WHERE conversation_id=?", (conv_id,))
-        now = datetime.now().isoformat()
-        for m in messages:
-            conn.execute(
-                "INSERT INTO messages (conversation_id, role, content, file_name, contract_data, thinking_chain, created_at) VALUES (?,?,?,?,?,?,?)",
-                (conv_id, m.get("role", ""), m.get("content", ""), m.get("file_name"),
-                 json.dumps(m.get("contract_data"), ensure_ascii=False) if m.get(
-                     "contract_data") else None,
-                 json.dumps(m.get("thinking_chain"), ensure_ascii=False) if m.get(
-                     "thinking_chain") else None,
-                 now),
-            )
-        conn.execute(
-            "UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
+        _insert_messages(conn, conv_id, messages, datetime.now().isoformat())
 
 
 def delete_conversation(conv_id: str):
