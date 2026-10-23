@@ -64,13 +64,15 @@ Law-AI-Assistant/
 │   │   │   └── MainView.vue     # 主页面（对话区 / 侧边栏 / 合同预览）
 │   │   ├── utils/
 │   │   │   ├── api.js           # 前端 API 封装
-│   │   │   ├── highlight.js     # 合同高亮算法（LCS 匹配 / mark 标签 / 重叠合并）
+│   │   │   ├── highlight.js     # 合同高亮匹配与原文安全标记
+│   │   │   ├── html.js          # Markdown 净化与纯文本转义
 │   │   │   └── upload.js        # 合同上传大小校验与提示
 │   │   └── composables/
 │   │       ├── useTypewriter.js # 打字机队列
 │   │       ├── useSearch.js     # 拼音模糊搜索
 │   │       ├── useTextTools.js  # 复制（纯文本 / Markdown）
 │   │       └── messageExport.js # 消息导出
+│   ├── tests/                  # 前端 HTML 安全回归测试
 │   └── package.json
 ├── README.md
 └── .gitignore
@@ -164,10 +166,13 @@ python -m pytest
 npm ci
 npm run lint
 npm run format:check
+npm test
 npm run build
 ```
 
 ESLint 检查 JavaScript 常见错误和 Vue 模板必要规则，Prettier 负责格式统一；通过 `eslint-config-prettier` 避免规则冲突。需要格式化时运行 `npm run format`。格式化保留模板空白语义，并沿用文件现有换行符以兼容 Windows 与 Git 的换行转换。
+
+前端回归测试使用 Node.js 内置测试运行器与 jsdom，离线检查 Markdown 注入载荷、流式未闭合片段、合同原文转义、高亮坐标和气泡元数据，不访问真实后端或外部资源。
 
 ## 持续集成
 
@@ -176,7 +181,7 @@ ESLint 检查 JavaScript 常见错误和 Vue 模板必要规则，Prettier 负�
 | 工作流 | 环境 | 检查内容 |
 |--------|------|---------|
 | Backend CI | Ubuntu / Python 3.13 | 安装开发依赖、`pip check`、Ruff 检查与格式校验、pytest |
-| Frontend CI | Ubuntu / Node.js 24 | `npm ci`、ESLint、Prettier 格式校验、生产构建 |
+| Frontend CI | Ubuntu / Node.js 24 | `npm ci`、ESLint、Prettier 格式校验、HTML 安全回归测试、生产构建 |
 
 后端测试不需要 GitHub Secrets、真实 API Keys、Ollama 或预先构建的向量库；数据库与外部调用由测试配置隔离。安装依赖仍需要网络，依赖下载缓存由工作流自动管理。CI 仅检查和构建，不会自动部署或修改业务数据。
 
@@ -199,6 +204,14 @@ README 顶部的 CI 徽章展示 `main` 分支实际运行结果，新增工作�
 
 该限制是单文件业务校验，不是整个 HTTP 请求的接收上限。multipart 解析阶段仍可能将文件写入临时目录；公开部署时还应在反向代理或网关设置请求体大小、并发等资源限制。
 
+### 动态内容安全边界
+
+用户消息、历史消息和模型回复的 Markdown 在解析后通过 DOMPurify 白名单净化，保留标题、列表、表格、代码块等常用格式，移除脚本、事件属性、危险链接、表单和自定义样式。正文不能借用页面布局类名，代码块可保留语言标记。此处理仅影响展示，不改写数据库内容或 Markdown 复制结果。
+
+合同原文始终按纯文本转义，不将文档中的 HTML 当成标签执行；高亮先在原文上定位，再转义对应文本，避免实体字符长度变化影响坐标。仅由应用生成 `mark`、风险等级和气泡属性，气泡通过 `textContent` 显示，保留文字选择及复制。
+
+这不是完整的公开部署安全方案：正常图片和链接仍可指向外部地址；身份认证、访问控制、请求资源限制及部署层安全策略需另行配置。
+
 ## 技术栈
 
 | 层级 | 技术 |
@@ -212,7 +225,7 @@ README 顶部的 CI 徽章展示 `main` 分支实际运行结果，新增工作�
 | 文档解析 | pdfplumber + python-docx |
 | 前端框架 | Vue 3 + Vite |
 | UI 组件库 | Element Plus |
-| Markdown 渲染 | marked |
+| Markdown 渲染与净化 | marked + DOMPurify |
 | 拼音匹配 | pinyin-pro |
 
 ## 常见问题

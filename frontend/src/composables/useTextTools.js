@@ -4,6 +4,7 @@
  * 提供 Markdown 渲染、纯文本提取、代码块清理等功能。
  */
 import { marked } from 'marked'
+import { sanitizeMarkdownHtml } from '../utils/html.js'
 
 /**
  * 去除 Markdown 格式标记，提取纯文本用于复制
@@ -42,5 +43,5 @@ export function cleanFences(text) {
  */
 export function renderMd(text) {
   if (!text) return ''
-  return marked.parse(text)
+  return sanitizeMarkdownHtml(marked.parse(text))
 }

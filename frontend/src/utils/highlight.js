@@ -4,6 +4,7 @@
  * 核心问题：LLM 返回的 quote 可能与原文有细微差异（标点、空格）
  * 解决策略：忽略所有非汉字字符，仅按汉字序列模糊匹配
  */
+import { escapeHtml } from './html.js'
 
 /**
  * 提取字符串中的纯汉字序列（去除标点、空格、数字、英文）
@@ -20,6 +21,7 @@ function extractChinese(str) {
  */
 export function fuzzyFind(rawText, quote) {
   const quoteChinese = extractChinese(quote)
+  if (!quoteChinese) return null
   const textChinese = extractChinese(rawText)
 
   // 精确匹配
@@ -106,40 +108,41 @@ export function renderHighlightedContract(rawText, riskPoints) {
       return pos ? { ...rp, pos } : null
     })
     .filter(Boolean)
-    .sort((a, b) => b.pos.start - a.pos.start)
 
-  if (!matches.length) return rawText.replace(/\n/g, '<br>')
-
-  let result = rawText
-  const shifts = []
-  for (const rp of matches) {
-    let start = rp.pos.start
-    let end = rp.pos.end
-    for (const s of shifts) {
-      if (s.at < start) start += s.delta
-      if (s.at < end) end += s.delta
+  // 始终按原文坐标分段，转义后的字符长度不再参与定位。
+  const boundaries = new Map()
+  for (const [index, point] of matches.entries()) {
+    for (const [offset, opening] of [
+      [point.pos.start, true],
+      [point.pos.end, false],
+    ]) {
+      if (!boundaries.has(offset)) boundaries.set(offset, [])
+      boundaries.get(offset).push({ point, opening, index })
     }
-    const bubble = escapeHtml(rp.bubble_text || '')
-    const openTag =
-      '<mark class="risk-' +
-      escapeHtml(rp.level) +
-      '" data-bubble="' +
-      bubble.replace(/"/g, '&quot;') +
-      '" data-level="' +
-      escapeHtml(rp.level) +
-      '">'
-    const closeTag = '</mark>'
-    result =
-      result.slice(0, start) + openTag + result.slice(start, end) + closeTag + result.slice(end)
-    shifts.push({ at: rp.pos.start, delta: openTag.length })
-    shifts.push({ at: rp.pos.end, delta: closeTag.length })
   }
 
-  return result.replace(/\n/g, '<br>')
-}
-
-function escapeHtml(str) {
-  const div = document.createElement('div')
-  div.textContent = str
-  return div.innerHTML
+  const parts = []
+  let previous = 0
+  for (const offset of [...boundaries.keys()].sort((left, right) => left - right)) {
+    parts.push(escapeHtml(rawText.slice(previous, offset)).replace(/\n/g, '<br>'))
+    const events = boundaries.get(offset).sort((left, right) => {
+      if (left.opening !== right.opening) return left.opening ? 1 : -1
+      // 同一位置先打开外层、先关闭内层，保持包含关系及相邻标记边界。
+      return left.opening
+        ? right.point.pos.end - left.point.pos.end || left.index - right.index
+        : right.point.pos.start - left.point.pos.start || right.index - left.index
+    })
+    for (const { point, opening } of events) {
+      const level = ['high', 'medium', 'low'].includes(point.level) ? point.level : 'low'
+      parts.push(
+        opening
+          ? `<mark class="risk-${level}" data-bubble="${escapeHtml(point.bubble_text || '')}" data-level="${level}">`
+          : '</mark>',
+      )
+    }
+    previous = offset
+  }
+  parts.push(escapeHtml(rawText.slice(previous)).replace(/\n/g, '<br>'))
+  // 标签与属性名均为应用常量，外部文本全部转义；气泡仍按纯文本读取。
+  return parts.join('')
 }

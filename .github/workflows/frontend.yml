@@ -44,5 +44,8 @@ jobs:
       - name: 检查前端格式
         run: npm run format:check
 
+      - name: 运行前端回归测试
+        run: npm test
+
       - name: 构建生产版本
         run: npm run build
