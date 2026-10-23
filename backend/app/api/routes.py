@@ -18,6 +18,7 @@ from app.agent.chain import (
 )
 from app.services import history
 from app.services.parser import DocumentParser
+from app.services.uploads import read_contract_upload
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -88,7 +89,7 @@ async def chat_stream(request: ChatRequest):
 async def analyze_contract(file: Annotated[UploadFile, File()]):
     """合同审查：上传文件 -> 解析文本 -> AI 分析"""
     # 1. 读取并解析文件
-    raw_bytes = await file.read()
+    raw_bytes = await read_contract_upload(file)
     try:
         raw_text = DocumentParser.parse(raw_bytes, file.filename)
     except ValueError as e:
@@ -114,7 +115,7 @@ async def analyze_contract(file: Annotated[UploadFile, File()]):
 
 @router.post("/analyze_contract/stream")
 async def analyze_contract_stream(file: Annotated[UploadFile, File()]):
-    raw_bytes = await file.read()
+    raw_bytes = await read_contract_upload(file)
     try:
         raw_text = DocumentParser.parse(raw_bytes, file.filename)
     except ValueError as e:

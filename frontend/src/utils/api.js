@@ -107,6 +107,17 @@ async function _readSSEStream(
 ) {
   try {
     const res = await fetch(url, { ...fetchOptions, signal })
+    if (!res.ok) {
+      let message = `请求失败（HTTP ${res.status}）`
+      try {
+        const error = await res.json()
+        if (typeof error.detail === 'string') message = error.detail
+      } catch (error) {
+        console.warn('读取请求错误响应失败', error)
+      }
+      onError?.(message)
+      return
+    }
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''

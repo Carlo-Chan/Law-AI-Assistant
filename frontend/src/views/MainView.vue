@@ -80,7 +80,7 @@
           'hidden-narrow': showPreview && isNarrow,
         }"
       >
-        <div class="chat-header">
+        <div ref="chatHeader" class="chat-header">
           <template v-if="!sidebarVisible">
             <el-button :icon="Expand" text size="small" class="toggle-btn" @click="openSidebar" />
             <el-button
@@ -304,6 +304,7 @@
                 />
                 <div class="input-actions">
                   <el-upload
+                    ref="fileUploadRef"
                     :auto-upload="false"
                     :show-file-list="false"
                     :on-change="handleFileChange"
@@ -422,6 +423,7 @@ import {
   rebuildMessages,
 } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
+import { getContractUploadError } from '../utils/upload'
 import { appendToTypewriter, flushTypewriter } from '../composables/useTypewriter'
 import { toExportable } from '../composables/messageExport'
 import { pinyinMatch, fuzzyMatch } from '../composables/useSearch'
@@ -433,6 +435,8 @@ const input = ref('')
 const draftInputs = {} // 按对话ID记忆输入框草稿
 const draftFiles = {} // 按对话ID记忆已选文件
 const pendingFile = ref(null)
+const fileUploadRef = ref(null)
+const chatHeader = ref(null)
 const loadingConvIds = ref(new Set())
 const loading = computed(() => loadingConvIds.value.has(currentConvId.value || '__pending__'))
 const abortControllers = ref({})
@@ -813,6 +817,7 @@ async function regenerateMessage(idx) {
   // 查找对应的上一条用户消息
   if (idx > 0 && messages.value[idx - 1].role === 'user') {
     const userMsg = messages.value[idx - 1]
+    if (userMsg.file && !validateContractFile(userMsg.file)) return
     // 移除该对消息
     messages.value.splice(idx - 1, 2)
     // 重新生成前先同步删除到后端
@@ -1066,8 +1071,24 @@ async function sendText() {
 }
 
 // ---- 文件选择 ----
-// 文件上传回调：暂存文件引用到 pendingFile
+// 手动上传模式在选择时校验，before-upload 不会在此阶段触发。
+function validateContractFile(file) {
+  const message = getContractUploadError(file)
+  if (!message) return true
+  const headerBottom = chatHeader.value?.getBoundingClientRect().bottom || 0
+  // 根据导航栏实际位置留出间距，避免提示条覆盖导航按钮。
+  ElMessage.warning({
+    message,
+    offset: Math.max(16, headerBottom + 12),
+    customClass: 'contract-upload-notice',
+  })
+  return false
+}
+
+// 清理上传组件的内部队列，草稿仍只由 pendingFile 与 draftFiles 管理。
 function handleFileChange(file) {
+  fileUploadRef.value?.clearFiles()
+  if (!file.raw || !validateContractFile(file.raw)) return
   pendingFile.value = file.raw
 }
 
@@ -1075,6 +1096,7 @@ function handleFileChange(file) {
 // 发送文件审查：上传合同 → 调用合同审查流式 API → 展示结果
 async function sendFile(instruction = null) {
   if (!pendingFile.value) return
+  if (!validateContractFile(pendingFile.value)) return
   const _pendingId = currentConvId.value || '__pending__'
   if (loadingConvIds.value.has(_pendingId)) return
   loadingConvIds.value.add(_pendingId)
@@ -2619,6 +2641,22 @@ function openContractPreview(msg) {
 </style>
 
 <style>
+/* 提示挂载在页面根节点，使用专用类统一外观，不影响其他消息提示。 */
+.contract-upload-notice.el-message {
+  --el-message-bg-color: #fffaf1;
+  --el-message-border-color: #f0e2c9;
+  --el-message-text-color: #80561f;
+  border-radius: 10px;
+  padding: 12px 16px;
+  box-shadow: 0 4px 16px rgba(70, 54, 22, 0.08);
+}
+.contract-upload-notice .el-message__content {
+  line-height: 1.5;
+}
+.contract-upload-notice.el-message .el-message-icon--warning {
+  color: #d99a2b;
+}
+
 /* 统一弹出菜单样式（去除箭头，圆角框） */
 .menu-pop {
   padding: 0 !important;
