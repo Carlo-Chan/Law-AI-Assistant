@@ -1,5 +1,6 @@
 export const SSE_IDLE_TIMEOUT_MS = 180_000
 export const SSE_MAX_FRAME_BYTES = 16 * 1024 * 1024
+export const HTTP_ERROR_MAX_BODY_BYTES = 64 * 1024
 const DECODE_CHUNK_BYTES = 16 * 1024
 
 export class StreamCallbackError extends Error {
@@ -31,10 +32,16 @@ export async function readSSEStream(
   options,
   signal,
   callbacks = {},
-  { idleTimeoutMs = SSE_IDLE_TIMEOUT_MS, maxFrameBytes = SSE_MAX_FRAME_BYTES } = {},
+  {
+    idleTimeoutMs = SSE_IDLE_TIMEOUT_MS,
+    maxFrameBytes = SSE_MAX_FRAME_BYTES,
+    maxErrorBodyBytes = HTTP_ERROR_MAX_BODY_BYTES,
+  } = {},
 ) {
   if (!Number.isSafeInteger(maxFrameBytes) || maxFrameBytes <= 0)
     throw new RangeError('单个 SSE 事件大小上限必须为正整数。')
+  if (!Number.isSafeInteger(maxErrorBodyBytes) || maxErrorBodyBytes <= 0)
+    throw new RangeError('HTTP 错误响应体大小上限必须为正整数。')
   const transport = new AbortController()
   let reader
   let body
@@ -205,14 +212,32 @@ export async function readSSEStream(
     }
   }
 
+  // 错误响应单独限长，逐包复用空闲计时和读锁清理，不整包解析未知大小的网关错误页。
+  async function readHttpError() {
+    if (!body) return null
+    reader = body.getReader()
+    const decoder = new TextDecoder('utf-8', { fatal: true })
+    let text = ''
+    let bytes = 0
+    while (true) {
+      const { done, value } = await waitIO(() => reader.read())
+      if (interruption) throw new StreamInterrupted()
+      if (done) return JSON.parse(text + decoder.decode())
+      if (value.byteLength > maxErrorBodyBytes - bytes)
+        throw new RangeError('HTTP 错误响应体超出读取上限')
+      bytes += value.byteLength
+      text += decoder.decode(value, { stream: true })
+    }
+  }
+
   try {
     const response = await waitIO(() => fetch(url, { ...options, signal: transport.signal }))
     body = response.body
     if (!response.ok) {
       let message = `请求失败（HTTP ${response.status}）`
       try {
-        const error = await waitIO(() => response.json())
-        if (typeof error.detail === 'string' && error.detail.trim()) message = error.detail
+        const error = await readHttpError()
+        if (typeof error?.detail === 'string' && error.detail.trim()) message = error.detail
       } catch (error) {
         if (error instanceof StreamInterrupted || interruption) throw error
         console.warn('读取请求错误响应失败，异常类型：', error.name)

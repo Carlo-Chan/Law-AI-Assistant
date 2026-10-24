@@ -3743,6 +3743,84 @@ const streamResponse = (events) =>
     headers: { 'Content-Type': 'text/event-stream' },
   })
 
+for (const contract of [false, true]) {
+  for (const regeneration of [false, true]) {
+    test(`真实页面${contract ? '合同' : '咨询'}${regeneration ? '重跑' : '首次生成'}遇到超大 HTTP 错误不显示原始内容或重复保存`, async (context) => {
+      const bytes = new TextEncoder().encode(JSON.stringify({ detail: 'sk-private '.repeat(7000) }))
+      let sent = false
+      let cancelled = 0
+      const body = new ReadableStream(
+        {
+          pull(controller) {
+            if (sent) controller.close()
+            else {
+              sent = true
+              controller.enqueue(bytes)
+            }
+          },
+          cancel() {
+            cancelled++
+          },
+        },
+        { highWaterMark: 0 },
+      )
+      context.mock.method(globalThis, 'fetch', async () => new Response(body, { status: 502 }))
+      const warning = context.mock.method(console, 'warn', () => {})
+      const view = await mount({
+        chatStream: realChatStream,
+        analyzeContractStream: realContractStream,
+        regenerateChatStream: realChatRegenerationStream,
+        regenerateContractStream: realContractRegenerationStream,
+      })
+      try {
+        const state = view.state
+        state.currentConvId = 'A'
+        if (regeneration) {
+          seedChatRegeneration(state)
+          if (contract)
+            state.messages[1].contractData = {
+              raw_text: '合同原文',
+              chat_reply: '原回复',
+              risk_points: [],
+            }
+        }
+        const before = JSON.parse(JSON.stringify(state.messages))
+        state.input = '待发草稿'
+        const file = new File(['待发附件'], '合同.txt')
+        if (contract || regeneration) state.pendingFile = file
+        if (regeneration) await state.regenerateMessage(1)
+        else await (contract ? state.sendFile() : state.sendText())
+        if (regeneration) {
+          assert.equal(state.messages[1].content, before[1].content)
+          assert.equal(state.messages[1].revision, before[1].revision)
+          assert.deepEqual(state.messages[1].contractData, before[1].contractData)
+          assert.deepEqual(state.messages[1].thinkingChain, before[1].thinkingChain)
+          assert.deepEqual(state.messages[0], before[0])
+          assert.deepEqual(state.messages.slice(2), before.slice(2))
+          assert.equal(view.writes.length, 0)
+          assert.equal(state.input, '待发草稿')
+          assert.equal(state.pendingFile, file)
+          assert.match(view.notices.at(-1).options.message, /HTTP 502/)
+        } else {
+          assert.match(state.messages.at(-1).content, /HTTP 502/)
+          assert.equal(view.writes.length, 1)
+          assert.equal(state.messages.at(-1).saveFailed, false)
+          assert.equal(state.messages.at(-1).contractData, undefined)
+        }
+        assert.ok(!JSON.stringify(state.messages).includes('sk-private'))
+        assert.ok(!JSON.stringify(view.notices).includes('sk-private'))
+        assert.ok(!JSON.stringify(warning.mock.calls).includes('sk-private'))
+        assert.equal(state.loading, false)
+        assert.deepEqual(state.abortControllers, {})
+        assert.equal(cancelled, 1)
+        assert.equal(body.locked, false)
+      } finally {
+        view.close()
+      }
+    })
+  }
+}
+
 function oversizedStreamResponse() {
   const encoder = new TextEncoder()
   const chunk = encoder.encode('x'.repeat(64 * 1024))
