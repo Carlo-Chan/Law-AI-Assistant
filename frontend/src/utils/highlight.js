@@ -60,24 +60,26 @@ export function fuzzyFind(rawText, quote) {
   return foundStart ? { start, end } : null
 }
 
-function longestCommonSubstring(a, b) {
-  const m = a.length,
-    n = b.length
-  let maxLen = 0,
-    endIdx = 0
-  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      if (a[i - 1] === b[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1] + 1
-        if (dp[i][j] > maxLen) {
-          maxLen = dp[i][j]
-          endIdx = i
-        }
+function longestCommonSubstring(text, quote) {
+  // 只保留上一行并暂存左上角旧值，避免按合同长度乘引文长度分配二维表。
+  const lengths = new Uint32Array(quote.length + 1)
+  let longestLength = 0
+  let endIndex = 0
+  for (let textIndex = 0; textIndex < text.length; textIndex++) {
+    let diagonal = 0
+    for (let quoteIndex = 1; quoteIndex <= quote.length; quoteIndex++) {
+      const previous = lengths[quoteIndex]
+      const length = text[textIndex] === quote[quoteIndex - 1] ? diagonal + 1 : 0
+      lengths[quoteIndex] = length
+      diagonal = previous
+      // 仍按原文从左到右扫描，同长时不覆盖，保留原有的最早匹配规则。
+      if (length > longestLength) {
+        longestLength = length
+        endIndex = textIndex + 1
       }
     }
   }
-  return a.slice(endIdx - maxLen, endIdx)
+  return text.slice(endIndex - longestLength, endIndex)
 }
 
 /**
