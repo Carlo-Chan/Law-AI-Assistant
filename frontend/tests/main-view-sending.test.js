@@ -14,6 +14,7 @@ for (const name of ['window', 'document', 'Element', 'SVGElement', 'HTMLElement'
   globalThis[name] = name === 'window' ? dom.window : dom.window[name]
 }
 const { createApp, h, nextTick } = await import('vue')
+const { renderHighlightedContract } = await import('../src/utils/highlight.js')
 const sourceUrl = new URL('../src/views/MainView.vue', import.meta.url)
 const source = await readFile(sourceUrl, 'utf8')
 const { descriptor } = parse(source)
@@ -84,6 +85,146 @@ function deferred() {
   })
   return { promise, resolve, reject }
 }
+
+// 真实页面脚本配合离线合同 DOM，验证事件处理而不依赖浏览器布局。
+async function mountHighlights() {
+  const view = await mount()
+  view.state.showPreview = true
+  await nextTick()
+  const panel = document.createElement('div')
+  panel.className = 'preview-panel'
+  const body = document.createElement('div')
+  body.className = 'preview-body'
+  const root = document.createElement('div')
+  root.className = 'contract-text'
+  root.innerHTML = renderHighlightedContract('甲乙丙丁戊己庚辛', [
+    { quote: '甲乙丙丁戊', level: 'high', bubble_text: '第一项分析' },
+    { quote: '丁戊己庚', level: 'medium', bubble_text: '第二项分析' },
+  ])
+  body.append(root)
+  panel.append(body)
+  document.body.append(panel)
+  const close = view.close
+  return {
+    ...view,
+    panel,
+    body,
+    root,
+    tooltip: document.querySelector('.contract-tooltip'),
+    fragments: [...root.querySelectorAll('.risk-medium')],
+    close() {
+      close()
+      panel.remove()
+    },
+  }
+}
+
+test('真实页面点击任一交叉片段钉住完整范围，再点另一个片段完整取消', async () => {
+  const view = await mountHighlights()
+  try {
+    view.state.onContractClick({ target: view.fragments[1] })
+    assert.equal(view.root.querySelectorAll('mark.pinned').length, 2)
+    assert.equal(view.tooltip.textContent, '第二项分析')
+    assert.equal(view.tooltip.style.pointerEvents, 'auto')
+    view.state.onContractClick({ target: view.fragments[0] })
+    assert.equal(view.root.querySelectorAll('.pinned').length, 0)
+    assert.equal(view.tooltip.style.opacity, '0')
+    assert.equal(view.tooltip.style.pointerEvents, 'none')
+    view.state.onContractClick({ target: view.root.querySelector('.risk-high') })
+    assert.equal(view.tooltip.textContent, '第一项分析')
+    assert.equal(view.root.querySelectorAll('.pinned').length, 1)
+  } finally {
+    view.close()
+  }
+})
+
+test('真实页面跨片段悬停不闪烁，钉住后其他风险不能抢占气泡', async (context) => {
+  const view = await mountHighlights()
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    const [first, second] = view.fragments
+    view.state.onContractHover({ target: first })
+    context.mock.timers.tick(201)
+    assert.equal(view.tooltip.style.opacity, '1')
+    assert.equal(view.tooltip.textContent, '第二项分析')
+    view.state.onContractLeave({ target: first, relatedTarget: second })
+    context.mock.timers.tick(101)
+    assert.equal(view.tooltip.style.opacity, '1')
+    view.state.onContractClick({ target: second })
+    view.state.onContractHover({ target: view.root.querySelector('.risk-high') })
+    context.mock.timers.tick(201)
+    assert.equal(view.tooltip.textContent, '第二项分析')
+    view.state.onContractLeave({ target: second, relatedTarget: null })
+    assert.equal(view.tooltip.style.opacity, '1')
+  } finally {
+    view.close()
+  }
+})
+
+test('真实页面取消后清除延迟显示，透明气泡不再拦截鼠标', async (context) => {
+  const view = await mountHighlights()
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    const target = view.fragments[0]
+    view.state.onContractHover({ target })
+    view.state.onContractClick({ target })
+    view.state.onContractClick({ target })
+    context.mock.timers.tick(500)
+    assert.equal(view.tooltip.style.opacity, '0')
+    assert.equal(view.tooltip.style.pointerEvents, 'none')
+  } finally {
+    view.close()
+  }
+})
+
+for (const change of ['close', 'replace', 'unmount']) {
+  test(`真实页面在${change}时清理全部钉住片段、延迟气泡及旧滚动监听`, async (context) => {
+    const view = await mountHighlights()
+    let removed = false
+    const originalRemove = view.body.removeEventListener.bind(view.body)
+    view.body.removeEventListener = (...args) => {
+      if (args[0] === 'scroll') removed = true
+      originalRemove(...args)
+    }
+    context.mock.timers.enable({ apis: ['setTimeout'] })
+    let closed = false
+    try {
+      view.state.onContractClick({ target: view.fragments[1] })
+      if (change === 'close') view.state.showPreview = false
+      else if (change === 'replace')
+        view.state.previewData = { raw_text: '新合同', risk_points: [] }
+      else {
+        view.close()
+        closed = true
+      }
+      await nextTick()
+      context.mock.timers.tick(500)
+      assert.equal(view.root.querySelectorAll('.pinned').length, 0)
+      assert.equal(view.tooltip.style.opacity, '0')
+      assert.equal(view.tooltip.style.pointerEvents, 'none')
+      assert.equal(removed, true)
+      view.body.dispatchEvent(new dom.window.Event('scroll'))
+      assert.equal(view.tooltip.style.opacity, '0')
+    } finally {
+      if (!closed) view.close()
+    }
+  })
+}
+
+test('真实页面关闭未钉住的预览也不会在延时后重新弹出悬停气泡', async (context) => {
+  const view = await mountHighlights()
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    view.state.onContractHover({ target: view.fragments[0] })
+    view.state.showPreview = false
+    await nextTick()
+    context.mock.timers.tick(500)
+    assert.equal(view.tooltip.style.opacity, '0')
+    assert.equal(view.tooltip.style.pointerEvents, 'none')
+  } finally {
+    view.close()
+  }
+})
 
 async function mount(overrides = {}) {
   const writes = []

@@ -101,45 +101,52 @@ export function getRiskClass(level) {
  */
 export function renderHighlightedContract(rawText, riskPoints) {
   const matches = riskPoints
-    .map((rp) => {
+    .map((rp, index) => {
       const q = rp.quote || rp.key_phrase || ''
       const pos = fuzzyFind(rawText, q)
       if (!pos) console.warn('[highlight] match failed:', q.slice(0, 40))
-      return pos ? { ...rp, pos } : null
+      return pos ? { ...rp, pos, index } : null
     })
     .filter(Boolean)
 
   // 始终按原文坐标分段，转义后的字符长度不再参与定位。
   const boundaries = new Map()
-  for (const [index, point] of matches.entries()) {
+  for (const point of matches) {
     for (const [offset, opening] of [
       [point.pos.start, true],
       [point.pos.end, false],
     ]) {
       if (!boundaries.has(offset)) boundaries.set(offset, [])
-      boundaries.get(offset).push({ point, opening, index })
+      boundaries.get(offset).push({ point, opening })
     }
   }
 
   const parts = []
+  const active = new Set()
+  let stack = []
   let previous = 0
   for (const offset of [...boundaries.keys()].sort((left, right) => left - right)) {
     parts.push(escapeHtml(rawText.slice(previous, offset)).replace(/\n/g, '<br>'))
-    const events = boundaries.get(offset).sort((left, right) => {
-      if (left.opening !== right.opening) return left.opening ? 1 : -1
-      // 同一位置先打开外层、先关闭内层，保持包含关系及相邻标记边界。
-      return left.opening
-        ? right.point.pos.end - left.point.pos.end || left.index - right.index
-        : right.point.pos.start - left.point.pos.start || right.index - left.index
-    })
-    for (const { point, opening } of events) {
+    for (const { point, opening } of boundaries.get(offset)) {
+      if (opening) active.add(point)
+      else active.delete(point)
+    }
+    // 每段只生成合法嵌套，小范围置于内层；交叉时关闭再重开，不让浏览器修复标签。
+    const nextStack = [...active].sort(
+      (left, right) =>
+        right.pos.end - right.pos.start - (left.pos.end - left.pos.start) ||
+        left.index - right.index,
+    )
+    let common = 0
+    while (common < stack.length && stack[common] === nextStack[common]) common++
+    parts.push('</mark>'.repeat(stack.length - common))
+    for (const point of nextStack.slice(common)) {
       const level = ['high', 'medium', 'low'].includes(point.level) ? point.level : 'low'
       parts.push(
-        opening
-          ? `<mark class="risk-${level}" data-bubble="${escapeHtml(point.bubble_text || '')}" data-level="${level}">`
-          : '</mark>',
+        `<mark class="risk-${level}" data-risk-id="${point.index}" data-bubble="${escapeHtml(point.bubble_text || '')}" data-level="${level}">`,
       )
     }
+    stack = nextStack
     previous = offset
   }
   parts.push(escapeHtml(rawText.slice(previous)).replace(/\n/g, '<br>'))

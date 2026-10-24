@@ -425,6 +425,7 @@ import {
   rebuildMessages,
 } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
+import { getHighlightRect, isSameHighlight, setHighlightPinned } from '../utils/highlightSelection'
 import { getContractUploadError } from '../utils/upload'
 import { appendToTypewriter, flushTypewriter } from '../composables/useTypewriter'
 import { toExportable } from '../composables/messageExport'
@@ -574,6 +575,7 @@ function checkNarrow() {
 let tooltipEl = null
 let pinnedMark = null
 let pinnedScrollHandler = null
+let pinnedScrollElement = null
 let hoverTimer = null
 
 const canSend = computed(
@@ -913,19 +915,7 @@ async function regenerateContractMessage(target) {
     completed = result.status === 'completed'
     if (completed) {
       if (currentConvId.value === convId && previewData.value === previousData) {
-        clearTimeout(hoverTimer)
-        pinnedMark?.classList.remove('pinned')
-        pinnedMark = null
-        if (tooltipEl) {
-          tooltipEl.style.opacity = '0'
-          tooltipEl.style.pointerEvents = 'none'
-        }
-        if (pinnedScrollHandler) {
-          document
-            .querySelector('.preview-body')
-            ?.removeEventListener('scroll', pinnedScrollHandler)
-          pinnedScrollHandler = null
-        }
+        clearContractSelection()
         previewData.value = target.contractData
       }
       await refreshConvList()
@@ -1268,7 +1258,11 @@ function sendFile(instruction = null) {
 // 更新钉住的高亮气泡位置
 function updatePinnedBubble() {
   if (!pinnedMark || !tooltipEl) return
-  const rect = pinnedMark.getBoundingClientRect()
+  positionContractBubble(pinnedMark)
+}
+
+function positionContractBubble(mark) {
+  const rect = getHighlightRect(mark)
   const panel = document.querySelector('.preview-panel')
   const panelRect = panel ? panel.getBoundingClientRect() : { left: 0, right: window.innerWidth }
   const tipW = tooltipEl.offsetWidth
@@ -1284,43 +1278,35 @@ function updatePinnedBubble() {
   tooltipEl.style.top = top + 'px'
 }
 
-// 合同预览区点击事件：钉住/取消气包
+// 隐藏时同时撤销鼠标命中，避免透明气泡遮挡其他高亮。
+function clearContractSelection() {
+  clearTimeout(hoverTimer)
+  setHighlightPinned(pinnedMark, false)
+  pinnedMark = null
+  if (tooltipEl) {
+    tooltipEl.style.opacity = '0'
+    tooltipEl.style.pointerEvents = 'none'
+  }
+  pinnedScrollElement?.removeEventListener('scroll', pinnedScrollHandler)
+  pinnedScrollHandler = null
+  pinnedScrollElement = null
+}
+
+// 合同预览区点击事件：钉住或取消整个逻辑风险范围。
 function onContractClick(e) {
-  const mark = e.target.closest('mark')
-  if (!mark) return
-  if (pinnedMark === mark) {
-    // 取消钉住
-    pinnedMark.classList.remove('pinned')
-    pinnedMark = null
-    if (tooltipEl) {
-      tooltipEl.style.opacity = '0'
-      tooltipEl.style.pointerEvents = 'none'
-    }
-    if (pinnedScrollHandler) {
-      document.querySelector('.preview-body')?.removeEventListener('scroll', pinnedScrollHandler)
-      pinnedScrollHandler = null
-    }
+  const mark = e.target.closest?.('mark')
+  if (!mark || !tooltipEl) return
+  if (isSameHighlight(pinnedMark, mark)) {
+    clearContractSelection()
   } else {
-    // 取消此前的钉住状态
-    if (pinnedMark) {
-      pinnedMark.classList.remove('pinned')
-      if (pinnedScrollHandler) {
-        document.querySelector('.preview-body')?.removeEventListener('scroll', pinnedScrollHandler)
-      }
-    }
-    // 钉住当前标记
+    clearContractSelection()
     pinnedMark = mark
-    mark.classList.add('pinned')
-    // 立即显示气泡（跳过防抖）
-    if (tooltipEl) {
-      tooltipEl.style.opacity = '1'
-      tooltipEl.style.pointerEvents = 'auto'
-    }
-    onContractHover(e)
+    setHighlightPinned(mark, true)
+    showContractBubble(mark)
+    tooltipEl.style.pointerEvents = 'auto'
     pinnedScrollHandler = () => updatePinnedBubble()
-    document
-      .querySelector('.preview-body')
-      ?.addEventListener('scroll', pinnedScrollHandler, { passive: true })
+    pinnedScrollElement = mark.closest('.preview-body')
+    pinnedScrollElement?.addEventListener('scroll', pinnedScrollHandler, { passive: true })
   }
 }
 
@@ -1364,42 +1350,27 @@ function onDividerDragStart(e) {
 
 // 合同预览区悬停事件：显示高亮气泡
 function onContractHover(e) {
-  const mark = e.target.closest('mark')
+  const mark = e.target.closest?.('mark')
   if (!mark || !tooltipEl) return
   // 如果已有其他标记被钉住，不抢占气泡
-  if (pinnedMark && pinnedMark !== mark) return
-  const bubble = mark.dataset.bubble
-  if (!bubble) return
+  if (pinnedMark && !isSameHighlight(pinnedMark, mark)) return
+  if (!mark.dataset.bubble) return
   clearTimeout(hoverTimer)
-  const isVisible = tooltipEl.style.opacity === '1'
-  const show = () => {
-    tooltipEl.textContent = bubble
-    tooltipEl.style.opacity = '1'
-  }
-  if (isVisible) {
-    show()
+  if (tooltipEl.style.opacity === '1') {
+    showContractBubble(mark)
   } else {
-    hoverTimer = setTimeout(show, 200)
+    hoverTimer = setTimeout(() => showContractBubble(mark), 200)
   }
-  const rect = mark.getBoundingClientRect()
-  // 以预览面板边界作为可视区域
-  const panel = document.querySelector('.preview-panel')
-  const panelRect = panel ? panel.getBoundingClientRect() : { left: 0, right: window.innerWidth }
-  const tipW = tooltipEl.offsetWidth
-  const tipH = tooltipEl.offsetHeight
-  const gap = 8
-  // 居中于标记上方，限制在预览面板内
-  let left = rect.left + rect.width / 2 - tipW / 2
-  left = Math.max(panelRect.left + 8, Math.min(left, panelRect.right - tipW - 8))
-  let top = rect.top - tipH - gap
-  if (top < panelRect.top + 8) {
-    top = rect.bottom + gap
-  }
-  tooltipEl.style.left = left + 'px'
-  tooltipEl.style.top = top + 'px'
 }
 
-function onContractLeave() {
+function showContractBubble(mark) {
+  tooltipEl.textContent = mark.dataset.bubble || ''
+  tooltipEl.style.opacity = '1'
+  positionContractBubble(mark)
+}
+
+function onContractLeave(e) {
+  if (isSameHighlight(e?.target?.closest?.('mark'), e?.relatedTarget?.closest?.('mark'))) return
   clearTimeout(hoverTimer)
   if (!tooltipEl || pinnedMark) return
   hoverTimer = setTimeout(() => {
@@ -1415,20 +1386,9 @@ onMounted(() => {
   window.addEventListener('resize', checkNarrow)
   watch(showPreview, (val) => {
     nextTick(checkNarrow)
-    if (!val && pinnedMark) {
-      pinnedMark.classList.remove('pinned')
-      if (tooltipEl) tooltipEl.style.pointerEvents = 'none'
-      pinnedMark = null
-      if (tooltipEl) {
-        tooltipEl.style.opacity = '0'
-        tooltipEl.style.pointerEvents = 'none'
-      }
-      if (pinnedScrollHandler) {
-        document.querySelector('.preview-body')?.removeEventListener('scroll', pinnedScrollHandler)
-        pinnedScrollHandler = null
-      }
-    }
+    if (!val) clearContractSelection()
   })
+  watch(previewData, clearContractSelection)
   refreshConvList()
   tooltipEl = document.createElement('div')
   tooltipEl.className = 'contract-tooltip'
@@ -1439,6 +1399,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', checkNarrow)
+  clearContractSelection()
   if (tooltipEl) {
     tooltipEl.remove()
     tooltipEl = null
