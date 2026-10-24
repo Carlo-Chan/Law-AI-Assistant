@@ -51,6 +51,13 @@ UNSUPPORTED_DOCUMENT = ErrorInfo(
 )
 LEGACY_DOCUMENT = ErrorInfo("legacy_document", "不支持旧版 .doc 格式，请转换为 .docx 后重试", 400)
 INVALID_REQUEST = ErrorInfo("invalid_request", "请求参数不正确，请检查后重试。", 422)
+REPORT_NOT_FOUND = ErrorInfo("report_not_found", "目标合同报告不存在，请刷新会话后重试。", 404)
+REPORT_CHANGED = ErrorInfo(
+    "report_changed", "原报告已变更或被删除，请刷新会话后重试；本次结果未覆盖原记录。", 409
+)
+CONTRACT_SOURCE_MISSING = ErrorInfo(
+    "contract_source_missing", "此记录未保存合同原文，请重新上传原文件；原报告已保留。", 400
+)
 
 
 class PublicError(ValueError):

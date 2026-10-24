@@ -103,6 +103,8 @@ def test_messages_preserve_order_and_optional_fields(history_store):
 
     assert len(messages) == 2
     assert messages[0] == {
+        "id": messages[0]["id"],
+        "revision": messages[0]["revision"],
         "role": "user",
         "content": "请审查合同",
         "file_name": "租赁合同.docx",

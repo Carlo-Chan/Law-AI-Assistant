@@ -1,0 +1,51 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import axios from 'axios'
+
+// 使用离线适配器验证真实 Axios 配置，不发起任何 HTTP 请求。
+const calls = []
+const previousAdapter = axios.defaults.adapter
+axios.defaults.adapter = async (config) => {
+  calls.push(config)
+  return {
+    data: { code: 200, data: { id: 'test' } },
+    status: 200,
+    statusText: 'OK',
+    headers: {},
+    config,
+  }
+}
+let api
+try {
+  api = await import('../src/utils/api.js?preparation-test')
+} finally {
+  axios.defaults.adapter = previousAdapter
+}
+
+test('创建、自动命名和列表刷新均传递同一个取消信号', async () => {
+  calls.length = 0
+  const signal = new AbortController().signal
+  await api.createConversation(signal)
+  await api.updateConvTitle('test', '测试标题', signal)
+  await api.listConversations(signal)
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    ['/conversations', '/conversations/test/title', '/conversations'],
+  )
+  assert.ok(calls.every((call) => call.signal === signal))
+  assert.equal(calls[0].data, undefined)
+  assert.deepEqual(JSON.parse(calls[1].data), { title: '测试标题' })
+})
+
+test('已经停止的准备请求不会进入 HTTP 适配器', async () => {
+  calls.length = 0
+  const controller = new AbortController()
+  controller.abort()
+  for (const request of [
+    () => api.createConversation(controller.signal),
+    () => api.updateConvTitle('test', '标题', controller.signal),
+    () => api.listConversations(controller.signal),
+  ])
+    await assert.rejects(request, (error) => axios.isCancel(error))
+  assert.equal(calls.length, 0)
+})

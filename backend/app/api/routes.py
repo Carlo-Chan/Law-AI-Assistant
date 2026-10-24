@@ -4,11 +4,12 @@ API 路由：法律问答 + 合同审查
 
 import json
 import logging
+from contextlib import aclosing
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 
 from app.agent.chain import (
     run_chat,
@@ -17,8 +18,9 @@ from app.agent.chain import (
     run_contract_analysis_stream,
 )
 from app.api.errors import ErrorResponse, SafeAPIRoute
-from app.core.errors import INVALID_DOCUMENT, PublicError, describe_error
+from app.core.errors import INVALID_DOCUMENT, INVALID_REPORT, PublicError, describe_error
 from app.services import history
+from app.services.contract_regeneration import load_contract_source, regenerate_report
 from app.services.parser import DocumentParser
 from app.services.uploads import read_contract_upload
 
@@ -158,6 +160,38 @@ async def get_conversation(conv_id: str):
     if not conv:
         raise HTTPException(status_code=404, detail="会话不存在")
     return ConvResponse(code=200, data=conv)
+
+
+class RegenerateContractRequest(BaseModel):
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+@router.post("/conversations/{conv_id}/messages/{message_id}/regenerate_contract/stream")
+async def regenerate_contract(conv_id: str, message_id: int, request: RegenerateContractRequest):
+    """使用目标报告的原文重新审查，成功后原子替换，失败保留历史记录。"""
+    original, raw_text = load_contract_source(conv_id, message_id, request.expected_revision)
+
+    def validate_result(event):
+        try:
+            data = ContractAnalysisData.model_validate(event)
+        except ValidationError as error:
+            raise PublicError(INVALID_REPORT) from error
+        if not data.chat_reply.strip() or data.raw_text != raw_text:
+            raise PublicError(INVALID_REPORT)
+        return data.model_dump()
+
+    async def generate():
+        try:
+            events = run_contract_analysis_stream(raw_text)
+            async with aclosing(regenerate_report(original, events, validate_result)) as stream:
+                async for event in stream:
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as error:
+            info = describe_error(error)
+            logger.exception("合同原文重跑失败：错误代码=%s", info.code)
+            yield f"data: {json.dumps(info.stream_event(), ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 class UpdateTitleRequest(BaseModel):

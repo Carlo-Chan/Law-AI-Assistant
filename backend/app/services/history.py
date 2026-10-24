@@ -2,6 +2,7 @@
 会话历史持久化存储 — SQLite
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -11,6 +12,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+
+from app.core.errors import REPORT_CHANGED, PublicError
 
 logger = logging.getLogger(__name__)
 
@@ -97,12 +100,13 @@ def get_conversation(conv_id: str) -> dict | None:
         if not conv:
             return None
         msgs = conn.execute(
-            "SELECT role, content, file_name, contract_data, thinking_chain FROM messages WHERE conversation_id=? ORDER BY id",
+            "SELECT id, role, content, file_name, contract_data, thinking_chain FROM messages WHERE conversation_id=? ORDER BY id",
             (conv_id,),
         ).fetchall()
     result = []
     for m in msgs:
         md = dict(m)
+        md["revision"] = message_revision(md)
         if md.get("thinking_chain"):
             try:
                 md["thinking_chain"] = json.loads(md["thinking_chain"])
@@ -128,6 +132,57 @@ def conversation_exists(conv_id: str) -> bool:
             ).fetchone()
             is not None
         )
+
+
+def message_revision(message: dict) -> str:
+    """用已保存的正文及结构化数据标识版本，不修改旧数据库结构。"""
+    values = [message.get(field) for field in ("content", "contract_data", "thinking_chain")]
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def get_message(conv_id: str, message_id: int) -> dict | None:
+    """按会话和稳定消息 ID 查询原始存储数据，不能跨会话取得报告。"""
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM messages WHERE conversation_id=? AND id=?", (conv_id, message_id)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def replace_contract_report(original: dict, contract_data: dict, thinking_chain: list) -> str:
+    """完整结果生成后定点替换；版本冲突或事务失败时不覆盖原记录。"""
+    content = contract_data["chat_reply"]
+    encoded_contract = json.dumps(contract_data, ensure_ascii=False)
+    encoded_thinking = json.dumps(thinking_chain, ensure_ascii=False) if thinking_chain else None
+    with _get_conn() as conn:
+        cursor = conn.execute(
+            """UPDATE messages SET content=?, contract_data=?, thinking_chain=?
+               WHERE id=? AND conversation_id=? AND role='assistant'
+               AND content IS ? AND contract_data IS ? AND thinking_chain IS ?""",
+            (
+                content,
+                encoded_contract,
+                encoded_thinking,
+                original["id"],
+                original["conversation_id"],
+                original["content"],
+                original["contract_data"],
+                original["thinking_chain"],
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise PublicError(REPORT_CHANGED)
+        conn.execute(
+            "UPDATE conversations SET updated_at=? WHERE id=?",
+            (datetime.now().isoformat(), original["conversation_id"]),
+        )
+    return message_revision(
+        {
+            "content": content,
+            "contract_data": encoded_contract,
+            "thinking_chain": encoded_thinking,
+        }
+    )
 
 
 def _insert_messages(conn, conv_id, messages, now):

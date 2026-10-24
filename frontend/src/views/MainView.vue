@@ -128,24 +128,21 @@
               </div>
               <!-- 思维链：流式输出时实时展示，或持久化保存 -->
               <div
-                v-if="msg.role === 'assistant' && i === messages.length - 1 && loading"
+                v-if="
+                  msg.role === 'assistant' &&
+                  loading &&
+                  (regeneratingMessage ? msg === regeneratingMessage : i === messages.length - 1)
+                "
                 class="thinking-chain"
               >
-                <div
-                  class="thinking-summary"
-                  @click="
-                    messages[messages.length - 1].thinkingExpanded =
-                      !messages[messages.length - 1].thinkingExpanded
-                  "
-                >
+                <div class="thinking-summary" @click="msg.thinkingExpanded = !msg.thinkingExpanded">
                   <span class="thinking-dot" />
                   <span>{{ thinkingLabel }}</span>
                   <span class="thinking-arrow"
-                    ><el-icon :class="{ rotated: messages[messages.length - 1].thinkingExpanded }"
-                      ><ArrowRight /></el-icon
+                    ><el-icon :class="{ rotated: msg.thinkingExpanded }"><ArrowRight /></el-icon
                   ></span>
                 </div>
-                <div v-if="messages[messages.length - 1].thinkingExpanded" class="thinking-details">
+                <div v-if="msg.thinkingExpanded" class="thinking-details">
                   <div v-for="(step, si) in thinkingSteps" :key="si" class="thinking-step">
                     <span class="thinking-step-icon">
                       <el-icon v-if="step.type === 'tool'"><Search /></el-icon>
@@ -299,7 +296,7 @@
                   type="textarea"
                   :autosize="{ minRows: 3, maxRows: 8 }"
                   placeholder="输入法律问题，或上传合同文件进行审查..."
-                  :disabled="loading"
+                  :disabled="loading || historyLoading"
                   @keydown.enter.exact.prevent="handleSend"
                 />
                 <div class="input-actions">
@@ -310,7 +307,11 @@
                     :on-change="handleFileChange"
                     accept=".pdf,.doc,.docx,.txt"
                   >
-                    <el-button text size="small" class="upload-btn" :disabled="loading"
+                    <el-button
+                      text
+                      size="small"
+                      class="upload-btn"
+                      :disabled="loading || historyLoading"
                       ><el-icon><Plus /></el-icon
                     ></el-button>
                   </el-upload>
@@ -322,7 +323,7 @@
                     class="send-btn"
                     ><el-icon><Top /></el-icon
                   ></el-button>
-                  <el-button v-else size="small" @click="handleSend" class="stop-btn"
+                  <el-button v-else size="small" @click="stopGeneration(pageKey())" class="stop-btn"
                     ><span class="stop-square"></span
                   ></el-button>
                 </div>
@@ -420,14 +421,21 @@ import {
   updateConvTitle,
   chatStream,
   analyzeContractStream,
+  regenerateContractStream,
   rebuildMessages,
 } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
 import { getContractUploadError } from '../utils/upload'
 import { appendToTypewriter, flushTypewriter } from '../composables/useTypewriter'
 import { toExportable } from '../composables/messageExport'
+import { createConversationRequests, LOADING_DOTS } from '../composables/conversationRequests'
+import { createDraftRecovery } from '../composables/draftRecovery'
 import { pinyinMatch, fuzzyMatch } from '../composables/useSearch'
 import { stripMarkdown, cleanFences, renderMd } from '../composables/useTextTools'
+import {
+  ContractRegenerationError,
+  regenerateContractReport,
+} from '../composables/contractRegeneration'
 
 // ---- 状态 ----
 const messages = ref([])
@@ -438,7 +446,12 @@ const pendingFile = ref(null)
 const fileUploadRef = ref(null)
 const chatHeader = ref(null)
 const loadingConvIds = ref(new Set())
-const loading = computed(() => loadingConvIds.value.has(currentConvId.value || '__pending__'))
+let nextDraftId = 0
+const draftKey = ref(`__draft_${nextDraftId}`)
+const historyLoading = ref(false)
+let navigationVersion = 0
+const pageKey = () => currentConvId.value || draftKey.value
+const loading = computed(() => loadingConvIds.value.has(pageKey()))
 const abortControllers = ref({})
 const editingIndex = ref(-1)
 const editingText = ref('')
@@ -464,9 +477,37 @@ function resolveConfirm(result) {
 const sidebarMenuConvId = ref(null)
 const renamingConvId = ref(null)
 const renameText = ref('')
-const activeStreamConvId = ref(null)
 const streamMessageCache = ref({})
 const thinkingSteps = ref([])
+const requests = createConversationRequests({
+  currentKey: () => (historyLoading.value ? null : pageKey()),
+  messages,
+  thinkingSteps,
+  loadingIds: loadingConvIds,
+  controllers: abortControllers,
+  cache: streamMessageCache,
+})
+const draftRecovery = createDraftRecovery({
+  read(owner) {
+    if (!historyLoading.value && (currentConvId.value || '__new__') === owner) {
+      return { text: input.value, file: pendingFile.value }
+    }
+    return { text: draftInputs[owner] || '', file: draftFiles[owner] || null }
+  },
+  write(owner, draft) {
+    draftInputs[owner] = draft.text
+    draftFiles[owner] = draft.file
+    if (!historyLoading.value && (currentConvId.value || '__new__') === owner) {
+      input.value = draft.text
+      pendingFile.value = draft.file
+    }
+  },
+  canRestore(owner) {
+    // 另一个尚未创建完成的新对话也可能正在发送，不能把恢复内容塞进它的输入框。
+    return !(owner === '__new__' && !currentConvId.value && loading.value)
+  },
+})
+const regeneratingMessage = computed(() => messages.value.find((message) => message.regenerating))
 
 const thinkingLabel = computed(() => {
   if (thinkingSteps.value.length === 0) return '正在思考...'
@@ -538,7 +579,8 @@ let hoverTimer = null
 const canSend = computed(
   () =>
     (input.value.trim() || pendingFile.value) &&
-    !loadingConvIds.value.has(currentConvId.value || '__pending__'),
+    !historyLoading.value &&
+    !loadingConvIds.value.has(pageKey()),
 )
 
 const highlightedContract = computed(() => {
@@ -557,15 +599,19 @@ async function scrollToBottom() {
 
 // ---- 文本发送 ----
 // ---- 会话管理 ----
-async function refreshConvList() {
+async function refreshConvList(signal) {
   try {
-    conversations.value = await listConversations()
+    const result = await listConversations(signal)
+    if (!signal?.aborted) conversations.value = result
   } catch (error) {
-    console.warn('刷新历史对话列表失败', error)
+    if (signal?.aborted) return
+    console.warn('刷新历史对话列表失败，异常类型：', error.name)
   }
 }
 // 创建新对话：保存草稿、缓存活跃对话消息、清空界面
 async function newChat() {
+  navigationVersion++
+  historyLoading.value = false
   // 保存当前对话的输入框草稿
   if (currentConvId.value) {
     draftInputs[currentConvId.value] = input.value
@@ -578,30 +624,22 @@ async function newChat() {
   } else {
     draftFiles['__new__'] = pendingFile.value
   }
-  // 切换前保存当前对话中正在生成的消息（仅针对活跃流的对话）
-  if (
-    loading.value &&
-    activeStreamConvId.value &&
-    currentConvId.value === activeStreamConvId.value
-  ) {
-    streamMessageCache.value = {
-      ...streamMessageCache.value,
-      [currentConvId.value]: {
-        messages: [...messages.value],
-        thinkingSteps: [...thinkingSteps.value],
-      },
-    }
-  }
+  // 发送开始时已登记所属缓存；新空白页使用独立临时身份，允许并行创建会话。
+  draftKey.value = `__draft_${++nextDraftId}`
   currentConvId.value = null
   messages.value = []
+  thinkingSteps.value = []
   showScrollBtn.value = false
   showPreview.value = false
   previewData.value = null
   pendingFile.value = draftFiles['__new__'] || null
   input.value = draftInputs['__new__'] || ''
+  draftRecovery.resume('__new__')
 }
 // 加载历史对话：缓存当前对话 → 恢复目标对话（缓存优先，否则查数据库）
 async function loadConversation(id) {
+  const version = ++navigationVersion
+  historyLoading.value = true
   showScrollBtn.value = false
   // 保存当前对话的输入框草稿
   if (currentConvId.value) {
@@ -614,16 +652,6 @@ async function loadConversation(id) {
     draftFiles[currentConvId.value] = pendingFile.value
   } else {
     draftFiles['__new__'] = pendingFile.value
-  }
-  // 切换前保存正在生成的消息到缓存
-  if (loadingConvIds.value.has(currentConvId.value) && currentConvId.value !== id) {
-    streamMessageCache.value = {
-      ...streamMessageCache.value,
-      [currentConvId.value]: {
-        messages: [...messages.value],
-        thinkingSteps: [...thinkingSteps.value],
-      },
-    }
   }
   // 如果目标对话有活跃流，从缓存恢复消息
   if (streamMessageCache.value[id]) {
@@ -633,15 +661,26 @@ async function loadConversation(id) {
     currentConvId.value = id
     pendingFile.value = draftFiles[id] || null
     input.value = draftInputs[id] || ''
+    showPreview.value = false
+    previewData.value = null
+    historyLoading.value = false
+    draftRecovery.resume(id)
+    if (cache.messages.some((message) => message.saveFailed)) {
+      showContractWarning(
+        '此会话有未确认保存的回复，内容仍保留在页面。请先复制，再刷新会话确认。',
+        6500,
+      )
+    }
     return
   }
   try {
     const conv = await getConversation(id)
+    if (version !== navigationVersion) return
     currentConvId.value = id
     pendingFile.value = draftFiles[id] || null
     input.value = draftInputs[id] || ''
     const msgs = conv.messages.map((m) => {
-      const msg = { role: m.role, content: m.content }
+      const msg = { id: m.id, revision: m.revision, role: m.role, content: m.content }
       if (m.file_name) msg.file = { name: m.file_name }
       if (m.thinking_chain) {
         try {
@@ -672,10 +711,16 @@ async function loadConversation(id) {
     messages.value = msgs
     await nextTick()
     await scrollToBottom()
+    if (version !== navigationVersion) return
     showPreview.value = false
     previewData.value = null
   } catch (error) {
     console.warn('加载历史对话失败', error)
+  } finally {
+    if (version === navigationVersion) {
+      historyLoading.value = false
+      if (currentConvId.value === id) draftRecovery.resume(id)
+    }
   }
 }
 async function startRename(convId) {
@@ -722,16 +767,17 @@ async function handleDeleteConv(id) {
     console.warn('删除历史对话失败', error)
   }
 }
-// 确保当前有活跃对话，没有则自动创建
-async function ensureConversation() {
-  if (!currentConvId.value) {
-    const conv = await createConversation()
-    currentConvId.value = conv.id
-    await refreshConvList()
+// 创建结果只绑定原请求；用户已离开时不得切回或占用另一个新对话。
+async function ensureConversation(request) {
+  if (!request.convId) {
+    const conv = await createConversation(request.controller.signal)
+    if (typeof conv?.id !== 'string' || !conv.id) throw new Error('会话创建结果缺少有效 ID')
+    if (requests.bind(request, conv.id)) currentConvId.value = conv.id
+    conversations.value = [conv, ...conversations.value.filter((item) => item.id !== conv.id)]
   }
+  return request.convId
 }
 
-const LOADING_DOTS = '<span class="loading-dots">…</span>'
 // 保存对话消息到后端数据库
 async function doSaveMessages(
   overrideConvId,
@@ -741,24 +787,17 @@ async function doSaveMessages(
   contractData,
   thinkingChain,
 ) {
-  const _cid = overrideConvId || currentConvId.value
+  const _cid = overrideConvId
   if (!_cid) return
-  try {
-    await saveMessages(_cid, userContent, assistantContent, fileName, contractData, thinkingChain)
-    await refreshConvList()
-  } catch (error) {
-    console.warn('保存对话消息失败', error)
-  }
+  await saveMessages(_cid, userContent, assistantContent, fileName, contractData, thinkingChain)
+  await refreshConvList()
 }
-// 简易内联 POST 辅助函数（避免循环引用）
 
-// 发送按钮处理：生成中则停止，否则发送文本或文件
-function handleSend() {
-  const _key = currentConvId.value || '__pending__'
-  if (loadingConvIds.value.has(_key)) {
-    stopGeneration(currentConvId.value)
-    return
-  }
+// 发送与停止入口分开，旧发送按钮上的连续点击不能被误判为停止。
+function handleSend(event) {
+  if (historyLoading.value || event?.isComposing) return
+  const _key = pageKey()
+  if (loadingConvIds.value.has(_key)) return
   if (pendingFile.value) {
     sendFile(input.value.trim() || null)
   } else {
@@ -810,14 +849,17 @@ async function deleteMessage(idx) {
   }
 }
 
-// 重新生成 LLM 回复：删除旧回复 → 重跑对应请求
+// 合同走安全替换流程，普通文本仍沿用原有重新生成逻辑。
 async function regenerateMessage(idx) {
   const msg = messages.value[idx]
   if (!msg || msg.role !== 'assistant') return
   // 查找对应的上一条用户消息
   if (idx > 0 && messages.value[idx - 1].role === 'user') {
     const userMsg = messages.value[idx - 1]
-    if (userMsg.file && !validateContractFile(userMsg.file)) return
+    if (userMsg.file || msg.contractData || msg.contractRawText) {
+      await regenerateContractMessage(msg)
+      return
+    }
     // 移除该对消息
     messages.value.splice(idx - 1, 2)
     // 重新生成前先同步删除到后端
@@ -828,25 +870,86 @@ async function regenerateMessage(idx) {
         console.warn('同步重新生成前的消息列表失败', error)
       }
     }
-    if (userMsg.file) {
-      // 文件上传消息，重新发送文件
-      pendingFile.value = userMsg.file
-      input.value = ''
-      // 提取用户附加的文字指令
-      const displayText = userMsg.content
-      const fileMark = '📄 上传合同：' + userMsg.file.name
-      if (displayText.startsWith(fileMark)) {
-        const instr = displayText.slice(fileMark.length).trim().replace(/^\n/, '')
-        input.value = instr
+    input.value = userMsg.content
+    sendText()
+  }
+}
 
-        input.value = instr
+async function regenerateContractMessage(target) {
+  const convId = currentConvId.value
+  if (!convId || loadingConvIds.value.has(convId)) return
+  const ownedMessages = messages.value
+  const previousData = target.contractData
+  const previousExpanded = target.thinkingExpanded
+  const controller = new AbortController()
+  let completed = false
+  flushTypewriter(target)
+  loadingConvIds.value.add(convId)
+  abortControllers.value[convId] = controller
+  target.regenerating = true
+  target.thinkingExpanded = false
+  streamMessageCache.value = {
+    ...streamMessageCache.value,
+    [convId]: { messages: ownedMessages, thinkingSteps: [] },
+  }
+  thinkingSteps.value = []
+  try {
+    const result = await regenerateContractReport({
+      convId,
+      target,
+      messages: ownedMessages,
+      getConversation,
+      stream: regenerateContractStream,
+      signal: controller.signal,
+      onSteps(steps) {
+        const cache = streamMessageCache.value[convId]
+        streamMessageCache.value = {
+          ...streamMessageCache.value,
+          [convId]: { ...cache, messages: cache?.messages || ownedMessages, thinkingSteps: steps },
+        }
+        if (currentConvId.value === convId) thinkingSteps.value = steps
+      },
+    })
+    completed = result.status === 'completed'
+    if (completed) {
+      if (currentConvId.value === convId && previewData.value === previousData) {
+        clearTimeout(hoverTimer)
+        pinnedMark?.classList.remove('pinned')
+        pinnedMark = null
+        if (tooltipEl) {
+          tooltipEl.style.opacity = '0'
+          tooltipEl.style.pointerEvents = 'none'
+        }
+        if (pinnedScrollHandler) {
+          document
+            .querySelector('.preview-body')
+            ?.removeEventListener('scroll', pinnedScrollHandler)
+          pinnedScrollHandler = null
+        }
+        previewData.value = target.contractData
       }
-      sendFile(input.value.trim() || null)
+      await refreshConvList()
     } else {
-      // 普通文本消息
-      input.value = userMsg.content
-      sendText()
+      showContractWarning('已停止重新审查，页面保留原报告；可刷新会话确认最新结果。')
     }
+  } catch (error) {
+    console.warn('合同重新审查未完成，异常类型：', error.name)
+    showContractWarning(
+      error instanceof ContractRegenerationError
+        ? error.message
+        : '重新审查未完成，页面暂保留原报告；请刷新确认最新结果。',
+    )
+  } finally {
+    target.regenerating = false
+    if (!completed) target.thinkingExpanded = previousExpanded
+    loadingConvIds.value.delete(convId)
+    if (abortControllers.value[convId] === controller) delete abortControllers.value[convId]
+    const cache = { ...streamMessageCache.value }
+    if (ownedMessages.some((message) => message.saveFailed)) {
+      cache[convId] = { messages: ownedMessages, thinkingSteps: target.thinkingChain || [] }
+    } else delete cache[convId]
+    streamMessageCache.value = cache
+    if (currentConvId.value === convId) thinkingSteps.value = target.thinkingChain || []
   }
 }
 
@@ -880,13 +983,15 @@ function cancelEdit() {
 
 // 停止当前对话的 LLM 生成
 function stopGeneration(convId) {
-  const targetId = convId || '__pending__'
+  const targetId = convId || pageKey()
   if (abortControllers.value[targetId]) {
     abortControllers.value[targetId].abort()
-    delete abortControllers.value[targetId]
   }
+  const ownedMessages =
+    streamMessageCache.value[targetId]?.messages || (targetId === pageKey() ? messages.value : [])
+  if (ownedMessages.some((message) => message.regenerating)) return
   // 立即清空打字机队列中未输出的内容
-  const last = messages.value[messages.value.length - 1]
+  const last = ownedMessages.at(-1)
   if (last && last.role === 'assistant') {
     flushTypewriter(last)
     if (last.content === LOADING_DOTS) {
@@ -895,178 +1000,218 @@ function stopGeneration(convId) {
   }
 }
 
-// 发送文本消息：创建/复用对话 → 调用流式 API → 逐字输出
-async function sendText() {
+// 先同步固定输入和消息归属，再进入任何异步准备操作。
+function sendText() {
+  const draft = { text: input.value, file: pendingFile.value }
   const query = input.value.trim()
   if (!query) return
-  const _pendingId = currentConvId.value || '__pending__'
-  if (loadingConvIds.value.has(_pendingId)) return
-  loadingConvIds.value.add(_pendingId)
-
+  const request = requests.begin(currentConvId.value, { role: 'user', content: query })
+  if (!request) return
   input.value = ''
-  if (currentConvId.value) {
-    delete draftInputs[currentConvId.value]
-  } else {
-    delete draftInputs['__new__']
+  delete draftInputs[request.convId || '__new__']
+  return runMessageRequest(request, { userContent: query, title: query, draft })
+}
+
+// 模型尚未启动时撤回占位消息并恢复草稿，不把准备失败伪装成模型回复写入历史。
+function recoverPreparation(request, draft) {
+  const status = draftRecovery.recover(request.convId || '__new__', draft)
+  const prefix = request.controller.signal.aborted ? '已取消发送，' : '发送准备未完成，'
+  showContractWarning(
+    status === 'restored'
+      ? prefix + '待发内容已恢复到原草稿，可编辑后重新发送。'
+      : prefix +
+          '内容已暂存，当前草稿保持不变。发送或清空草稿后，重新打开原对话（未创建时点击“新对话”）可恢复。',
+    status === 'restored' ? 3000 : 6500,
+  )
+}
+
+// 文本和合同共用归属与清理流程，只有模型接口和报告附件不同。
+async function runMessageRequest(request, { userContent, title, file = null, draft }) {
+  const assistant = request.assistant
+  const steps = request.steps
+  const isActive = () => requests.isActive(request)
+  const publish = () => requests.publish(request)
+  const scrollOwned = async () => {
+    await nextTick()
+    if (isActive() && msgContainer.value) {
+      msgContainer.value.scrollTop = msgContainer.value.scrollHeight
+    }
   }
-  messages.value.push({ role: 'user', content: query })
-  await scrollToBottom()
-
-  await ensureConversation()
-  const _convId = currentConvId.value
-  loadingConvIds.value.delete(_pendingId)
-  loadingConvIds.value.add(_convId)
-  activeStreamConvId.value = _convId
-
-  await scrollToBottom()
-
-  try {
-    const isFirstMsg = messages.value.filter((m) => m.role === 'user').length === 1
-    if (isFirstMsg) {
+  let completion = null
+  let settled = false
+  let modelStarted = false
+  let restoreDraft = false
+  async function complete(data = {}, errorMessage = null) {
+    flushTypewriter(assistant)
+    if (assistant.fullContent) assistant.content = assistant.fullContent
+    const validReport =
+      file &&
+      typeof data.raw_text === 'string' &&
+      data.raw_text.trim() &&
+      typeof data.chat_reply === 'string' &&
+      data.chat_reply.trim() &&
+      Array.isArray(data.risk_points) &&
+      data.risk_points.every(
+        (point) =>
+          point &&
+          ['quote', 'level', 'bubble_text'].every((field) => typeof point[field] === 'string'),
+      )
+    if (file && !data.aborted && !errorMessage && !validReport) {
+      errorMessage = '未收到完整的合同报告，已接收内容暂保留，请重新审查。'
+    }
+    if (errorMessage) {
+      const partial = assistant.content === LOADING_DOTS ? '' : assistant.content
+      const warning = (file ? '### ⚠️ 合同审查失败\n\n' : '### ⚠️ 请求失败\n\n') + errorMessage
+      assistant.content = partial ? partial + '\n\n---\n\n' + warning : warning
+    } else if (validReport) {
+      assistant.content = data.chat_reply
+    } else if (assistant.content === LOADING_DOTS) {
+      assistant.content = data.aborted ? '已停止生成。' : data.chat_reply || ''
+    }
+    assistant.thinkingChain = [...steps]
+    assistant.thinkingExpanded = false
+    assistant.fullContent = assistant.content
+    const contractData = file && !errorMessage && !data.aborted ? data : null
+    if (contractData) {
+      assistant.contractData = contractData
+      pushContractAttach(assistant, contractData, file)
+    }
+    publish()
+    if (request.convId) {
       try {
-        const t = query
-        await updateConvTitle(_convId, t.length > 14 ? t.slice(0, 14) + '…' : t)
+        await doSaveMessages(
+          request.convId,
+          userContent,
+          assistant.content,
+          file?.name || null,
+          contractData,
+          assistant.thinkingChain,
+        )
+        assistant.saveFailed = false
       } catch (error) {
-        console.warn('自动命名咨询对话失败', error)
+        console.warn('保存回复未获确认，异常类型：', error.name)
+        assistant.saveFailed = true
+        showContractWarning(
+          '回复已保留在页面，但未确认保存。请先复制内容，再刷新会话确认；不要直接重复发送。',
+          6500,
+        )
       }
     }
-    await refreshConvList()
-    const history = messages.value
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .slice(0, -1)
-      .map((m) => ({ role: m.role, content: m.content }))
-    const _localSteps = []
-    thinkingSteps.value = []
-    const _asstMsg = {
-      role: 'assistant',
-      content: LOADING_DOTS,
-      thinkingChain: [],
-      thinkingExpanded: false,
+    await scrollOwned()
+  }
+  function settle(data, errorMessage) {
+    if (!settled) {
+      settled = true
+      completion = complete(data, errorMessage)
+      // 保留原任务供读取器及 finally 等待，兼容未等待回调的测试或其他调用者。
+      completion.catch(() => {})
     }
-    messages.value.push(_asstMsg)
-    const asstMsgProxy = messages.value[messages.value.length - 1]
-    const _isActive = () => currentConvId.value === _convId
-    const controller = new AbortController()
-    abortControllers.value[_convId] = controller
-    await chatStream(query, history, controller.signal, {
-      onThinking(label) {
-        _localSteps.push({ type: 'tool', label })
-        if (_isActive()) {
-          thinkingSteps.value = [..._localSteps]
-        } else {
-          if (!streamMessageCache.value[_convId]) {
-            streamMessageCache.value = {
-              ...streamMessageCache.value,
-              [_convId]: { messages: [...messages.value], thinkingSteps: [] },
-            }
-          }
-          streamMessageCache.value = {
-            ...streamMessageCache.value,
-            [_convId]: { ...streamMessageCache.value[_convId], thinkingSteps: [..._localSteps] },
-          }
+    return completion
+  }
+  try {
+    await scrollOwned()
+    if (request.controller.signal.aborted) {
+      restoreDraft = true
+      return
+    }
+    await ensureConversation(request)
+    if (request.controller.signal.aborted) {
+      restoreDraft = true
+      return
+    }
+    if (!request.history.some((message) => message.role === 'user')) {
+      try {
+        await updateConvTitle(
+          request.convId,
+          title.length > 14 ? title.slice(0, 14) + '…' : title,
+          request.controller.signal,
+        )
+      } catch (error) {
+        if (!request.controller.signal.aborted) {
+          console.warn('自动命名对话失败，异常类型：', error.name)
         }
+      }
+    }
+    if (request.controller.signal.aborted) {
+      restoreDraft = true
+      return
+    }
+    await refreshConvList(request.controller.signal)
+    if (request.controller.signal.aborted) {
+      restoreDraft = true
+      return
+    }
+    const callbacks = {
+      onThinking(label) {
+        if (settled) return
+        steps.push({ type: 'tool', label })
+        publish()
       },
       onReasoning(text) {
-        const steps = _localSteps
-        if (steps.length && steps[steps.length - 1].type === 'reasoning') {
-          steps[steps.length - 1].label = text
-        } else {
-          steps.push({ type: 'reasoning', label: text })
-        }
-        if (_isActive()) {
-          thinkingSteps.value = [..._localSteps]
-        } else {
-          if (!streamMessageCache.value[_convId]) {
-            streamMessageCache.value = {
-              ...streamMessageCache.value,
-              [_convId]: { messages: [...messages.value], thinkingSteps: [] },
-            }
-          }
-          streamMessageCache.value = {
-            ...streamMessageCache.value,
-            [_convId]: { ...streamMessageCache.value[_convId], thinkingSteps: [..._localSteps] },
-          }
-        }
+        if (settled) return
+        if (steps.at(-1)?.type === 'reasoning') steps.at(-1).label = text
+        else steps.push({ type: 'reasoning', label: text })
+        publish()
       },
-      async onReasoningToken(ch) {
-        const steps = _localSteps
-        if (!steps.length || steps[steps.length - 1].type !== 'reasoning') {
-          steps.push({ type: 'reasoning', label: '' })
-        }
-        steps[steps.length - 1].label += ch
-        if (_isActive()) thinkingSteps.value = [..._localSteps]
-        await nextTick()
+      onReasoningToken(text) {
+        if (settled) return
+        if (steps.at(-1)?.type !== 'reasoning') steps.push({ type: 'reasoning', label: '' })
+        steps.at(-1).label += text
+        publish()
       },
       onToolChunk(tool, content, first) {
-        const steps = _localSteps
-        if (first) {
-          steps.push({ type: 'done', label: tool + ' 完成', snippet: content })
-        } else {
-          const last = steps[steps.length - 1]
-          if (last && last.type === 'done') last.snippet += content
-        }
-        if (_isActive()) thinkingSteps.value = [..._localSteps]
+        if (settled) return
+        if (first) steps.push({ type: 'done', label: tool + ' 完成', snippet: content })
+        else if (steps.at(-1)?.type === 'done') steps.at(-1).snippet += content
+        publish()
       },
       onToolResult(tool, output) {
-        _localSteps.push({ type: 'done', label: tool + ' 完成', snippet: output })
-        if (_isActive()) thinkingSteps.value = [..._localSteps]
+        if (settled) return
+        steps.push({ type: 'done', label: tool + ' 完成', snippet: output })
+        publish()
       },
-      async onToken(content) {
-        if (_isActive()) {
-          if (
-            asstMsgProxy.fullContent &&
-            (!asstMsgProxy.content || asstMsgProxy.content === LOADING_DOTS)
-          ) {
-            asstMsgProxy.content = asstMsgProxy.fullContent
-          }
-          appendToTypewriter(asstMsgProxy, content, _isActive, scrollToBottom)
+      onToken(content) {
+        if (settled) return
+        if (isActive()) {
+          appendToTypewriter(assistant, content, isActive, scrollOwned)
         } else {
-          if (asstMsgProxy.content === LOADING_DOTS) asstMsgProxy.content = ''
-          if (typeof asstMsgProxy.fullContent !== 'string')
-            asstMsgProxy.fullContent = asstMsgProxy.content || ''
-          asstMsgProxy.fullContent += content
+          flushTypewriter(assistant)
+          if (assistant.content === LOADING_DOTS) assistant.content = ''
+          assistant.fullContent = (assistant.fullContent ?? assistant.content) + content
+          assistant.content = assistant.fullContent
         }
       },
-      async onDone() {
-        if (_isActive()) {
-          flushTypewriter(asstMsgProxy)
-        } else {
-          asstMsgProxy.content = asstMsgProxy.fullContent || asstMsgProxy.content
-        }
-        asstMsgProxy.thinkingChain = [..._localSteps]
-        asstMsgProxy.thinkingExpanded = false
-        if (_isActive()) {
-          thinkingSteps.value = [..._localSteps]
-        }
-        const finalContent = asstMsgProxy.fullContent || asstMsgProxy.content
-        await doSaveMessages(_convId, query, finalContent, null, null, asstMsgProxy.thinkingChain)
-        if (_isActive()) await scrollToBottom()
+      onDone(data) {
+        return settle(data)
       },
-      onError(msg) {
-        flushTypewriter(asstMsgProxy)
-        asstMsgProxy.content = '### ⚠️ 请求失败\n\n' + msg
-        if (_isActive()) thinkingSteps.value = [..._localSteps]
-        doSaveMessages(
-          _convId,
-          query,
-          asstMsgProxy.content,
-          null,
-          null,
-          asstMsgProxy.thinkingChain,
-        ).catch((error) => console.warn('保存咨询失败记录时发生异常', error))
+      onError(message) {
+        return settle({}, message)
       },
-    })
-  } catch (e) {
-    console.warn('发送咨询消息失败', e)
-    messages.value.push({ role: 'assistant', content: '### ⚠️ 请求失败\n\n请确认后端服务已启动。' })
+    }
+    modelStarted = true
+    if (file) {
+      await analyzeContractStream(file, request.controller.signal, callbacks)
+    } else {
+      await chatStream(userContent, request.history, request.controller.signal, callbacks)
+    }
+  } catch (error) {
+    if (!request.controller.signal.aborted) console.warn('发送消息失败，异常类型：', error.name)
+    if (!modelStarted) restoreDraft = true
+    else if (!settled && request.controller.signal.aborted) settle({ aborted: true })
+    else if (!settled) settle({}, '请求未完成，请确认后端服务已启动后重试。')
   } finally {
-    loadingConvIds.value.delete(_convId)
-    delete abortControllers.value[_convId]
-    activeStreamConvId.value = null
-    const newCache = { ...streamMessageCache.value }
-    delete newCache[_convId]
-    streamMessageCache.value = newCache
-    await scrollToBottom()
+    try {
+      await completion
+    } catch (error) {
+      console.warn('处理回复结果失败，异常类型：', error.name)
+      assistant.saveFailed = true
+      showContractWarning('回复处理未完成，内容暂保留在页面。请先复制内容，再刷新会话确认。', 6500)
+    } finally {
+      if (restoreDraft) requests.discard(request)
+      requests.finish(request)
+      if (restoreDraft) recoverPreparation(request, draft)
+      await scrollOwned()
+    }
   }
 }
 
@@ -1075,14 +1220,19 @@ async function sendText() {
 function validateContractFile(file) {
   const message = getContractUploadError(file)
   if (!message) return true
+  showContractWarning(message)
+  return false
+}
+
+function showContractWarning(message, duration = 3000) {
   const headerBottom = chatHeader.value?.getBoundingClientRect().bottom || 0
   // 根据导航栏实际位置留出间距，避免提示条覆盖导航按钮。
   ElMessage.warning({
     message,
     offset: Math.max(16, headerBottom + 12),
     customClass: 'contract-upload-notice',
+    duration,
   })
-  return false
 }
 
 // 清理上传组件的内部队列，草稿仍只由 pendingFile 与 draftFiles 管理。
@@ -1093,194 +1243,26 @@ function handleFileChange(file) {
 }
 
 // ---- 合同审查发送 ----
-// 发送文件审查：上传合同 → 调用合同审查流式 API → 展示结果
-async function sendFile(instruction = null) {
-  if (!pendingFile.value) return
-  if (!validateContractFile(pendingFile.value)) return
-  const _pendingId = currentConvId.value || '__pending__'
-  if (loadingConvIds.value.has(_pendingId)) return
-  loadingConvIds.value.add(_pendingId)
-
-  const displayContent = instruction
-    ? `📄 上传合同：${pendingFile.value.name}\n${instruction}`
-    : `📄 上传合同：${pendingFile.value.name}`
-  const _userDisplayContent = displayContent
-
-  await ensureConversation()
-  const _convId = currentConvId.value
-  loadingConvIds.value.delete(_pendingId)
-  loadingConvIds.value.add(_convId)
-  activeStreamConvId.value = _convId
-
-  messages.value.push({
-    role: 'user',
-    content: displayContent,
-    file: pendingFile.value,
-  })
-  const fileToSend = pendingFile.value
+// 文件与附加文字同步快照；创建会话期间切换页面不会取走另一会话的附件。
+function sendFile(instruction = null) {
+  const draft = { text: input.value || instruction || '', file: pendingFile.value }
+  const file = pendingFile.value
+  if (!file || !validateContractFile(file)) return
+  const userContent = instruction
+    ? `📄 上传合同：${file.name}\n${instruction}`
+    : `📄 上传合同：${file.name}`
+  const request = requests.begin(currentConvId.value, { role: 'user', content: userContent, file })
+  if (!request) return
   pendingFile.value = null
   input.value = ''
-  if (_convId) {
-    delete draftInputs[_convId]
-    delete draftFiles[_convId]
-  } else {
-    delete draftInputs['__new__']
-    delete draftFiles['__new__']
-  }
-  await scrollToBottom()
-
-  try {
-    const isFirstMsg = messages.value.filter((m) => m.role === 'user').length === 1
-    if (isFirstMsg) {
-      try {
-        const t = instruction || fileToSend.name.replace(/\.[^.]+$/, '')
-        await updateConvTitle(_convId, t.length > 14 ? t.slice(0, 14) + '…' : t)
-      } catch (error) {
-        console.warn('自动命名合同审查对话失败', error)
-      }
-    }
-    await refreshConvList()
-    const _localSteps = []
-    thinkingSteps.value = []
-    const _asstMsg = {
-      role: 'assistant',
-      content: LOADING_DOTS,
-      thinkingChain: [],
-      thinkingExpanded: false,
-    }
-    messages.value.push(_asstMsg)
-    const asstMsgProxy = messages.value[messages.value.length - 1]
-    const _isActive = () => currentConvId.value === _convId
-    const controller2 = new AbortController()
-    abortControllers.value[_convId] = controller2
-    await analyzeContractStream(fileToSend, controller2.signal, {
-      onThinking(label) {
-        _localSteps.push({ type: 'tool', label })
-        if (_isActive()) {
-          thinkingSteps.value = [..._localSteps]
-        } else {
-          if (!streamMessageCache.value[_convId]) {
-            streamMessageCache.value = {
-              ...streamMessageCache.value,
-              [_convId]: { messages: [...messages.value], thinkingSteps: [] },
-            }
-          }
-          streamMessageCache.value = {
-            ...streamMessageCache.value,
-            [_convId]: { ...streamMessageCache.value[_convId], thinkingSteps: [..._localSteps] },
-          }
-        }
-      },
-      onReasoning(text) {
-        const steps = _localSteps
-        if (steps.length && steps[steps.length - 1].type === 'reasoning') {
-          steps[steps.length - 1].label = text
-        } else {
-          steps.push({ type: 'reasoning', label: text })
-        }
-        if (_isActive()) {
-          thinkingSteps.value = [..._localSteps]
-        } else {
-          if (!streamMessageCache.value[_convId]) {
-            streamMessageCache.value = {
-              ...streamMessageCache.value,
-              [_convId]: { messages: [...messages.value], thinkingSteps: [] },
-            }
-          }
-          streamMessageCache.value = {
-            ...streamMessageCache.value,
-            [_convId]: { ...streamMessageCache.value[_convId], thinkingSteps: [..._localSteps] },
-          }
-        }
-      },
-      async onReasoningToken(ch) {
-        const steps = _localSteps
-        if (!steps.length || steps[steps.length - 1].type !== 'reasoning') {
-          steps.push({ type: 'reasoning', label: '' })
-        }
-        steps[steps.length - 1].label += ch
-        if (_isActive()) thinkingSteps.value = [..._localSteps]
-        await nextTick()
-      },
-      onToolChunk(tool, content, first) {
-        const steps = _localSteps
-        if (first) {
-          steps.push({ type: 'done', label: tool + ' 完成', snippet: content })
-        } else {
-          const last = steps[steps.length - 1]
-          if (last && last.type === 'done') last.snippet += content
-        }
-        if (_isActive()) thinkingSteps.value = [..._localSteps]
-      },
-      onToolResult(tool, output) {
-        _localSteps.push({ type: 'done', label: tool + ' 完成', snippet: output })
-        if (_isActive()) thinkingSteps.value = [..._localSteps]
-      },
-      async onToken(content) {
-        if (_isActive()) {
-          if (
-            asstMsgProxy.fullContent &&
-            (!asstMsgProxy.content || asstMsgProxy.content === LOADING_DOTS)
-          ) {
-            asstMsgProxy.content = asstMsgProxy.fullContent
-          }
-          appendToTypewriter(asstMsgProxy, content, _isActive, scrollToBottom)
-        } else {
-          if (asstMsgProxy.content === LOADING_DOTS) asstMsgProxy.content = ''
-          if (typeof asstMsgProxy.fullContent !== 'string')
-            asstMsgProxy.fullContent = asstMsgProxy.content || ''
-          asstMsgProxy.fullContent += content
-        }
-      },
-      async onDone(data) {
-        if (_isActive()) {
-          flushTypewriter(asstMsgProxy)
-        } else {
-          asstMsgProxy.content = asstMsgProxy.fullContent || asstMsgProxy.content
-        }
-        asstMsgProxy.thinkingChain = [..._localSteps]
-        asstMsgProxy.thinkingExpanded = false
-        asstMsgProxy.contractData = data
-        pushContractAttach(asstMsgProxy, data, fileToSend)
-        if (_isActive()) {
-          thinkingSteps.value = [..._localSteps]
-        }
-        const finalContent = asstMsgProxy.fullContent || asstMsgProxy.content
-        await doSaveMessages(
-          _convId,
-          _userDisplayContent,
-          finalContent,
-          fileToSend.name,
-          data,
-          asstMsgProxy.thinkingChain,
-        )
-        if (_isActive()) await scrollToBottom()
-      },
-      onError(msg) {
-        flushTypewriter(asstMsgProxy)
-        asstMsgProxy.content = '### ⚠️ 合同审查失败\n\n' + msg
-        if (_isActive()) thinkingSteps.value = [..._localSteps]
-        doSaveMessages(
-          _convId,
-          _userDisplayContent,
-          asstMsgProxy.content,
-          fileToSend.name,
-          null,
-          asstMsgProxy.thinkingChain,
-        ).catch((error) => console.warn('保存合同审查失败记录时发生异常', error))
-      },
-    })
-  } catch (e) {
-    const errMsg = e?.response?.data?.detail || e.message || '请确认后端服务已启动。'
-    messages.value.push({ role: 'assistant', content: '### ⚠️ 合同审查失败\n\n' + errMsg })
-  } finally {
-    loadingConvIds.value.delete(_convId)
-    activeStreamConvId.value = null
-    const newCache = { ...streamMessageCache.value }
-    delete newCache[_convId]
-    streamMessageCache.value = newCache
-    await scrollToBottom()
-  }
+  delete draftInputs[request.convId || '__new__']
+  delete draftFiles[request.convId || '__new__']
+  return runMessageRequest(request, {
+    userContent,
+    title: instruction || file.name.replace(/\.[^.]+$/, ''),
+    file,
+    draft,
+  })
 }
 
 // 更新钉住的高亮气泡位置
@@ -1319,7 +1301,7 @@ function onContractClick(e) {
       pinnedScrollHandler = null
     }
   } else {
-    // 取消钉住 previous
+    // 取消此前的钉住状态
     if (pinnedMark) {
       pinnedMark.classList.remove('pinned')
       if (pinnedScrollHandler) {
