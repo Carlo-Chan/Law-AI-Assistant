@@ -2566,6 +2566,294 @@ test('停止一个会话不影响另一个会话，并且准备阶段停止不�
   }
 })
 
+test('列表刷新只采用最近一次请求的结果，不让迟到旧列表覆盖标题及顺序', async () => {
+  const old = deferred()
+  let calls = 0
+  const view = await mount()
+  globalThis.__sendingTestApi.listConversations = async () =>
+    calls++ === 0
+      ? old.promise
+      : [
+          { id: 'B', title: '最新标题' },
+          { id: 'A', title: 'A' },
+        ]
+  const pending = view.state.refreshConvList()
+  try {
+    await view.state.refreshConvList()
+    old.resolve([{ id: 'A', title: '旧标题' }])
+    await pending
+    assert.deepEqual(
+      view.state.conversations.map((item) => item.id),
+      ['B', 'A'],
+    )
+    assert.equal(view.state.conversations[0].title, '最新标题')
+  } finally {
+    old.resolve([])
+    await pending
+    view.close()
+  }
+})
+
+test('最新列表读取失败时保留当前列表，不倒退采用已过期的旧响应', async () => {
+  const old = deferred()
+  let calls = 0
+  const view = await mount()
+  view.state.conversations = [{ id: 'saved', title: '已显示列表' }]
+  globalThis.__sendingTestApi.listConversations = async () => {
+    if (calls++ === 0) return old.promise
+    throw new Error('列表读取失败')
+  }
+  const pending = view.state.refreshConvList()
+  try {
+    await view.state.refreshConvList()
+    old.resolve([{ id: 'obsolete', title: '旧快照' }])
+    await pending
+    assert.equal(view.state.conversations[0].id, 'saved')
+  } finally {
+    old.resolve([])
+    await pending
+    view.close()
+  }
+})
+
+for (const destination of ['network', 'cache', 'new']) {
+  test(`历史切换到 ${destination} 会取消旧读取，迟到响应不影响最终目标`, async () => {
+    const old = deferred()
+    let oldSignal
+    const view = await mount({
+      getConversation: async (id, signal) => {
+        if (id !== 'slow') return { id, messages: [] }
+        oldSignal = signal
+        return old.promise
+      },
+    })
+    const pending = view.state.loadConversation('slow')
+    try {
+      if (destination === 'new') await view.state.newChat()
+      else {
+        if (destination === 'cache')
+          view.state.streamMessageCache.B = { messages: [], thinkingSteps: [] }
+        await view.state.loadConversation('B')
+      }
+      assert.equal(oldSignal?.aborted, true)
+      old.resolve({ id: 'slow', messages: [{ role: 'assistant', content: '不能出现' }] })
+      await pending
+      assert.equal(view.state.currentConvId, destination === 'new' ? null : 'B')
+      assert.deepEqual(view.state.messages, [])
+      assert.equal(view.state.historyLoading, false)
+    } finally {
+      old.resolve({ id: 'slow', messages: [] })
+      await pending
+      view.close()
+    }
+  })
+}
+
+test('组件卸载取消历史与列表读取，忽略迟到结果并拒绝发起新读取', async () => {
+  const oldHistory = deferred()
+  const oldList = deferred()
+  const signals = []
+  const view = await mount()
+  globalThis.__sendingTestApi.getConversation = (_id, signal) => {
+    signals.push(signal)
+    return oldHistory.promise
+  }
+  globalThis.__sendingTestApi.listConversations = (signal) => {
+    signals.push(signal)
+    return oldList.promise
+  }
+  view.state.currentConvId = 'A'
+  view.state.messages = [savedBubble(2)]
+  view.state.conversations = [{ id: 'A', title: '原列表' }]
+  const pending = [view.state.loadConversation('B'), view.state.refreshConvList()]
+  let closed = false
+  try {
+    view.close()
+    closed = true
+    assert.equal(signals.length, 2)
+    assert.ok(signals.every((signal) => signal?.aborted))
+    oldHistory.resolve({ id: 'B', messages: [] })
+    oldList.resolve([{ id: 'B', title: '迟到列表' }])
+    await Promise.all(pending)
+    assert.equal(view.state.currentConvId, 'A')
+    assert.equal(view.state.messages[0].content, '原回复')
+    assert.equal(view.state.conversations[0].id, 'A')
+    assert.equal(view.state.historyLoading, false)
+    await view.state.loadConversation('new')
+    await view.state.refreshConvList()
+    assert.equal(signals.length, 2)
+  } finally {
+    oldHistory.resolve({ id: 'B', messages: [] })
+    oldList.resolve([])
+    await Promise.all(pending)
+    if (!closed) view.close()
+  }
+})
+
+test('切换新对话发生在历史 DOM 更新等待期间，不被旧读取滚动到底', async () => {
+  const view = await mount({ getConversation: async (id) => ({ id, messages: [] }) })
+  try {
+    view.state.msgContainer = { scrollTop: 0, scrollHeight: 900 }
+    const pending = view.state.loadConversation('A')
+    await Promise.resolve()
+    await view.state.newChat()
+    view.state.msgContainer.scrollTop = 17
+    await pending
+    assert.equal(view.state.msgContainer.scrollTop, 17)
+    assert.equal(view.state.currentConvId, null)
+  } finally {
+    view.close()
+  }
+})
+
+test('失效历史读取的失败不再输出迟到警告或完整请求异常', async (context) => {
+  const gate = deferred()
+  const warnings = context.mock.method(console, 'warn', () => {})
+  const view = await mount({
+    getConversation: (id) => (id === 'old' ? gate.promise : { id, messages: [] }),
+  })
+  const pending = view.state.loadConversation('old')
+  try {
+    await view.state.loadConversation('B')
+    gate.reject(new Error('sk-private obsolete request'))
+    await pending
+    assert.equal(warnings.mock.callCount(), 0)
+  } finally {
+    gate.resolve({ id: 'old', messages: [] })
+    await pending
+    view.close()
+  }
+})
+
+for (const change of ['create', 'rename']) {
+  test(`${change} 本地列表变更不会被之前已发出的旧列表抹掉`, async () => {
+    const old = deferred()
+    const entered = deferred()
+    const titleGate = deferred()
+    const view = await mount({
+      updateConvTitle: async () => {
+        entered.resolve()
+        await titleGate.promise
+      },
+    })
+    let calls = 0
+    globalThis.__sendingTestApi.listConversations = () =>
+      calls++ === 0 ? old.promise : Promise.resolve([{ id: 'created-A', title: '新对话' }])
+    view.state.conversations = [{ id: 'A', title: '旧标题' }]
+    const pending = view.state.refreshConvList()
+    let sending
+    try {
+      if (change === 'create') {
+        view.state.input = '新问题'
+        sending = view.state.sendText()
+        await entered.promise
+      } else {
+        await view.state.startRename('A')
+        view.state.renameText = '新标题'
+        titleGate.resolve()
+        await view.state.finishRename('A')
+      }
+      old.resolve([{ id: 'A', title: '旧标题' }])
+      await pending
+      if (change === 'create') assert.equal(view.state.conversations[0].id, 'created-A')
+      else assert.equal(view.state.conversations[0].title, '新标题')
+    } finally {
+      titleGate.resolve()
+      old.resolve([])
+      await pending
+      await sending
+      view.close()
+    }
+  })
+}
+
+test('替换准备阶段的列表读取只取消子请求，不停止所属生成或丢失正文', async () => {
+  const entered = deferred()
+  let hold = false
+  let childSignal
+  const view = await mount({
+    listConversations: (signal) => {
+      if (!hold) return Promise.resolve([])
+      hold = false
+      childSignal = signal
+      return waitForAbort(signal, entered)
+    },
+  })
+  let sending
+  try {
+    view.state.currentConvId = 'A'
+    view.state.input = '正常生成的问题'
+    hold = true
+    sending = view.state.sendText()
+    await entered.promise
+    const parent = view.state.abortControllers.A
+    await view.state.refreshConvList()
+    assert.equal(childSignal.aborted, true)
+    assert.equal(parent.signal.aborted, false)
+    await sending
+    assert.equal(view.writes.length, 1)
+    assert.equal(view.writes[0][2], '正常生成的问题回复')
+    assert.equal(view.state.loadingConvIds.size, 0)
+    assert.equal(parent.signal.aborted, false)
+  } finally {
+    view.state.stopGeneration('A')
+    await sending
+    view.close()
+  }
+})
+
+for (const deletedId of ['A', 'B']) {
+  test(`删除 ${deletedId} 时只取消同身份的在途历史读取，其他目标仍能加载`, async () => {
+    const gate = deferred()
+    let signal
+    const view = await mount({
+      getConversation: async (id, ownedSignal) => {
+        signal = ownedSignal
+        return gate.promise
+      },
+      deleteConversation: async () => {},
+    })
+    view.state.currentConvId = 'B'
+    const pending = view.state.loadConversation('A')
+    try {
+      const deleting = view.state.handleDeleteConv(deletedId)
+      view.state.resolveConfirm(true)
+      await deleting
+      assert.equal(signal.aborted, deletedId === 'A')
+      assert.equal(view.state.historyLoading, deletedId !== 'A')
+      gate.resolve({ id: 'A', messages: [] })
+      await pending
+      assert.equal(view.state.currentConvId, deletedId === 'A' ? 'B' : 'A')
+      assert.equal(view.state.historyLoading, false)
+    } finally {
+      gate.resolve({ id: 'A', messages: [] })
+      await pending
+      view.close()
+    }
+  })
+}
+
+test('当前历史读取失败释放加载状态，只记录异常类型而不回显请求详情', async (context) => {
+  const warnings = context.mock.method(console, 'warn', () => {})
+  const view = await mount({
+    getConversation: async () => {
+      throw new Error('sk-private details')
+    },
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [savedBubble(2)]
+    await view.state.loadConversation('B')
+    assert.equal(view.state.currentConvId, 'A')
+    assert.equal(view.state.messages[0].content, '原回复')
+    assert.equal(view.state.historyLoading, false)
+    assert.equal(warnings.mock.callCount(), 1)
+    assert.deepEqual(warnings.mock.calls[0].arguments, ['加载历史对话失败，异常类型：', 'Error'])
+  } finally {
+    view.close()
+  }
+})
+
 test('较早历史请求后返回时，不覆盖最终选中会话或新对话', async () => {
   const slow = deferred()
   const view = await mount({

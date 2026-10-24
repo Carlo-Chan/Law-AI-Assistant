@@ -449,6 +449,7 @@ import { normalizeContractInstruction } from '../utils/contractInstruction'
 import { createTypewriterScope } from '../composables/useTypewriter'
 import { createConversationRequests, LOADING_DOTS } from '../composables/conversationRequests'
 import { createDraftRecovery } from '../composables/draftRecovery'
+import { createLatestRead } from '../composables/latestRead'
 import {
   assignSavedMessageIdentities,
   hasMessageIdentity,
@@ -476,7 +477,8 @@ const loadingConvIds = ref(new Set())
 let nextDraftId = 0
 const draftKey = ref(`__draft_${nextDraftId}`)
 const historyLoading = ref(false)
-let navigationVersion = 0
+const historyReads = createLatestRead()
+const conversationListReads = createLatestRead()
 const pageKey = () => currentConvId.value || draftKey.value
 const loading = computed(() => loadingConvIds.value.has(pageKey()))
 const abortControllers = ref({})
@@ -669,19 +671,23 @@ async function scrollToBottom() {
 // ---- 文本发送 ----
 // ---- 会话管理 ----
 async function refreshConvList(signal) {
+  const read = conversationListReads.begin({ signal })
+  if (!read) return
   try {
-    const result = await listConversations(signal)
-    if (!signal?.aborted)
+    const result = await listConversations(read.signal)
+    if (conversationListReads.isCurrent(read))
       conversations.value = result.filter((conv) => !deletedConvIds.has(conv.id))
   } catch (error) {
-    if (signal?.aborted) return
+    if (!conversationListReads.isCurrent(read)) return
     console.warn('刷新历史对话列表失败，异常类型：', error.name)
+  } finally {
+    conversationListReads.finish(read)
   }
 }
 // 创建新对话：保存草稿、缓存活跃对话消息、清空界面
 async function newChat() {
   editSession.value = null
-  navigationVersion++
+  historyReads.cancel()
   historyLoading.value = false
   // 保存当前对话的输入框草稿
   if (currentConvId.value) {
@@ -710,7 +716,8 @@ async function newChat() {
 // 加载历史对话：缓存当前对话 → 恢复目标对话（缓存优先，否则查数据库）
 async function loadConversation(id) {
   if (deletedConvIds.has(id) || deletingConvIds.value.has(id)) return
-  const version = ++navigationVersion
+  const read = historyReads.begin({ key: id })
+  if (!read) return
   const editVersion = messageEditVersion
   editSession.value = null
   historyLoading.value = true
@@ -740,6 +747,7 @@ async function loadConversation(id) {
     previewData.value = null
     historyLoading.value = false
     draftRecovery.resume(id)
+    historyReads.finish(read)
     if (cache.messages.some((message) => message.saveFailed)) {
       showContractWarning(
         '此会话有未确认保存的回复，内容仍保留在页面。请先复制，再刷新会话确认。',
@@ -749,8 +757,8 @@ async function loadConversation(id) {
     return
   }
   try {
-    const conv = await getConversation(id)
-    if (version !== navigationVersion || deletedConvIds.has(id)) return
+    const conv = await getConversation(id, read.signal)
+    if (!historyReads.isCurrent(read) || deletedConvIds.has(id)) return
     currentConvId.value = id
     pendingFile.value = draftFiles[id] || null
     input.value = draftInputs[id] || ''
@@ -791,17 +799,19 @@ async function loadConversation(id) {
     messages.value = msgs
     restoreMessageEdit()
     await nextTick()
-    await scrollToBottom()
-    if (version !== navigationVersion) return
+    if (!historyReads.isCurrent(read)) return
+    // DOM 更新后再次复核归属，不能让旧读取滚动或关闭后来切换的页面。
+    if (msgContainer.value) msgContainer.value.scrollTop = msgContainer.value.scrollHeight
     showPreview.value = false
     previewData.value = null
   } catch (error) {
-    console.warn('加载历史对话失败', error)
+    if (historyReads.isCurrent(read)) console.warn('加载历史对话失败，异常类型：', error.name)
   } finally {
-    if (version === navigationVersion) {
+    if (historyReads.isCurrent(read)) {
       historyLoading.value = false
       if (currentConvId.value === id) draftRecovery.resume(id)
     }
+    historyReads.finish(read)
   }
 }
 async function startRename(convId) {
@@ -823,7 +833,10 @@ async function finishRename(convId) {
       console.warn('保存对话标题失败', error)
     }
     const conv = conversations.value.find((c) => c.id === convId)
-    if (conv) conv.title = val
+    if (conv) {
+      conversationListReads.cancel()
+      conv.title = val
+    }
   }
   renamingConvId.value = null
   renameText.value = ''
@@ -835,6 +848,8 @@ function cancelRename() {
 
 // 删除对话：若为当前对话则清空界面
 function forgetConversation(id) {
+  conversationListReads.cancel()
+  if (historyReads.cancel(id)) historyLoading.value = false
   deletedConvIds.add(id)
   deletedMessageIds.delete(id)
   confirmedMessageEdits.delete(id)
@@ -895,6 +910,7 @@ async function ensureConversation(request) {
     const conv = await createConversation(request.controller.signal)
     if (typeof conv?.id !== 'string' || !conv.id) throw new Error('会话创建结果缺少有效 ID')
     if (requests.bind(request, conv.id)) currentConvId.value = conv.id
+    conversationListReads.cancel()
     conversations.value = [conv, ...conversations.value.filter((item) => item.id !== conv.id)]
   }
   return request.convId
@@ -1877,6 +1893,9 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  historyReads.dispose()
+  conversationListReads.dispose()
+  historyLoading.value = false
   disposeTypewriters()
   // 取消尚未执行的确认操作；已发出的网络请求不等于能够撤回，不能伪称回滚。
   confirmationDisposed = true

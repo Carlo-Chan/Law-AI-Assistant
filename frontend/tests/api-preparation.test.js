@@ -22,7 +22,7 @@ try {
   axios.defaults.adapter = previousAdapter
 }
 
-test('创建、自动命名和列表刷新均传递同一个取消信号', async () => {
+test('准备接口封装原样传递调用方指定的取消信号', async () => {
   calls.length = 0
   const signal = new AbortController().signal
   await api.createConversation(signal)
@@ -35,6 +35,18 @@ test('创建、自动命名和列表刷新均传递同一个取消信号', async
   assert.ok(calls.every((call) => call.signal === signal))
   assert.equal(calls[0].data, undefined)
   assert.deepEqual(JSON.parse(calls[1].data), { title: '测试标题' })
+})
+
+test('历史详情读取传递独立取消信号，预先取消时不进入 HTTP 适配器', async () => {
+  calls.length = 0
+  const controller = new AbortController()
+  await api.getConversation('history-A', controller.signal)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, '/conversations/history-A')
+  assert.equal(calls[0].signal, controller.signal)
+  controller.abort()
+  await assert.rejects(api.getConversation('history-B', controller.signal), axios.isCancel)
+  assert.equal(calls.length, 1)
 })
 
 test('已经停止的准备请求不会进入 HTTP 适配器', async () => {
