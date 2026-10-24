@@ -570,8 +570,11 @@ function messageMutationBlocksCurrent() {
   )
 }
 const requests = createConversationRequests({
-  currentKey: () => (historyLoading.value ? null : pageKey()),
-  canBegin: () => !deletingConvIds.value.has(pageKey()) && !messageMutationBlocksCurrent(),
+  currentKey: pageKey,
+  canBegin: () =>
+    !historyLoading.value &&
+    !deletingConvIds.value.has(pageKey()) &&
+    !messageMutationBlocksCurrent(),
   messages,
   thinkingSteps,
   loadingIds: loadingConvIds,
@@ -795,9 +798,17 @@ async function loadConversation(id) {
   try {
     const conv = await getConversation(id, read.signal)
     if (!historyReads.isCurrent(read) || deletedConvIds.has(id)) return
-    currentConvId.value = id
-    pendingFile.value = draftFiles[id] || null
-    input.value = draftInputs[id] || ''
+    if (
+      conv?.id !== id ||
+      !Array.isArray(conv?.messages) ||
+      !conv.messages.every(
+        (message) =>
+          message &&
+          ['user', 'assistant'].includes(message.role) &&
+          typeof message.content === 'string',
+      )
+    )
+      throw new Error('历史响应的会话身份或消息结构无效')
     const msgs = conv.messages
       .filter((message) => !deletedMessageIds.get(id)?.has(message.id))
       .map((m) => {
@@ -828,7 +839,12 @@ async function loadConversation(id) {
         }
         return msg
       })
+    // 完整校验并准备目标消息后再切换，不能留下新会话身份配旧消息的半更新状态。
+    currentConvId.value = id
+    pendingFile.value = draftFiles[id] || null
+    input.value = draftInputs[id] || ''
     messages.value = msgs
+    thinkingSteps.value = []
     restoreMessageEdit()
     showPreview.value = false
     previewData.value = null
@@ -837,11 +853,15 @@ async function loadConversation(id) {
     // DOM 更新后再次复核归属，不能让旧读取滚动或关闭后来切换的页面。
     messageScroll.toBottom()
   } catch (error) {
-    if (historyReads.isCurrent(read)) console.warn('加载历史对话失败，异常类型：', error.name)
+    if (historyReads.isCurrent(read)) {
+      console.warn('加载历史对话失败，异常类型：', error.name)
+      showContractWarning('对话加载失败，当前页面已保留，请稍后重试。')
+    }
   } finally {
     if (historyReads.isCurrent(read)) {
       historyLoading.value = false
-      if (currentConvId.value === id) draftRecovery.resume(id)
+      messageScroll.sync()
+      draftRecovery.resume(currentConvId.value || '__new__')
     }
     historyReads.finish(read)
   }

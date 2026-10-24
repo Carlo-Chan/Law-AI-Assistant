@@ -3113,6 +3113,7 @@ test('失效历史读取的失败不再输出迟到警告或完整请求异常',
     gate.reject(new Error('sk-private obsolete request'))
     await pending
     assert.equal(warnings.mock.callCount(), 0)
+    assert.equal(view.notices.length, 0)
   } finally {
     gate.resolve({ id: 'old', messages: [] })
     await pending
@@ -3229,6 +3230,225 @@ for (const deletedId of ['A', 'B']) {
   })
 }
 
+for (const [description, result] of [
+  ['空响应', null],
+  ['缺少字段', {}],
+  ['消息为 null', { id: 'B', messages: null }],
+  ['消息不是数组', { id: 'B', messages: 'sk-private history' }],
+  ['会话身份不符', { id: 'wrong', messages: [savedBubble(9)] }],
+  ['数组包含空项', { id: 'B', messages: [null] }],
+  ['消息角色异常', { id: 'B', messages: [savedBubble(9, 'system', 'sk-private history')] }],
+  ['消息正文异常', { id: 'B', messages: [{ ...savedBubble(9), content: 123 }] }],
+]) {
+  test(`历史切换遇到${description}时不改变当前消息、归属、预览或草稿`, async (context) => {
+    const warning = context.mock.method(console, 'warn', () => {})
+    const view = await mount({ getConversation: async () => result })
+    try {
+      const state = view.state
+      state.currentConvId = 'A'
+      state.messages = [savedBubble(1, 'user', 'A原问题'), savedBubble(2)]
+      const owned = state.messages
+      state.input = 'A草稿'
+      const file = new File(['待发合同'], 'A.txt')
+      state.pendingFile = file
+      const preview = { raw_text: 'A合同原文', risk_points: [] }
+      state.previewData = preview
+      state.showPreview = true
+      state.thinkingSteps = [{ type: 'tool', label: 'A过程' }]
+      await nextTick()
+      const shownPreview = state.previewData
+      await state.loadConversation('B')
+      assert.equal(state.currentConvId, 'A')
+      assert.equal(state.messages, owned)
+      assert.equal(state.input, 'A草稿')
+      assert.equal(state.pendingFile, file)
+      assert.equal(state.previewData, shownPreview)
+      assert.equal(state.showPreview, true)
+      assert.equal(state.thinkingSteps[0].label, 'A过程')
+      assert.equal(state.historyLoading, false)
+      assert.equal(view.notices.length, 1)
+      assert.match(view.notices[0].options.message, /当前页面已保留/)
+      assert.ok(!JSON.stringify(warning.mock.calls).includes('sk-private'))
+      assert.equal(view.writes.length, 0)
+    } finally {
+      view.close()
+    }
+  })
+}
+
+for (const fileMode of [false, true]) {
+  test(`历史切换等待期间${fileMode ? '合同' : '文字'}发送仍被阻止，不借解除归属冻结绕过发送锁`, async () => {
+    const history = deferred()
+    const view = await mount({ getConversation: () => history.promise })
+    let reading
+    try {
+      const state = view.state
+      state.currentConvId = 'A'
+      state.messages = [savedBubble(1, 'user'), savedBubble(2)]
+      state.input = '待发内容'
+      const file = new File(['合同'], '合同.txt')
+      if (fileMode) state.pendingFile = file
+      reading = state.loadConversation('B')
+      await (fileMode ? state.sendFile() : state.sendText())
+      state.handleSend({ type: 'keydown' })
+      assert.equal(state.messages.length, 2)
+      assert.equal(state.input, '待发内容')
+      assert.equal(state.pendingFile, fileMode ? file : null)
+      assert.equal(view.streams.length, 0)
+      assert.equal(view.writes.length, 0)
+      assert.equal(state.loadingConvIds.size, 0)
+    } finally {
+      history.resolve({ id: 'B', messages: [] })
+      await reading
+      view.close()
+    }
+  })
+}
+
+test('历史切换等待和失败期间，仍显示原页面的生成过程并继续隔离成功切换后的后台更新', async (context) => {
+  context.mock.method(console, 'warn', () => {})
+  const history = deferred()
+  const stream = deferred()
+  const entered = deferred()
+  let callbacks
+  const view = await mount({
+    getConversation: (id) =>
+      id === 'B' ? history.promise : Promise.resolve({ id, messages: [savedBubble(8)] }),
+    chatStream: async (_query, _history, _signal, ownedCallbacks) => {
+      callbacks = ownedCallbacks
+      callbacks.onThinking('A最初工具')
+      entered.resolve()
+      await stream.promise
+      await callbacks.onDone({})
+    },
+  })
+  let sending
+  let reading
+  try {
+    const state = view.state
+    state.currentConvId = 'A'
+    state.input = 'A问题'
+    sending = state.sendText()
+    await entered.promise
+    const assistant = state.messages.at(-1)
+    assistant.thinkingExpanded = true
+    reading = state.loadConversation('B')
+    callbacks.onThinking('A后续工具')
+    assert.equal(state.thinkingSteps.at(-1).label, 'A后续工具')
+    assert.equal(assistant.thinkingExpanded, true)
+    history.reject(new Error('sk-private history'))
+    await reading
+    assert.equal(state.currentConvId, 'A')
+    assert.equal(state.messages.at(-1), assistant)
+    assert.equal(state.thinkingSteps.at(-1).label, 'A后续工具')
+    assert.equal(state.loading, true)
+    assert.equal(state.abortControllers.A.signal.aborted, false)
+    await state.loadConversation('C')
+    assert.deepEqual(state.thinkingSteps, [])
+    callbacks.onThinking('A后台工具')
+    assert.deepEqual(state.thinkingSteps, [])
+    assert.equal(state.streamMessageCache.A.thinkingSteps.at(-1).label, 'A后台工具')
+  } finally {
+    history.reject(new Error('history cleanup'))
+    stream.resolve()
+    await Promise.all([reading, sending])
+    view.close()
+  }
+})
+
+test('新会话创建在历史切换等待期间完成，读取失败后仍绑定原真实身份，不重复创建', async (context) => {
+  context.mock.method(console, 'warn', () => {})
+  const creation = deferred()
+  const entered = deferred()
+  const history = deferred()
+  let creations = 0
+  const view = await mount({
+    createConversation: () => {
+      creations++
+      entered.resolve()
+      return creation.promise
+    },
+    getConversation: () => history.promise,
+  })
+  let sending
+  let reading
+  try {
+    const state = view.state
+    state.input = '新会话问题'
+    sending = state.sendText()
+    await entered.promise
+    const owned = state.messages
+    reading = state.loadConversation('B')
+    creation.resolve({ id: 'created-A', title: '新对话' })
+    await sending
+    history.reject(new Error('读取失败'))
+    await reading
+    assert.equal(state.currentConvId, 'created-A')
+    assert.equal(state.messages, owned)
+    state.input = '同一会话的第二轮'
+    await state.sendText()
+    assert.equal(creations, 1)
+    assert.equal(state.messages.length, 4)
+    assert.deepEqual(
+      view.writes.map((write) => write[0]),
+      ['created-A', 'created-A'],
+    )
+  } finally {
+    creation.resolve({ id: 'created-A', title: '新对话' })
+    history.reject(new Error('history cleanup'))
+    await Promise.all([reading, sending])
+    view.close()
+  }
+})
+
+for (const long of [false, true]) {
+  test(`历史读取失败后按原${long ? '长' : '短'}对话恢复到底按钮，不滚动原页面`, async (context) => {
+    context.mock.method(console, 'warn', () => {})
+    const view = await mount({
+      getConversation: async () => {
+        throw new Error('读取失败')
+      },
+    })
+    try {
+      const state = view.state
+      state.currentConvId = 'A'
+      state.messages = [savedBubble(2)]
+      state.msgContainer = { scrollTop: 17, scrollHeight: long ? 1000 : 400, clientHeight: 500 }
+      await nextTick()
+      state.onMsgScroll()
+      assert.equal(state.showScrollBtn, long)
+      await state.loadConversation('B')
+      assert.equal(state.showScrollBtn, long)
+      assert.equal(state.msgContainer.scrollTop, 17)
+    } finally {
+      view.close()
+    }
+  })
+}
+
+test('历史读取失败保留原合同预览的钉住气泡和选中范围', async (context) => {
+  context.mock.method(console, 'warn', () => {})
+  const view = await mountHighlights()
+  globalThis.__sendingTestApi.getConversation = async () => {
+    throw new Error('读取失败')
+  }
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [savedBubble(1, 'user'), savedBubble(2)]
+    view.state.onContractClick({ target: view.fragments[1] })
+    const selected = view.root.querySelectorAll('.pinned').length
+    assert.ok(selected > 0)
+    await view.state.loadConversation('B')
+    assert.equal(view.state.currentConvId, 'A')
+    assert.equal(view.state.showPreview, true)
+    assert.equal(view.root.querySelectorAll('.pinned').length, selected)
+    assert.equal(view.tooltip.style.opacity, '1')
+    assert.equal(view.tooltip.style.pointerEvents, 'auto')
+  } finally {
+    view.close()
+  }
+})
+
 test('当前历史读取失败释放加载状态，只记录异常类型而不回显请求详情', async (context) => {
   const warnings = context.mock.method(console, 'warn', () => {})
   const view = await mount({
@@ -3275,7 +3495,7 @@ test('较早历史请求后返回时，不覆盖最终选中会话或新对话',
   }
 })
 
-test('正在加载历史时返回创建结果，不会抢占加载中的目标页面', async () => {
+test('创建结果只完善仍显示页面的身份，不取消或抢占等待中的历史切换', async () => {
   const creation = deferred()
   const history = deferred()
   const entered = deferred()
@@ -3291,14 +3511,18 @@ test('正在加载历史时返回创建结果，不会抢占加载中的目标�
     state.input = '新会话问题'
     const sending = state.sendText()
     await entered.promise
+    const shown = state.messages
     const loading = state.loadConversation('B')
     creation.resolve({ id: 'A', title: '新对话' })
     await sending
-    assert.notEqual(state.currentConvId, 'A')
+    assert.equal(state.currentConvId, 'A')
+    assert.equal(state.messages, shown)
+    assert.equal(state.historyLoading, true)
     history.resolve({ id: 'B', messages: [{ role: 'assistant', content: 'B原回复' }] })
     await loading
     assert.equal(state.currentConvId, 'B')
     assert.equal(state.messages[0].content, 'B原回复')
+    assert.equal(state.historyLoading, false)
   } finally {
     creation.resolve({ id: 'A' })
     history.resolve({ id: 'B', messages: [] })
