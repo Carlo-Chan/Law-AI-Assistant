@@ -250,8 +250,8 @@ async function mount(overrides = {}) {
       callbacks.onToken(query + '回复')
       callbacks.onDone({})
     },
-    analyzeContractStream: async (file, _signal, callbacks) => {
-      streams.push({ file })
+    analyzeContractStream: async (file, _signal, callbacks, instruction) => {
+      streams.push({ file, instruction })
       callbacks.onToken(file.name + '报告')
       callbacks.onDone({ raw_text: '合同原文', chat_reply: file.name + '报告', risk_points: [] })
     },
@@ -380,10 +380,57 @@ test('合同发送在创建等待前固定文件，不消费另一会话的草�
     assert.equal(state.pendingFile, other)
     assert.equal(state.input, 'B草稿')
     assert.equal(view.streams[0].file, original)
+    assert.equal(view.streams[0].instruction, 'A指令')
     assert.equal(view.writes[0][0], 'A')
     assert.equal(view.writes[0][1], '📄 上传合同：A.txt\nA指令')
+    assert.equal(view.writes[0][4].instruction, 'A指令')
   } finally {
     gate.resolve({ id: 'A' })
+    view.close()
+  }
+})
+
+test('附加指令超限保留原文字和附件，不创建会话、不加锁或写假消息', async () => {
+  const view = await mount()
+  try {
+    const file = new File(['合同'], '合同.txt')
+    const text = ' 字'.trim().repeat(4001)
+    view.state.pendingFile = file
+    view.state.input = text
+    await view.state.sendFile(text)
+    assert.equal(view.state.pendingFile, file)
+    assert.equal(view.state.input, text)
+    assert.equal(view.state.currentConvId, null)
+    assert.equal(view.state.loadingConvIds.size, 0)
+    assert.equal(view.state.messages.length, 0)
+    assert.equal(view.streams.length, 0)
+    assert.equal(view.writes.length, 0)
+    assert.match(view.notices[0].options.message, /4000/)
+  } finally {
+    view.close()
+  }
+})
+
+test('保存的附加指令来自原请求，不采信完成帧伪造的值，也不消费当前草稿', async () => {
+  const view = await mount({
+    analyzeContractStream: async (_file, _signal, callbacks, instruction) => {
+      assert.equal(instruction, '重点审查乙方责任\n检查押金')
+      await callbacks.onDone({
+        raw_text: '合同原文',
+        chat_reply: '完整报告',
+        risk_points: [],
+        instruction: '模型伪造的值',
+      })
+    },
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.pendingFile = new File(['合同原文'], '合同.txt')
+    await view.state.sendFile('  重点审查乙方责任\n检查押金  ')
+    assert.equal(view.state.messages.at(-1).contractData.instruction, '重点审查乙方责任\n检查押金')
+    assert.equal(view.writes[0][4].instruction, '重点审查乙方责任\n检查押金')
+    assert.equal(view.writes[0][1], '📄 上传合同：合同.txt\n重点审查乙方责任\n检查押金')
+  } finally {
     view.close()
   }
 })

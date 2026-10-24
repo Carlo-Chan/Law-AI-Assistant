@@ -82,7 +82,7 @@ def test_regeneration_commits_target_only_after_complete_result(client, stored_r
     history.add_message(other_id, "user", "其他会话")
     other_before = history.get_conversation(other_id)
 
-    async def generate(raw_text):
+    async def generate(raw_text, instruction=""):
         assert raw_text == RAW_TEXT
         yield {"type": "thinking", "label": "search_laws"}
         yield {"type": "thinking_reasoning_token", "content": "核对"}
@@ -132,7 +132,7 @@ def test_regeneration_commits_target_only_after_complete_result(client, stored_r
 def test_failure_keeps_report_and_all_history(client, stored_report, monkeypatch, failure):
     """异常、模型错误帧和缺少完成帧均不能提交半份报告。"""
 
-    async def generate(raw_text):
+    async def generate(raw_text, instruction=""):
         yield {"type": "token", "content": "只有部分内容"}
         if failure == "exception":
             raise httpx.ReadTimeout("sk-private-key 敏感原文 内部路径")
@@ -160,7 +160,7 @@ def test_failure_keeps_report_and_all_history(client, stored_report, monkeypatch
 def test_invalid_result_is_not_saved(client, stored_report, monkeypatch, result):
     """结束帧本身也必须结构完整，且仍对应同一份原文。"""
 
-    async def generate(raw_text):
+    async def generate(raw_text, instruction=""):
         yield {"type": "done", **result}
 
     monkeypatch.setattr(routes, "run_contract_analysis_stream", generate)
@@ -180,7 +180,7 @@ def test_concurrent_change_is_not_overwritten(client, stored_report, monkeypatch
     """模型等待期间目标发生变更时，旧请求不能覆盖较新的编辑或重跑结果。"""
     expected = None
 
-    async def generate(raw_text):
+    async def generate(raw_text, instruction=""):
         nonlocal expected
         if operation == "edit":
             with closing(sqlite3.connect(history.DB_PATH)) as connection, connection:
@@ -216,7 +216,7 @@ def test_storage_failure_rolls_back_report_update(client, stored_report, monkeyp
             BEFORE UPDATE OF updated_at ON conversations BEGIN
             SELECT RAISE(ABORT, 'sk-private-storage-error'); END""")
 
-    async def generate(raw_text):
+    async def generate(raw_text, instruction=""):
         yield {"type": "done", **NEW_REPORT}
 
     monkeypatch.setattr(routes, "run_contract_analysis_stream", generate)
@@ -309,7 +309,7 @@ async def test_route_close_releases_nested_stream(stored_report, monkeypatch):
     """HTTP 流被关闭时同步关闭内层生成器，不能留后台任务继续提交。"""
     closed = False
 
-    async def generate(raw_text):
+    async def generate(raw_text, instruction=""):
         nonlocal closed
         try:
             yield {"type": "token", "content": "生成中"}

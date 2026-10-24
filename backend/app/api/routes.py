@@ -7,7 +7,7 @@ import logging
 from contextlib import aclosing
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
@@ -20,6 +20,7 @@ from app.agent.chain import (
 from app.api.errors import ErrorResponse, SafeAPIRoute
 from app.core.errors import INVALID_DOCUMENT, INVALID_REPORT, PublicError, describe_error
 from app.services import history
+from app.services.contract_instructions import normalize_contract_instruction
 from app.services.contract_regeneration import load_contract_source, regenerate_report
 from app.services.parser import DocumentParser
 from app.services.uploads import read_contract_upload
@@ -53,6 +54,7 @@ class ContractAnalysisData(BaseModel):
     raw_text: str
     risk_points: list[RiskPoint]
     chat_reply: str
+    instruction: str | None = None
 
 
 class ContractAnalysisResponse(BaseModel):
@@ -97,13 +99,21 @@ async def _parse_contract_upload(file: UploadFile) -> str:
         raise PublicError(INVALID_DOCUMENT) from error
 
 
-@router.post("/analyze_contract", response_model=ContractAnalysisResponse)
-async def analyze_contract(file: Annotated[UploadFile, File()]):
+@router.post(
+    "/analyze_contract", response_model=ContractAnalysisResponse, response_model_exclude_none=True
+)
+async def analyze_contract(
+    file: Annotated[UploadFile, File()],
+    instruction: Annotated[
+        str, Form(description="可选审查重点，统一换行并去首尾空白后最多 4000 个 Unicode 字符")
+    ] = "",
+):
     """合同审查：上传文件 -> 解析文本 -> AI 分析"""
+    instruction = normalize_contract_instruction(instruction)
     raw_text = await _parse_contract_upload(file)
 
     # 调用 AI 审查
-    result = await run_contract_analysis(raw_text)
+    result = await run_contract_analysis(raw_text, instruction)
 
     # 构造响应
     return ContractAnalysisResponse(
@@ -112,17 +122,29 @@ async def analyze_contract(file: Annotated[UploadFile, File()]):
             raw_text=result["raw_text"],
             risk_points=[RiskPoint(**rp) for rp in result["risk_points"]],
             chat_reply=result["chat_reply"],
+            instruction=instruction or None,
         ),
     )
 
 
 @router.post("/analyze_contract/stream")
-async def analyze_contract_stream(file: Annotated[UploadFile, File()]):
+async def analyze_contract_stream(
+    file: Annotated[UploadFile, File()],
+    instruction: Annotated[
+        str, Form(description="可选审查重点，统一换行并去首尾空白后最多 4000 个 Unicode 字符")
+    ] = "",
+):
+    instruction = normalize_contract_instruction(instruction)
     raw_text = await _parse_contract_upload(file)
 
     async def generate():
         try:
-            async for event in run_contract_analysis_stream(raw_text):
+            async for event in run_contract_analysis_stream(raw_text, instruction):
+                if event["type"] == "done":
+                    # 元数据来自本次请求，而非采信模型自行回显的指令。
+                    event = {key: value for key, value in event.items() if key != "instruction"}
+                    if instruction:
+                        event["instruction"] = instruction
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
             info = describe_error(e)
@@ -169,20 +191,24 @@ class RegenerateContractRequest(BaseModel):
 @router.post("/conversations/{conv_id}/messages/{message_id}/regenerate_contract/stream")
 async def regenerate_contract(conv_id: str, message_id: int, request: RegenerateContractRequest):
     """使用目标报告的原文重新审查，成功后原子替换，失败保留历史记录。"""
-    original, raw_text = load_contract_source(conv_id, message_id, request.expected_revision)
+    original, raw_text, instruction = load_contract_source(
+        conv_id, message_id, request.expected_revision
+    )
 
     def validate_result(event):
         try:
-            data = ContractAnalysisData.model_validate(event)
+            data = ContractAnalysisData.model_validate(
+                {**event, "instruction": instruction or None}
+            )
         except ValidationError as error:
             raise PublicError(INVALID_REPORT) from error
         if not data.chat_reply.strip() or data.raw_text != raw_text:
             raise PublicError(INVALID_REPORT)
-        return data.model_dump()
+        return data.model_dump(exclude_none=True)
 
     async def generate():
         try:
-            events = run_contract_analysis_stream(raw_text)
+            events = run_contract_analysis_stream(raw_text, instruction)
             async with aclosing(regenerate_report(original, events, validate_result)) as stream:
                 async for event in stream:
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"

@@ -6,7 +6,7 @@ export class ContractRegenerationError extends Error {
   }
 }
 
-export function contractSource(message) {
+function contractData(message) {
   let data = message.contractData ?? message.contract_data
   if (typeof data === 'string') {
     try {
@@ -15,8 +15,17 @@ export function contractSource(message) {
       data = null
     }
   }
-  const source = data?.raw_text ?? message.contractRawText
+  return data
+}
+
+export function contractSource(message) {
+  const source = contractData(message)?.raw_text ?? message.contractRawText
   return typeof source === 'string' ? source : ''
+}
+
+export function contractInstruction(message) {
+  const instruction = contractData(message)?.instruction
+  return typeof instruction === 'string' ? instruction : ''
 }
 
 function hasIdentity(message) {
@@ -37,7 +46,12 @@ function resolveTarget(snapshot, index, savedMessages) {
     throw new ContractRegenerationError('报告尚未保存或记录已变更，请稍后刷新会话后重试。')
   }
   const target = savedMessages[index]
-  if (!target || !hasIdentity(target) || contractSource(target) !== snapshot[index].source) {
+  if (
+    !target ||
+    !hasIdentity(target) ||
+    contractSource(target) !== snapshot[index].source ||
+    contractInstruction(target) !== snapshot[index].instruction
+  ) {
     throw new ContractRegenerationError('无法确认目标合同报告，请刷新会话后重试。')
   }
   return target
@@ -53,6 +67,7 @@ export async function regenerateContractReport({
   onSteps = () => {},
 }) {
   const source = contractSource(target)
+  const instruction = contractInstruction(target)
   if (!source.trim()) {
     throw new ContractRegenerationError('此记录未保存合同原文，请重新上传原文件；原报告已保留。')
   }
@@ -60,6 +75,7 @@ export async function regenerateContractReport({
     role: message.role,
     content: message.content,
     source: contractSource(message),
+    instruction: contractInstruction(message),
   }))
   const index = messages.indexOf(target)
   const content = target.content
@@ -79,7 +95,10 @@ export async function regenerateContractReport({
     identity = resolveTarget(snapshot, index, saved.messages)
   }
   if (signal?.aborted) return { status: 'aborted' }
-  const unchanged = () => target.content === content && contractSource(target) === source
+  const unchanged = () =>
+    target.content === content &&
+    contractSource(target) === source &&
+    contractInstruction(target) === instruction
   if (!unchanged()) throw new ContractRegenerationError('页面中的原报告已变更，请刷新后重试。')
 
   const steps = []
@@ -128,6 +147,7 @@ export async function regenerateContractReport({
       revision: terminal.revision,
     }) ||
     terminal.raw_text !== source ||
+    (terminal.instruction ?? '') !== instruction ||
     typeof terminal.chat_reply !== 'string' ||
     !terminal.chat_reply.trim() ||
     !Array.isArray(terminal.risk_points) ||
@@ -146,6 +166,7 @@ export async function regenerateContractReport({
     raw_text: source,
     chat_reply: terminal.chat_reply,
     risk_points: terminal.risk_points,
+    ...(instruction ? { instruction } : {}),
   }
   Object.assign(target, {
     id: terminal.message_id,

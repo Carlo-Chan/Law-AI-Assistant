@@ -213,7 +213,7 @@ def test_contract_parses_upload_and_returns_risks(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"code": 200, "data": result}
-    agent.assert_awaited_once_with(raw_text)
+    agent.assert_awaited_once_with(raw_text, "")
 
 
 def test_contract_agent_failure_returns_http_error(client, monkeypatch):
@@ -261,7 +261,7 @@ def test_stream_preserves_event_order_and_unicode(client, monkeypatch, mode):
             "/api/analyze_contract/stream",
             files={"file": ("合同.txt", "合同原文".encode())},
         )
-        agent.assert_called_once_with("合同原文")
+        agent.assert_called_once_with("合同原文", "")
 
     assert response.status_code == 200
     assert _read_events(response) == events

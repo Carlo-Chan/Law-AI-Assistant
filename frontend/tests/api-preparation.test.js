@@ -49,3 +49,23 @@ test('已经停止的准备请求不会进入 HTTP 适配器', async () => {
     await assert.rejects(request, (error) => axios.isCancel(error))
   assert.equal(calls.length, 0)
 })
+
+for (const instruction of ['', ' \n\t ', '  重点审查乙方责任\n检查押金  ']) {
+  test(`普通审查表单支持${instruction.trim() ? '多行指令' : '空白或省略指令'}`, async () => {
+    calls.length = 0
+    const file = new File(['合同'], '合同.txt')
+    await api.analyzeContract(file, instruction)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].data.get('file'), file)
+    assert.equal(calls[0].data.get('instruction'), instruction.trim() || null)
+  })
+}
+
+test('普通审查超限时不进入 HTTP 适配器', async () => {
+  calls.length = 0
+  await assert.rejects(
+    api.analyzeContract(new File(['合同'], '合同.txt'), '字'.repeat(4001)),
+    /4000/,
+  )
+  assert.equal(calls.length, 0)
+})

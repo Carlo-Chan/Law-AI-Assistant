@@ -427,6 +427,7 @@ import {
 import { renderHighlightedContract } from '../utils/highlight'
 import { getHighlightRect, isSameHighlight, setHighlightPinned } from '../utils/highlightSelection'
 import { getContractUploadError } from '../utils/upload'
+import { normalizeContractInstruction } from '../utils/contractInstruction'
 import { appendToTypewriter, flushTypewriter } from '../composables/useTypewriter'
 import { toExportable } from '../composables/messageExport'
 import { createConversationRequests, LOADING_DOTS } from '../composables/conversationRequests'
@@ -1016,7 +1017,10 @@ function recoverPreparation(request, draft) {
 }
 
 // 文本和合同共用归属与清理流程，只有模型接口和报告附件不同。
-async function runMessageRequest(request, { userContent, title, file = null, draft }) {
+async function runMessageRequest(
+  request,
+  { userContent, title, file = null, draft, instruction = '' },
+) {
   const assistant = request.assistant
   const steps = request.steps
   const isActive = () => requests.isActive(request)
@@ -1061,7 +1065,15 @@ async function runMessageRequest(request, { userContent, title, file = null, dra
     assistant.thinkingChain = [...steps]
     assistant.thinkingExpanded = false
     assistant.fullContent = assistant.content
-    const contractData = file && !errorMessage && !data.aborted ? data : null
+    const contractData =
+      file && !errorMessage && !data.aborted
+        ? {
+            raw_text: data.raw_text,
+            chat_reply: data.chat_reply,
+            risk_points: data.risk_points,
+            ...(instruction ? { instruction } : {}),
+          }
+        : null
     if (contractData) {
       assistant.contractData = contractData
       pushContractAttach(assistant, contractData, file)
@@ -1180,7 +1192,7 @@ async function runMessageRequest(request, { userContent, title, file = null, dra
     }
     modelStarted = true
     if (file) {
-      await analyzeContractStream(file, request.controller.signal, callbacks)
+      await analyzeContractStream(file, request.controller.signal, callbacks, instruction)
     } else {
       await chatStream(userContent, request.history, request.controller.signal, callbacks)
     }
@@ -1238,6 +1250,12 @@ function sendFile(instruction = null) {
   const draft = { text: input.value || instruction || '', file: pendingFile.value }
   const file = pendingFile.value
   if (!file || !validateContractFile(file)) return
+  try {
+    instruction = normalizeContractInstruction(instruction ?? '')
+  } catch (error) {
+    showContractWarning(error.message)
+    return
+  }
   const userContent = instruction
     ? `📄 上传合同：${file.name}\n${instruction}`
     : `📄 上传合同：${file.name}`
@@ -1252,6 +1270,7 @@ function sendFile(instruction = null) {
     title: instruction || file.name.replace(/\.[^.]+$/, ''),
     file,
     draft,
+    instruction,
   })
 }
 

@@ -354,3 +354,77 @@ test('重复完成帧和完成后的错误不能重复替换已确认结果', as
   )
   assert.equal(state.target.content, '新审查报告')
 })
+
+test('原指令随保存确认保留，重新导出时也不丢失', async () => {
+  const state = fixture()
+  state.target.contractData.instruction = '重点审查乙方责任\n检查押金'
+  state.done.instruction = state.target.contractData.instruction
+  await regenerateContractReport(
+    options(state, async (_cid, _id, _revision, _signal, callbacks) =>
+      callbacks.onDone(state.done),
+    ),
+  )
+  assert.equal(state.target.contractData.instruction, state.done.instruction)
+  const { toExportable } = await import('../src/composables/messageExport.js')
+  assert.equal(toExportable(state.messages)[1].contract_data.instruction, state.done.instruction)
+})
+
+for (const changed of [undefined, '另一套审查重点']) {
+  test(`不接受${changed ? '变更' : '丢失'}原指令的保存确认`, async () => {
+    const state = fixture()
+    state.target.contractData.instruction = '重点审查乙方责任'
+    const before = structuredClone(state.target)
+    state.done.instruction = changed
+    await assert.rejects(
+      regenerateContractReport(
+        options(state, async (_cid, _id, _revision, _signal, callbacks) =>
+          callbacks.onDone(state.done),
+        ),
+      ),
+      /完整保存确认/,
+    )
+    assert.deepEqual(state.target, before)
+  })
+}
+
+test('本地指令变更不会被已发出的重跑覆盖', async () => {
+  const state = fixture()
+  state.target.contractData.instruction = '原审查重点'
+  state.done.instruction = '原审查重点'
+  await assert.rejects(
+    regenerateContractReport(
+      options(state, async (_cid, _id, _revision, _signal, callbacks) => {
+        state.target.contractData.instruction = '用户新改的重点'
+        callbacks.onDone(state.done)
+      }),
+    ),
+    /未覆盖页面内容/,
+  )
+  assert.equal(state.target.contractData.instruction, '用户新改的重点')
+  assert.equal(state.target.content, '旧审查报告')
+})
+
+test('相同原文但不同指令的无 ID 记录不猜测对应关系', async () => {
+  const state = fixture()
+  delete state.target.id
+  state.target.contractData.instruction = '原审查重点'
+  const stream = mock.fn()
+  await assert.rejects(
+    regenerateContractReport({
+      ...options(state, stream),
+      getConversation: async () => ({
+        messages: state.messages.map((message, index) => ({
+          ...message,
+          id: index + 10,
+          revision,
+          contractData:
+            index === 1
+              ? { ...message.contractData, instruction: '别的重点' }
+              : message.contractData,
+        })),
+      }),
+    }),
+    /无法确认目标合同/,
+  )
+  assert.equal(stream.mock.callCount(), 0)
+})

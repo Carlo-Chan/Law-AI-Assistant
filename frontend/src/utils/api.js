@@ -6,6 +6,7 @@
  */
 import axios from 'axios'
 import { readSSEStream } from './sse.js'
+import { normalizeContractInstruction } from './contractInstruction.js'
 
 const api = axios.create({
   baseURL: '/api',
@@ -19,9 +20,11 @@ export async function chat(query, history = []) {
 }
 
 /** 合同审查（上传文件） */
-export async function analyzeContract(file) {
+export async function analyzeContract(file, instruction = '') {
+  instruction = normalizeContractInstruction(instruction)
   const formData = new FormData()
   formData.append('file', file)
+  if (instruction) formData.append('instruction', instruction)
   const { data } = await api.post('/analyze_contract', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
@@ -95,9 +98,11 @@ export async function chatStream(query, history, signal, callbacks) {
 }
 
 /** 合同审查流式接口 */
-export async function analyzeContractStream(file, signal, callbacks) {
+export async function analyzeContractStream(file, signal, callbacks, instruction = '') {
+  instruction = normalizeContractInstruction(instruction)
   const formData = new FormData()
   formData.append('file', file)
+  if (instruction) formData.append('instruction', instruction)
   return readSSEStream(
     '/api/analyze_contract/stream',
     {

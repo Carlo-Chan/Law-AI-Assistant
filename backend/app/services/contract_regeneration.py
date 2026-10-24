@@ -11,9 +11,10 @@ from app.core.errors import (
     PublicError,
 )
 from app.services import history
+from app.services.contract_instructions import normalize_contract_instruction
 
 
-def load_contract_source(conv_id: str, message_id: int, revision: str) -> tuple[dict, str]:
+def load_contract_source(conv_id: str, message_id: int, revision: str) -> tuple[dict, str, str]:
     """在调用模型前检查归属、版本及原文，缺少原文才要求重新上传。"""
     original = history.get_message(conv_id, message_id)
     if not original or original["role"] != "assistant":
@@ -27,7 +28,8 @@ def load_contract_source(conv_id: str, message_id: int, revision: str) -> tuple[
     raw_text = data.get("raw_text") if isinstance(data, dict) else None
     if not isinstance(raw_text, str) or not raw_text.strip():
         raise PublicError(CONTRACT_SOURCE_MISSING)
-    return original, raw_text
+    instruction = normalize_contract_instruction(data.get("instruction", ""))
+    return original, raw_text, instruction
 
 
 def _record_step(steps: list, event: dict):

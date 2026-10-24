@@ -71,7 +71,7 @@ def test_contract_endpoints_enforce_limit_before_parser_and_agent(
     parser = Mock(return_value=raw_text)
     agent = AsyncMock(return_value=result)
 
-    async def generate(text):
+    async def generate(text, instruction=""):
         yield {"type": "done", **result}
 
     stream_agent = Mock(side_effect=generate)
@@ -95,12 +95,12 @@ def test_contract_endpoints_enforce_limit_before_parser_and_agent(
         assert response.status_code == 200
         parser.assert_called_once_with(content, "合同.txt")
         if streaming:
-            stream_agent.assert_called_once_with(raw_text)
+            stream_agent.assert_called_once_with(raw_text, "")
             agent.assert_not_called()
             assert "text/event-stream" in response.headers["content-type"]
             assert '"type": "done"' in response.text
         else:
-            agent.assert_awaited_once_with(raw_text)
+            agent.assert_awaited_once_with(raw_text, "")
             stream_agent.assert_not_called()
             assert response.json() == {"code": 200, "data": result}
     assert history_store.list_conversations() == []
