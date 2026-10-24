@@ -49,6 +49,6 @@ export async function resolveSavedMessage(convId, target, messages, getConversat
     ) ||
     !hasMessageIdentity(saved.messages[index])
   )
-    throw new Error('无法确认消息的保存身份，请刷新会话后重试；本次未删除内容。')
+    throw new Error('无法确认消息的保存身份，请重新读取会话后重试；本次未修改内容。')
   return { id: saved.messages[index].id, revision: saved.messages[index].revision }
 }

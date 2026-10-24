@@ -193,6 +193,25 @@ class DeleteMessageRequest(BaseModel):
     preserve_empty_conversation: bool = False
 
 
+class EditMessageRequest(BaseModel):
+    """仅允许修改正文，拒绝角色、附件及合同数据等越界字段。"""
+
+    model_config = {"extra": "forbid"}
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    content: str
+
+
+@router.patch("/conversations/{conv_id}/messages/{message_id}", response_model=ConvResponse)
+async def edit_message(
+    conv_id: str, message_id: Annotated[int, Path(gt=0)], request: EditMessageRequest
+):
+    """按稳定身份与预期版本更新用户正文，不触发模型或重建问答。"""
+    result = history.edit_user_message(
+        conv_id, message_id, request.expected_revision, request.content
+    )
+    return ConvResponse(code=200, data=result)
+
+
 @router.delete("/conversations/{conv_id}/messages/{message_id}", response_model=ConvResponse)
 async def delete_message(
     conv_id: str, message_id: Annotated[int, Path(gt=0)], request: DeleteMessageRequest

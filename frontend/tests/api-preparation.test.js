@@ -67,6 +67,18 @@ test('普通保存向调用方返回身份回执', async () => {
   assert.deepEqual(await api.saveMessages('A', '提问', '回复'), { id: 'test' })
 })
 
+test('消息编辑使用定点 PATCH，仅发送正文与预期版本', async () => {
+  calls.length = 0
+  await api.editSavedMessage('A/测试', 3, 'a'.repeat(64), '  修改\n后的正文  ')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].method, 'patch')
+  assert.equal(calls[0].url, '/conversations/A%2F%E6%B5%8B%E8%AF%95/messages/3')
+  assert.deepEqual(JSON.parse(calls[0].data), {
+    expected_revision: 'a'.repeat(64),
+    content: '  修改\n后的正文  ',
+  })
+})
+
 for (const instruction of ['', ' \n\t ', '  重点审查乙方责任\n检查押金  ']) {
   test(`普通审查表单支持${instruction.trim() ? '多行指令' : '空白或省略指令'}`, async () => {
     calls.length = 0

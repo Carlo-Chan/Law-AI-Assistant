@@ -111,11 +111,24 @@
                   v-model="editingText"
                   type="textarea"
                   :autosize="{ minRows: 1, maxRows: 12 }"
+                  :disabled="editSession?.saving"
                   @keydown.esc="cancelEdit"
                 />
                 <div class="edit-actions">
-                  <el-button size="small" text @click="cancelEdit">取消</el-button>
-                  <el-button size="small" type="primary" @click="saveEdit(i)">保存</el-button>
+                  <el-button
+                    size="small"
+                    text
+                    :disabled="editSession?.submitted"
+                    @click="cancelEdit"
+                    >取消</el-button
+                  >
+                  <el-button
+                    size="small"
+                    type="primary"
+                    :loading="editSession?.saving"
+                    @click="saveEdit"
+                    >保存</el-button
+                  >
                 </div>
               </div>
             </div>
@@ -424,6 +437,7 @@ import {
   regenerateContractStream,
   rebuildMessages,
   deleteSavedMessage,
+  editSavedMessage,
 } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
 import { getHighlightRect, isSameHighlight, setHighlightPinned } from '../utils/highlightSelection'
@@ -438,6 +452,7 @@ import {
   hasMessageIdentity,
   resolveSavedMessage,
 } from '../composables/messageIdentity'
+import { MessageEditError, saveUserMessageEdit } from '../composables/messageEditing'
 import { pinyinMatch, fuzzyMatch } from '../composables/useSearch'
 import { stripMarkdown, cleanFences, renderMd } from '../composables/useTextTools'
 import {
@@ -461,8 +476,23 @@ let navigationVersion = 0
 const pageKey = () => currentConvId.value || draftKey.value
 const loading = computed(() => loadingConvIds.value.has(pageKey()))
 const abortControllers = ref({})
-const editingIndex = ref(-1)
-const editingText = ref('')
+const editSession = ref(null)
+const messageEditDrafts = new Set()
+const pendingMessageEdits = ref(new Set())
+const editingIndex = computed(() => {
+  const session = editSession.value
+  if (!session || !editBelongsToCurrent(session)) return -1
+  return messages.value.findIndex(
+    (message) =>
+      message === session.target || (editTargetId(session) && message.id === editTargetId(session)),
+  )
+})
+const editingText = computed({
+  get: () => editSession.value?.text ?? '',
+  set: (text) => {
+    if (editSession.value) editSession.value.text = text
+  },
+})
 const dropdownOpenIndex = ref(-1)
 const confirmState = reactive({ visible: false, message: '', okText: '确定', cancelText: '取消' })
 let confirmResolve = null
@@ -492,12 +522,14 @@ const pendingConversationDeletions = new Map()
 // 页面生命周期内记住已确认删除的身份，阻止迟到的历史或列表响应重新显示它。
 const deletedConvIds = new Set()
 const deletedMessageIds = new Map()
+const confirmedMessageEdits = new Map()
+let messageEditVersion = 0
 const pendingMessageDeletions = ref(new Set())
 const contractRegenerationTasks = new WeakMap()
 
-// 只锁住所属页面的新增与改写，不能让一个会话的删除阻止其他会话生成。
+// 只锁住所属页面的新增与改写，不阻止已有生成继续，也不影响其他会话。
 function messageMutationBlocksCurrent() {
-  return [...pendingMessageDeletions.value].some(
+  return [...pendingMessageDeletions.value, ...pendingMessageEdits.value].some(
     (operation) =>
       operation.messages === messages.value ||
       (currentConvId.value &&
@@ -640,6 +672,7 @@ async function refreshConvList(signal) {
 }
 // 创建新对话：保存草稿、缓存活跃对话消息、清空界面
 async function newChat() {
+  editSession.value = null
   navigationVersion++
   historyLoading.value = false
   // 保存当前对话的输入框草稿
@@ -670,6 +703,8 @@ async function newChat() {
 async function loadConversation(id) {
   if (deletedConvIds.has(id) || deletingConvIds.value.has(id)) return
   const version = ++navigationVersion
+  const editVersion = messageEditVersion
+  editSession.value = null
   historyLoading.value = true
   showScrollBtn.value = false
   // 保存当前对话的输入框草稿
@@ -690,6 +725,7 @@ async function loadConversation(id) {
     messages.value = cache.messages
     thinkingSteps.value = cache.thinkingSteps || []
     currentConvId.value = id
+    restoreMessageEdit()
     pendingFile.value = draftFiles[id] || null
     input.value = draftInputs[id] || ''
     showPreview.value = false
@@ -713,7 +749,9 @@ async function loadConversation(id) {
     const msgs = conv.messages
       .filter((message) => !deletedMessageIds.get(id)?.has(message.id))
       .map((m) => {
-        const msg = { id: m.id, revision: m.revision, role: m.role, content: m.content }
+        const edited = confirmedMessageEdits.get(id)?.get(m.id)
+        const saved = edited?.version > editVersion ? edited : m
+        const msg = { id: m.id, revision: saved.revision, role: m.role, content: saved.content }
         if (m.file_name) msg.file = { name: m.file_name }
         if (m.thinking_chain) {
           try {
@@ -742,6 +780,7 @@ async function loadConversation(id) {
       msgs.shift()
     }
     messages.value = msgs
+    restoreMessageEdit()
     await nextTick()
     await scrollToBottom()
     if (version !== navigationVersion) return
@@ -789,6 +828,13 @@ function cancelRename() {
 function forgetConversation(id) {
   deletedConvIds.add(id)
   deletedMessageIds.delete(id)
+  confirmedMessageEdits.delete(id)
+  for (const session of messageEditDrafts) {
+    if ((session.request?.convId || session.convId) !== id) continue
+    session.cancelled = true
+    messageEditDrafts.delete(session)
+    if (editSession.value === session) editSession.value = null
+  }
   const ownedMessages = requests.invalidate(id)
   for (const message of ownedMessages) flushTypewriter(message)
   conversations.value = conversations.value.filter((conv) => conv.id !== id)
@@ -803,8 +849,6 @@ function forgetConversation(id) {
     thinkingSteps.value = []
     input.value = draftInputs.__new__ || ''
     pendingFile.value = draftFiles.__new__ || null
-    editingIndex.value = -1
-    editingText.value = ''
     showScrollBtn.value = false
     showPreview.value = false
     previewData.value = null
@@ -968,6 +1012,16 @@ async function deleteMessage(idx) {
     }
     if (!deletedMessageIds.has(convId)) deletedMessageIds.set(convId, new Set())
     deletedMessageIds.get(convId).add(identity.id)
+    for (const session of messageEditDrafts) {
+      if (
+        (session.request?.convId || session.convId) !== convId ||
+        (session.target !== target && editTargetId(session) !== identity.id)
+      )
+        continue
+      session.cancelled = true
+      messageEditDrafts.delete(session)
+      if (editSession.value === session) editSession.value = null
+    }
     // 同时清理所属缓存及可能重新加载的同一页面，绝不沿用旧下标删除其他消息。
     const arrays = new Set([ownedMessages, streamMessageCache.value[convId]?.messages])
     if (currentConvId.value === convId) arrays.add(messages.value)
@@ -977,7 +1031,7 @@ async function deleteMessage(idx) {
       if (index >= 0) array.splice(index, 1)
     }
     if (currentConvId.value === convId) {
-      cancelEdit()
+      if (editingIndex.value < 0) editSession.value = null
       if (target.contractData && previewData.value === target.contractData) {
         showPreview.value = false
         previewData.value = null
@@ -1099,34 +1153,187 @@ async function regenerateContractMessage(target) {
   }
 }
 
-// 进入消息编辑模式：将原内容填入输入框
-function editMessage(idx) {
-  if (messageMutationBlocksCurrent()) return
-  const msg = messages.value[idx]
-  if (!msg || msg.role !== 'user') return
-  editingIndex.value = idx
-  editingText.value = msg.content
+function editBelongsToCurrent(session) {
+  const owner = session.request?.convId || session.convId
+  return owner ? owner === currentConvId.value : session.messages === messages.value
 }
-// 保存编辑后的用户消息并同步到后端
-async function saveEdit(idx) {
-  if (messageMutationBlocksCurrent()) return
-  const msg = messages.value[idx]
-  if (!msg) return
-  msg.content = editingText.value
-  editingIndex.value = -1
-  editingText.value = ''
-  // 同步到后端
-  if (currentConvId.value) {
-    try {
-      await rebuildMessages(currentConvId.value, toExportable(messages.value))
-    } catch (error) {
-      console.warn('同步编辑后的消息失败', error)
-    }
+
+function editTargetId(session) {
+  return session.identity?.id || (hasMessageIdentity(session.target) ? session.target.id : null)
+}
+
+// 切换页面只隐藏编辑器，未保存的修改留在内存中，返回原会话仍可继续。
+function restoreMessageEdit() {
+  editSession.value =
+    [...messageEditDrafts].find(
+      (session) =>
+        !session.cancelled &&
+        editBelongsToCurrent(session) &&
+        messages.value.some(
+          (message) =>
+            message === session.target ||
+            (editTargetId(session) && message.id === editTargetId(session)),
+        ),
+    ) || null
+}
+
+// 保存确认及冲突核实只更新所属对象；迟到的旧历史响应不能把正文改回去。
+function applyConfirmedUserEdit(session, convId, saved) {
+  const id = saved.message_id ?? saved.id
+  if (!confirmedMessageEdits.has(convId)) confirmedMessageEdits.set(convId, new Map())
+  confirmedMessageEdits
+    .get(convId)
+    .set(id, { content: saved.content, revision: saved.revision, version: ++messageEditVersion })
+  const arrays = new Set([session.messages, streamMessageCache.value[convId]?.messages])
+  if (currentConvId.value === convId) arrays.add(messages.value)
+  for (const array of arrays) {
+    const target = array?.find((message) => message === session.target || message.id === id)
+    if (target?.role === 'user')
+      Object.assign(target, { id, content: saved.content, revision: saved.revision })
   }
 }
+
+// 编辑开始时固定原文与版本，不把稍后切换的页面或下标当作保存目标。
+function editMessage(idx) {
+  if (
+    historyLoading.value ||
+    deletingConvIds.value.has(pageKey()) ||
+    messageMutationBlocksCurrent()
+  )
+    return
+  const msg = messages.value[idx]
+  if (!msg || msg.role !== 'user') return
+  editSession.value = [...messageEditDrafts].find(
+    (session) =>
+      editBelongsToCurrent(session) &&
+      (session.target === msg || (editTargetId(session) && editTargetId(session) === msg.id)),
+  ) || {
+    messages: messages.value,
+    target: msg,
+    convId: currentConvId.value,
+    request: requests.findMessage(msg),
+    identity: hasMessageIdentity(msg) ? { id: msg.id, revision: msg.revision } : null,
+    baseContent: msg.content,
+    text: msg.content,
+    saving: false,
+    submitted: false,
+    cancelled: false,
+    conflict: false,
+  }
+  messageEditDrafts.add(editSession.value)
+}
+
+// 未落库的问题等待原请求完成，不停止生成，也不把编辑倒灌到模型输入。
+async function saveEdit() {
+  const session = editSession.value
+  if (
+    !session ||
+    session.saving ||
+    editingIndex.value < 0 ||
+    messageMutationBlocksCurrent() ||
+    historyLoading.value ||
+    deletingConvIds.value.has(pageKey())
+  )
+    return
+  const content = session.text
+  session.saving = true
+  pendingMessageEdits.value.add(session)
+  let convId = session.request?.convId || session.convId
+  const cancelled = () => session.cancelled || deletedConvIds.has(convId)
+  try {
+    if (session.conflict) {
+      if (confirmState.visible) return
+      const ok = await showConfirm(
+        '这条消息已在其他位置修改。\n\n最新正文：\n' +
+          session.baseContent +
+          '\n\n是否用你的编辑覆盖这条消息？其他消息和附件不受影响。',
+        { okText: '覆盖保存', cancelText: '返回编辑' },
+      )
+      if (!ok || cancelled()) return
+    }
+    if (session.request && !hasMessageIdentity(session.target)) {
+      showContractWarning('本轮消息尚未保存，修改将在本轮完成后保存，生成不会中断。')
+      await session.request.task
+      convId = session.request.convId || convId
+      if (cancelled() || session.request.invalidated) return
+      if (!session.messages.includes(session.target)) {
+        const status = draftRecovery.recover(convId || '__new__', {
+          text: content,
+          file: session.target.file || null,
+        })
+        showContractWarning(
+          status === 'restored'
+            ? '本轮发送未完成，编辑文字已恢复到原草稿。'
+            : '本轮发送未完成，原草稿保持不变，编辑文字已暂存；发送或清空草稿后重新打开原会话可恢复。',
+          6500,
+        )
+        messageEditDrafts.delete(session)
+        if (editSession.value === session) editSession.value = null
+        return
+      }
+    }
+    if (!convId || cancelled()) return
+    session.convId = convId
+    const deletion = pendingConversationDeletions.get(convId)
+    if (deletion) await deletion
+    if (cancelled()) return
+    const identity =
+      session.identity ||
+      (await resolveSavedMessage(convId, session.target, session.messages, getConversation))
+    if (cancelled()) return
+    session.identity = identity
+    const result = await saveUserMessageEdit({
+      convId,
+      identity,
+      baseContent: session.baseContent,
+      content,
+      patch: (...args) => {
+        session.submitted = true
+        return editSavedMessage(...args)
+      },
+      getConversation,
+      isCancelled: cancelled,
+    })
+    if (cancelled() || result.status === 'cancelled') return
+    if (result.status === 'conflict') {
+      applyConfirmedUserEdit(session, convId, result.latest)
+      session.identity = { id: result.latest.id, revision: result.latest.revision }
+      session.baseContent = result.latest.content
+      session.conflict = true
+      showContractWarning(
+        '这条消息已有新版本，无法安全合并，编辑文字已保留。再次点击保存可查看最新正文并确认是否覆盖。',
+        6500,
+      )
+      return
+    }
+    applyConfirmedUserEdit(session, convId, result)
+    messageEditDrafts.delete(session)
+    if (editSession.value === session) editSession.value = null
+    await refreshConvList()
+  } catch (error) {
+    if (!cancelled()) {
+      console.warn('保存消息修改未获确认，异常类型：', error.name)
+      showContractWarning(
+        error instanceof MessageEditError
+          ? error.message
+          : '修改未获确认，原消息及编辑文字已保留，请稍后再试。',
+        6500,
+      )
+    }
+  } finally {
+    session.saving = false
+    session.submitted = false
+    pendingMessageEdits.value.delete(session)
+  }
+}
+
 function cancelEdit() {
-  editingIndex.value = -1
-  editingText.value = ''
+  const session = editSession.value
+  if (!session || session.submitted) return
+  session.cancelled = true
+  pendingMessageEdits.value.delete(session)
+  messageEditDrafts.delete(session)
+  editSession.value = null
 }
 
 // 停止当前对话的 LLM 生成
@@ -2861,6 +3068,10 @@ function openContractPreview(msg) {
   font-size: 14px;
   color: #303133;
   line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: min(45vh, 320px);
+  overflow-y: auto;
 }
 .confirm-actions {
   display: flex;

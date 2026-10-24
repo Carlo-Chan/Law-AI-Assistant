@@ -85,12 +85,24 @@ export async function deleteSavedMessage(convId, messageId, revision, preserveEm
   return data.data
 }
 
+/** 只保存目标用户消息的正文，其他问答和附件不受影响。 */
+export async function editSavedMessage(convId, messageId, revision, content) {
+  const { data } = await api.patch(
+    `/conversations/${encodeURIComponent(convId)}/messages/${messageId}`,
+    {
+      expected_revision: revision,
+      content,
+    },
+  )
+  return data.data
+}
+
 /** 更新会话标题 */
 export async function updateConvTitle(convId, title, signal) {
   await api.post(`/conversations/${convId}/title`, { title }, { signal })
 }
 
-/** 重建会话消息（当前仍用于编辑和普通问答重新生成） */
+/** 重建会话消息（当前仍用于普通问答重新生成） */
 export async function rebuildMessages(convId, messages) {
   await api.post(`/conversations/${convId}/rebuild`, { messages })
 }

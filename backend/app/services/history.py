@@ -16,6 +16,7 @@ from pathlib import Path
 from app.core.errors import (
     CONVERSATION_NOT_FOUND,
     MESSAGE_CHANGED,
+    MESSAGE_NOT_EDITABLE,
     MESSAGE_NOT_FOUND,
     REPORT_CHANGED,
     PublicError,
@@ -153,6 +154,34 @@ def get_message(conv_id: str, message_id: int) -> dict | None:
             "SELECT * FROM messages WHERE conversation_id=? AND id=?", (conv_id, message_id)
         ).fetchone()
     return dict(row) if row else None
+
+
+def edit_user_message(conv_id: str, message_id: int, expected_revision: str, content: str) -> dict:
+    """事务内校验用户消息的归属与版本，只改正文，保留附件及其他历史。"""
+    with _get_conn() as conn:
+        cursor = conn.execute(
+            "UPDATE conversations SET updated_at=? WHERE id=?",
+            (datetime.now().isoformat(), conv_id),
+        )
+        if cursor.rowcount != 1:
+            raise PublicError(CONVERSATION_NOT_FOUND)
+        row = conn.execute(
+            "SELECT * FROM messages WHERE conversation_id=? AND id=?", (conv_id, message_id)
+        ).fetchone()
+        if row is None:
+            raise PublicError(MESSAGE_NOT_FOUND)
+        original = dict(row)
+        if original["role"] != "user":
+            raise PublicError(MESSAGE_NOT_EDITABLE)
+        if message_revision(original) != expected_revision:
+            raise PublicError(MESSAGE_CHANGED)
+        conn.execute(
+            "UPDATE messages SET content=? WHERE conversation_id=? AND id=?",
+            (content, conv_id, message_id),
+        )
+        revision = message_revision({**original, "content": content})
+    logger.debug("用户消息正文更新完成")
+    return {"message_id": message_id, "revision": revision, "content": content, "saved": True}
 
 
 def delete_message(

@@ -25,6 +25,7 @@ const apiNames = [
   'getConversation',
   'deleteConversation',
   'deleteSavedMessage',
+  'editSavedMessage',
   'saveMessages',
   'updateConvTitle',
   'chatStream',
@@ -282,6 +283,484 @@ function savedBubble(id, role = 'assistant', content = '原回复') {
 function savedPairReceipt() {
   return { messages: [savedBubble(101, 'user'), savedBubble(102)] }
 }
+
+const editAck = (id, content) => ({
+  message_id: id,
+  content,
+  revision: 'b'.repeat(64),
+  saved: true,
+})
+const editConflict = () =>
+  Object.assign(new Error('message_changed'), {
+    response: { status: 409, data: { code: 'message_changed' } },
+  })
+
+test('编辑保存仅更新目标，服务端确认前不改正文，不重建历史或调用模型', async () => {
+  const gate = deferred()
+  const calls = []
+  const view = await mount({
+    editSavedMessage: async (...args) => {
+      calls.push(args)
+      return gate.promise
+    },
+    rebuildMessages: () => assert.fail('不能重建历史'),
+    chatStream: () => assert.fail('不能重新生成'),
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [savedBubble(1, 'user', '原问题'), savedBubble(2)]
+    view.state.editMessage(0)
+    view.state.editingText = '  修正\n问题  '
+    const saving = view.state.saveEdit()
+    assert.equal(view.state.messages[0].content, '原问题')
+    assert.equal(view.state.editSession.saving, true)
+    for (let index = 0; index < 50; index++) view.state.saveEdit()
+    assert.deepEqual(calls, [['A', 1, messageRevision, '  修正\n问题  ']])
+    gate.resolve(editAck(1, '  修正\n问题  '))
+    await saving
+    assert.equal(view.state.messages[0].content, '  修正\n问题  ')
+    assert.equal(view.state.messages[1].id, 2)
+    assert.equal(view.state.editingIndex, -1)
+    assert.equal(view.state.pendingMessageEdits.size, 0)
+  } finally {
+    gate.resolve(editAck(1, '  修正\n问题  '))
+    view.close()
+  }
+})
+
+test('保存等待时切换会话，迟到结果不清空另一会话的编辑文字', async () => {
+  const gate = deferred()
+  const view = await mount({ editSavedMessage: () => gate.promise })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [savedBubble(1, 'user', 'A问题')]
+    const owned = view.state.messages
+    view.state.editMessage(0)
+    view.state.editingText = 'A修正'
+    const saving = view.state.saveEdit()
+    await view.state.loadConversation('B')
+    assert.equal(view.state.editingIndex, -1)
+    view.state.editMessage(0)
+    view.state.editingText = 'B未保存的修改'
+    gate.resolve(editAck(1, 'A修正'))
+    await saving
+    assert.equal(owned[0].content, 'A修正')
+    assert.equal(view.state.messages[0].content, 'B原问题')
+    assert.equal(view.state.editingText, 'B未保存的修改')
+    assert.equal(view.state.editingIndex, 0)
+  } finally {
+    gate.resolve(editAck(1, 'A修正'))
+    view.close()
+  }
+})
+
+test('保存失败保留原消息与编辑稿，切走再回来仍可继续编辑', async () => {
+  const initial = [savedBubble(1, 'user', '原问题'), savedBubble(2)]
+  const view = await mount({
+    editSavedMessage: async () => {
+      throw new Error('私有异常不能公开')
+    },
+    getConversation: async (id) => ({ id, messages: structuredClone(initial) }),
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = structuredClone(initial)
+    view.state.editMessage(0)
+    view.state.editingText = '保留编辑稿'
+    await view.state.saveEdit()
+    assert.equal(view.state.messages[0].content, '原问题')
+    assert.equal(view.state.editingText, '保留编辑稿')
+    assert.match(view.notices.at(-1).options.message, /编辑文字已保留/)
+    await view.state.loadConversation('B')
+    await view.state.loadConversation('A')
+    assert.equal(view.state.editingIndex, 0)
+    assert.equal(view.state.editingText, '保留编辑稿')
+    view.state.cancelEdit()
+    assert.equal(view.state.editingIndex, -1)
+    assert.equal(view.state.messageEditDrafts.size, 0)
+  } finally {
+    view.close()
+  }
+})
+
+test('编辑目标按稳定身份定位，下标移动不会保存到其他问题', async () => {
+  const calls = []
+  const view = await mount({
+    editSavedMessage: async (...args) => {
+      calls.push(args)
+      return editAck(args[1], args[3])
+    },
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [savedBubble(1, 'user', '原问题')]
+    view.state.editMessage(0)
+    view.state.messages.unshift(savedBubble(2, 'user', '前面插入的问题'))
+    assert.equal(view.state.editingIndex, 1)
+    view.state.editingText = '只改原问题'
+    await view.state.saveEdit(0)
+    assert.equal(calls[0][1], 1)
+    assert.equal(view.state.messages[0].content, '前面插入的问题')
+    assert.equal(view.state.messages[1].content, '只改原问题')
+  } finally {
+    view.close()
+  }
+})
+
+test('不相交的冲突自动读取最新消息并合并，不弹覆盖确认或刷新页面', async () => {
+  const calls = []
+  const view = await mount({
+    editSavedMessage: async (...args) => {
+      calls.push(args)
+      if (calls.length === 1) throw editConflict()
+      return editAck(args[1], args[3])
+    },
+    getConversation: async (id) => ({
+      id,
+      messages: [{ ...savedBubble(1, 'user', '租金1500元'), revision: 'b'.repeat(64) }],
+    }),
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [savedBubble(1, 'user', '租金1000元')]
+    view.state.editMessage(0)
+    view.state.editingText = '租金1000元。'
+    await view.state.saveEdit()
+    assert.equal(calls.length, 2)
+    assert.equal(calls[1][2], 'b'.repeat(64))
+    assert.equal(calls[1][3], '租金1500元。')
+    assert.equal(view.state.messages[0].content, '租金1500元。')
+    assert.equal(view.state.confirmState.visible, false)
+  } finally {
+    view.close()
+  }
+})
+
+for (const overwrite of [true, false]) {
+  test(`重叠修改先保留草稿，用户${overwrite ? '确认' : '取消'}后才决定覆盖`, async () => {
+    const calls = []
+    const view = await mount({
+      editSavedMessage: async (...args) => {
+        calls.push(args)
+        if (calls.length === 1) throw editConflict()
+        return editAck(args[1], args[3])
+      },
+      getConversation: async (id) => ({
+        id,
+        messages: [{ ...savedBubble(1, 'user', '租金1500元'), revision: 'b'.repeat(64) }],
+      }),
+    })
+    try {
+      view.state.currentConvId = 'A'
+      view.state.messages = [savedBubble(1, 'user', '租金1000元')]
+      view.state.editMessage(0)
+      view.state.editingText = '租金1200元'
+      await view.state.saveEdit()
+      assert.equal(calls.length, 1)
+      assert.equal(view.state.editingText, '租金1200元')
+      assert.equal(view.state.messages[0].content, '租金1500元')
+      assert.match(view.notices.at(-1).options.message, /无法安全合并/)
+      const saving = view.state.saveEdit()
+      assert.equal(view.state.confirmState.visible, true)
+      assert.match(view.state.confirmState.message, /租金1500元/)
+      view.state.resolveConfirm(overwrite)
+      await saving
+      assert.equal(calls.length, overwrite ? 2 : 1)
+      assert.equal(view.state.messages[0].content, overwrite ? '租金1200元' : '租金1500元')
+      if (!overwrite) assert.equal(view.state.editingText, '租金1200元')
+    } finally {
+      view.close()
+    }
+  })
+}
+
+test('正在生成的新问题等待原保存后再定点编辑，原模型输入与回复不变', async () => {
+  const entered = deferred()
+  const gate = deferred()
+  const calls = []
+  let signal
+  const view = await mount({
+    chatStream: async (query, _history, ownedSignal, callbacks) => {
+      assert.equal(query, '原问题')
+      signal = ownedSignal
+      entered.resolve()
+      await gate.promise
+      await callbacks.onDone({ chat_reply: '完整原回复' })
+    },
+    saveMessages: async (...args) => {
+      view.writes.push(args)
+      return savedPairReceipt()
+    },
+    editSavedMessage: async (...args) => {
+      calls.push(args)
+      return editAck(args[1], args[3])
+    },
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.input = '原问题'
+    const sending = view.state.sendText()
+    await entered.promise
+    view.state.editMessage(0)
+    view.state.editingText = '修正问题'
+    const saving = view.state.saveEdit()
+    assert.equal(calls.length, 0)
+    assert.equal(signal.aborted, false)
+    gate.resolve()
+    await Promise.all([saving, sending])
+    assert.equal(view.writes[0][1], '原问题')
+    assert.equal(calls[0][1], 101)
+    assert.equal(view.state.messages[0].content, '修正问题')
+    assert.equal(view.state.messages[1].content, '完整原回复')
+    assert.equal(view.state.loadingConvIds.size, 0)
+  } finally {
+    gate.resolve()
+    view.close()
+  }
+})
+
+test('等待生成期间取消编辑不停止生成，也不会在完成后偷偷保存修改', async () => {
+  const entered = deferred()
+  const gate = deferred()
+  const view = await mount({
+    chatStream: async (_query, _history, signal, callbacks) => {
+      entered.resolve()
+      await gate.promise
+      assert.equal(signal.aborted, false)
+      await callbacks.onDone({ chat_reply: '回复' })
+    },
+    saveMessages: async () => savedPairReceipt(),
+    editSavedMessage: () => assert.fail('取消后不能保存编辑'),
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.input = '原问题'
+    const sending = view.state.sendText()
+    await entered.promise
+    view.state.editMessage(0)
+    view.state.editingText = '取消的修改'
+    const saving = view.state.saveEdit()
+    view.state.cancelEdit()
+    assert.equal(view.state.pendingMessageEdits.size, 0)
+    gate.resolve()
+    await Promise.all([sending, saving])
+    assert.equal(view.state.messages[0].content, '原问题')
+    assert.equal(view.state.editingIndex, -1)
+  } finally {
+    gate.resolve()
+    view.close()
+  }
+})
+
+test('编辑旧问题不停止同会话的新生成，其他消息保存仍正常', async () => {
+  const entered = deferred()
+  const gate = deferred()
+  let signal
+  const view = await mount({
+    chatStream: async (_query, _history, ownedSignal, callbacks) => {
+      signal = ownedSignal
+      entered.resolve()
+      await gate.promise
+      await callbacks.onDone({ chat_reply: '新回复' })
+    },
+    editSavedMessage: async (_cid, id, _revision, content) => editAck(id, content),
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [savedBubble(1, 'user', '旧问题'), savedBubble(2)]
+    view.state.input = '新问题'
+    const sending = view.state.sendText()
+    await entered.promise
+    view.state.editMessage(0)
+    view.state.editingText = '修正旧问题'
+    await view.state.saveEdit()
+    assert.equal(signal.aborted, false)
+    assert.equal(view.state.messages[0].content, '修正旧问题')
+    gate.resolve()
+    await sending
+    assert.equal(view.state.messages.length, 4)
+    assert.equal(view.writes[0][1], '新问题')
+  } finally {
+    gate.resolve()
+    view.close()
+  }
+})
+
+test('保存中的会话阻止本地重复写入，但另一会话仍能发送', async () => {
+  const gate = deferred()
+  const view = await mount({ editSavedMessage: () => gate.promise })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [savedBubble(1, 'user', '原问题')]
+    view.state.editMessage(0)
+    view.state.editingText = '修正'
+    const saving = view.state.saveEdit()
+    view.state.input = '不能并写'
+    view.state.handleSend()
+    assert.equal(view.streams.length, 0)
+    assert.equal(view.state.canSend, false)
+    await view.state.loadConversation('B')
+    view.state.input = 'B问题'
+    await view.state.sendText()
+    assert.equal(view.streams.length, 1)
+    gate.resolve(editAck(1, '修正'))
+    await saving
+    assert.equal(view.state.currentConvId, 'B')
+    assert.equal(view.state.messages.at(-1).content, 'B问题回复')
+  } finally {
+    gate.resolve(editAck(1, '修正'))
+    view.close()
+  }
+})
+
+test('编辑保存期间拒绝同会话的删除与重新生成，避免整段改写竞争', async () => {
+  const gate = deferred()
+  const view = await mount({
+    editSavedMessage: () => gate.promise,
+    rebuildMessages: () => assert.fail('不能与编辑同时重建'),
+    deleteSavedMessage: () => assert.fail('不能与编辑同时删除'),
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [savedBubble(1, 'user', '原问题'), savedBubble(2)]
+    view.state.editMessage(0)
+    view.state.editingText = '修正'
+    const saving = view.state.saveEdit()
+    await view.state.regenerateMessage(1)
+    await view.state.deleteMessage(0)
+    assert.equal(view.state.messages.length, 2)
+    assert.equal(view.state.confirmState.visible, false)
+    gate.resolve(editAck(1, '修正'))
+    await saving
+  } finally {
+    gate.resolve(editAck(1, '修正'))
+    view.close()
+  }
+})
+
+test('旧历史响应晚于编辑保存返回，不把已保存正文改回去', async () => {
+  const historyGate = deferred()
+  const patchGate = deferred()
+  const view = await mount({
+    editSavedMessage: () => patchGate.promise,
+    getConversation: () => historyGate.promise,
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [savedBubble(1, 'user', '原问题')]
+    view.state.editMessage(0)
+    view.state.editingText = '已保存修改'
+    const saving = view.state.saveEdit()
+    const loading = view.state.loadConversation('A')
+    patchGate.resolve(editAck(1, '已保存修改'))
+    await saving
+    historyGate.resolve({ id: 'A', messages: [savedBubble(1, 'user', '原问题')] })
+    await loading
+    assert.equal(view.state.messages[0].content, '已保存修改')
+    assert.equal(view.state.messages[0].revision, 'b'.repeat(64))
+  } finally {
+    patchGate.resolve(editAck(1, '已保存修改'))
+    historyGate.resolve({ id: 'A', messages: [] })
+    view.close()
+  }
+})
+
+test('整会话删除后迟到的编辑结果不会恢复消息或产生无关提示', async () => {
+  const gate = deferred()
+  const view = await mount({
+    editSavedMessage: () => gate.promise,
+    deleteConversation: async () => {},
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [savedBubble(1, 'user', '原问题')]
+    view.state.editMessage(0)
+    view.state.editingText = '不应恢复'
+    const saving = view.state.saveEdit()
+    const deleting = view.state.handleDeleteConv('A')
+    view.state.resolveConfirm(true)
+    await deleting
+    gate.resolve(editAck(1, '不应恢复'))
+    await saving
+    assert.equal(view.state.messages.length, 0)
+    assert.equal(view.state.currentConvId, null)
+    assert.equal(view.state.messageEditDrafts.size, 0)
+    assert.equal(view.notices.length, 0)
+  } finally {
+    gate.resolve(editAck(1, '不应恢复'))
+    view.close()
+  }
+})
+
+test('新消息编辑稿取得身份后可跨页恢复，目标删除后按身份清理', async () => {
+  const gate = deferred()
+  const entered = deferred()
+  const view = await mount({
+    chatStream: async (_query, _history, _signal, callbacks) => {
+      entered.resolve()
+      await gate.promise
+      await callbacks.onDone({ chat_reply: '回复' })
+    },
+    saveMessages: async () => savedPairReceipt(),
+    getConversation: async (id) => ({
+      id,
+      messages: [savedBubble(101, 'user', '原问题'), savedBubble(102)],
+    }),
+    deleteSavedMessage: async (_cid, id) => ({ message_id: id, conversation_deleted: false }),
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.input = '原问题'
+    const sending = view.state.sendText()
+    await entered.promise
+    view.state.editMessage(0)
+    view.state.editingText = '还未点击保存的修改'
+    await view.state.newChat()
+    gate.resolve()
+    await sending
+    await view.state.loadConversation('A')
+    assert.equal(view.state.editingIndex, 0)
+    assert.equal(view.state.editingText, '还未点击保存的修改')
+    const deleting = view.state.deleteMessage(0)
+    view.state.resolveConfirm(true)
+    await deleting
+    assert.equal(view.state.editingIndex, -1)
+    assert.equal(view.state.messageEditDrafts.size, 0)
+  } finally {
+    gate.resolve()
+    view.close()
+  }
+})
+
+test('创建失败后原草稿保留，等待保存的编辑文字进入既有草稿恢复队列', async () => {
+  const gate = deferred()
+  const entered = deferred()
+  const view = await mount({
+    createConversation: async () => {
+      entered.resolve()
+      return gate.promise
+    },
+    editSavedMessage: () => assert.fail('未创建成功不能保存修改'),
+  })
+  try {
+    view.state.input = '原问题'
+    const sending = view.state.sendText()
+    await entered.promise
+    view.state.editMessage(0)
+    view.state.editingText = '恢复这份编辑'
+    const saving = view.state.saveEdit()
+    gate.reject(new Error('创建失败'))
+    await Promise.all([sending, saving])
+    assert.equal(view.state.input, '原问题')
+    assert.equal(view.state.messages.length, 0)
+    view.state.input = ''
+    await view.state.newChat()
+    assert.equal(view.state.input, '恢复这份编辑')
+  } finally {
+    gate.resolve({ id: 'unused' })
+    view.close()
+  }
+})
 
 test('单条删除固定确认时的会话和消息，切换页面及下标变化不误删', async () => {
   const deletes = []
