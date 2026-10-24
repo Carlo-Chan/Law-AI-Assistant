@@ -283,6 +283,7 @@ async def regenerate_chat(
 
 class UpdateTitleRequest(BaseModel):
     title: str
+    expected_title: str | None = None
 
 
 def _require_conversation(conv_id: str):
@@ -293,9 +294,8 @@ def _require_conversation(conv_id: str):
 
 @router.post("/conversations/{conv_id}/title", response_model=ConvResponse)
 async def update_title(conv_id: str, req: UpdateTitleRequest):
-    _require_conversation(conv_id)
-    history.update_title(conv_id, req.title)
-    return ConvResponse(code=200, data={"ok": True})
+    result = history.update_title(conv_id, req.title, req.expected_title)
+    return ConvResponse(code=200, data={"ok": True, **result})
 
 
 class RebuildMessage(BaseModel):

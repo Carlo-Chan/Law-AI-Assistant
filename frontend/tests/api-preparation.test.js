@@ -49,6 +49,13 @@ test('历史详情读取传递独立取消信号，预先取消时不进入 HTTP
   assert.equal(calls.length, 1)
 })
 
+test('标题条件保存携带原标题并返回服务端回执，不影响原有无条件调用', async () => {
+  calls.length = 0
+  const result = await api.updateConvTitle('A', '新标题', undefined, '原标题')
+  assert.deepEqual(JSON.parse(calls[0].data), { title: '新标题', expected_title: '原标题' })
+  assert.deepEqual(result, { id: 'test' })
+})
+
 test('已经停止的准备请求不会进入 HTTP 适配器', async () => {
   calls.length = 0
   const controller = new AbortController()

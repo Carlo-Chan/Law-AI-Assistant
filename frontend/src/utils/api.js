@@ -98,8 +98,13 @@ export async function editSavedMessage(convId, messageId, revision, content) {
 }
 
 /** 更新会话标题 */
-export async function updateConvTitle(convId, title, signal) {
-  await api.post(`/conversations/${convId}/title`, { title }, { signal })
+export async function updateConvTitle(convId, title, signal, expectedTitle) {
+  const { data } = await api.post(
+    `/conversations/${encodeURIComponent(convId)}/title`,
+    { title, ...(expectedTitle !== undefined ? { expected_title: expectedTitle } : {}) },
+    { signal },
+  )
+  return data.data
 }
 
 /** 保留旧重建接口的兼容封装，当前页面消息操作不再调用。 */

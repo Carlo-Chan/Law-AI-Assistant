@@ -31,11 +31,13 @@
             <span v-if="renamingConvId !== conv.id" class="conv-title">{{ conv.title }}</span>
             <input
               v-else
+              :key="renameSession.key"
+              :data-rename-key="renameSession.key"
               v-model="renameText"
               class="conv-title-input"
-              @keydown.enter.prevent="finishRename(conv.id)"
-              @keydown.esc.prevent="cancelRename"
-              @blur="finishRename(conv.id)"
+              @keydown.enter="finishRename(conv.id, $event)"
+              @keydown.esc="cancelRename($event)"
+              @blur="finishRename(conv.id, $event)"
               @click.stop
               ref="renameInput"
             />
@@ -450,6 +452,7 @@ import { createTypewriterScope } from '../composables/useTypewriter'
 import { createConversationRequests, LOADING_DOTS } from '../composables/conversationRequests'
 import { createDraftRecovery } from '../composables/draftRecovery'
 import { createLatestRead } from '../composables/latestRead'
+import { createConversationRenaming } from '../composables/conversationRenaming'
 import {
   assignSavedMessageIdentities,
   hasMessageIdentity,
@@ -521,8 +524,29 @@ function resolveConfirm(result) {
   resolve?.(result === true)
 }
 const sidebarMenuConvId = ref(null)
-const renamingConvId = ref(null)
-const renameText = ref('')
+const renaming = createConversationRenaming({
+  find: (id) => conversations.value.find((conv) => conv.id === id),
+  patch: (id, title, expected) => updateConvTitle(id, title, undefined, expected),
+  getConversation,
+  apply(id, title) {
+    const conv = conversations.value.find((item) => item.id === id)
+    if (conv) {
+      conversationListReads.cancel()
+      conv.title = title
+    }
+  },
+  warn: showContractWarning,
+  confirm: showConfirm,
+  unavailable: (id) => deletedConvIds.has(id) || deletingConvIds.value.has(id),
+})
+const renameSession = renaming.active
+const renamingConvId = computed(() => renameSession.value?.id || null)
+const renameText = computed({
+  get: () => renameSession.value?.text || '',
+  set: (text) => {
+    if (renameSession.value) renameSession.value.text = text
+  },
+})
 const streamMessageCache = ref({})
 const thinkingSteps = ref([])
 const deletingConvIds = ref(new Set())
@@ -815,35 +839,21 @@ async function loadConversation(id) {
   }
 }
 async function startRename(convId) {
-  const conv = conversations.value.find((c) => c.id === convId)
-  if (!conv) return
-  renamingConvId.value = convId
-  renameText.value = conv.title
+  const session = renaming.start(convId)
+  if (!session) return
   await nextTick()
-  // 自动聚焦输入框，确保失焦检测即时生效
-  const input = document.querySelector('.conv-title-input')
-  if (input) input.focus()
+  if (renameSession.value !== session) return
+  document.querySelector(`.conv-title-input[data-rename-key="${session.key}"]`)?.focus()
 }
-async function finishRename(convId) {
-  const val = renameText.value.trim()
-  if (val) {
-    try {
-      await updateConvTitle(convId, val)
-    } catch (error) {
-      console.warn('保存对话标题失败', error)
-    }
-    const conv = conversations.value.find((c) => c.id === convId)
-    if (conv) {
-      conversationListReads.cancel()
-      conv.title = val
-    }
-  }
-  renamingConvId.value = null
-  renameText.value = ''
+function finishRename(convId, event) {
+  if (event?.isComposing || event?.keyCode === 229) return
+  event?.preventDefault?.()
+  return renaming.save(convId, event?.currentTarget?.dataset?.renameKey)
 }
-function cancelRename() {
-  renamingConvId.value = null
-  renameText.value = ''
+function cancelRename(event) {
+  if (event?.isComposing || event?.keyCode === 229) return
+  event?.preventDefault?.()
+  renaming.cancel(event?.currentTarget?.dataset?.renameKey)
 }
 
 // 删除对话：若为当前对话则清空界面
@@ -851,6 +861,7 @@ function forgetConversation(id) {
   conversationListReads.cancel()
   if (historyReads.cancel(id)) historyLoading.value = false
   deletedConvIds.add(id)
+  renaming.forget(id)
   deletedMessageIds.delete(id)
   confirmedMessageEdits.delete(id)
   for (const session of messageEditDrafts) {
@@ -1570,6 +1581,7 @@ async function executeMessageRequest(
           request.convId,
           title.length > 14 ? title.slice(0, 14) + '…' : title,
           request.controller.signal,
+          '新对话',
         )
       } catch (error) {
         if (!request.controller.signal.aborted) {
@@ -1893,6 +1905,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  renaming.dispose()
   historyReads.dispose()
   conversationListReads.dispose()
   historyLoading.value = false

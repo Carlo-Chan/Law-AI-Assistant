@@ -20,6 +20,7 @@ from app.core.errors import (
     MESSAGE_NOT_FOUND,
     REPLY_CHANGED,
     REPORT_CHANGED,
+    TITLE_CHANGED,
     PublicError,
 )
 
@@ -372,10 +373,20 @@ def add_message(
     )
 
 
-def update_title(conv_id: str, title: str):
-    """更新会话标题"""
+def update_title(conv_id: str, title: str, expected_title: str | None = None) -> dict:
+    """原子校验原标题并更新，只在事务提交成功后返回明确回执。"""
     with _get_conn() as conn:
-        conn.execute("UPDATE conversations SET title=? WHERE id=?", (title, conv_id))
+        query = "UPDATE conversations SET title=? WHERE id=?"
+        parameters = [title, conv_id]
+        if expected_title is not None:
+            query += " AND title=?"
+            parameters.append(expected_title)
+        result = conn.execute(query, parameters)
+        if result.rowcount != 1:
+            if not conn.execute("SELECT 1 FROM conversations WHERE id=?", (conv_id,)).fetchone():
+                raise PublicError(CONVERSATION_NOT_FOUND)
+            raise PublicError(TITLE_CHANGED)
+    return {"conversation_id": conv_id, "title": title, "saved": True}
 
 
 def rebuild_messages(conv_id: str, messages: list[dict]):

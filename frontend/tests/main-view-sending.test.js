@@ -415,7 +415,7 @@ async function mount(overrides = {}) {
         { role: 'assistant', content: id + '原回复' },
       ],
     }),
-    updateConvTitle: async () => {},
+    updateConvTitle: async (id, title) => ({ conversation_id: id, title, saved: true }),
     saveMessages: async (...args) => {
       writes.push(args)
     },
@@ -2566,6 +2566,191 @@ test('停止一个会话不影响另一个会话，并且准备阶段停止不�
   }
 })
 
+test('重命名保存失败保留原标题和编辑草稿，不伪装成功', async () => {
+  const view = await mount({
+    updateConvTitle: async () => {
+      throw new Error('sk-private save failure')
+    },
+    getConversation: async (id) => ({ id, title: '原标题', messages: [] }),
+  })
+  try {
+    view.state.conversations = [{ id: 'A', title: '原标题' }]
+    await view.state.startRename('A')
+    view.state.renameText = '待保存草稿'
+    await view.state.finishRename('A')
+    assert.equal(view.state.conversations[0].title, '原标题')
+    assert.equal(view.state.renamingConvId, 'A')
+    assert.equal(view.state.renameText, '待保存草稿')
+    assert.match(view.notices.at(-1).options.message, /草稿.*保留|保留.*草稿/)
+  } finally {
+    view.close()
+  }
+})
+
+test('重命名 A 的迟到保存不关闭 B 编辑器或清空 B 草稿', async () => {
+  const gate = deferred()
+  const view = await mount({
+    updateConvTitle: async (id, title) => {
+      await gate.promise
+      return { conversation_id: id, title, saved: true }
+    },
+  })
+  let pending
+  try {
+    view.state.conversations = [
+      { id: 'A', title: 'A原标题' },
+      { id: 'B', title: 'B原标题' },
+    ]
+    await view.state.startRename('A')
+    view.state.renameText = 'A新标题'
+    pending = view.state.finishRename('A')
+    await view.state.startRename('B')
+    view.state.renameText = 'B编辑草稿'
+    gate.resolve()
+    await pending
+    assert.equal(view.state.conversations[0].title, 'A新标题')
+    assert.equal(view.state.renamingConvId, 'B')
+    assert.equal(view.state.renameText, 'B编辑草稿')
+  } finally {
+    gate.resolve()
+    await pending
+    view.close()
+  }
+})
+
+test('重命名回车和失焦重复触发只发送一次，空白及未修改标题不发送', async () => {
+  let calls = 0
+  const gate = deferred()
+  const view = await mount({
+    updateConvTitle: async (id, title) => {
+      calls++
+      await gate.promise
+      return { conversation_id: id, title, saved: true }
+    },
+  })
+  const pending = []
+  try {
+    view.state.conversations = [{ id: 'A', title: '原标题' }]
+    await view.state.startRename('A')
+    view.state.renameText = '新标题'
+    for (let attempt = 0; attempt < 10; attempt++) pending.push(view.state.finishRename('A'))
+    assert.equal(calls, 1)
+    gate.resolve()
+    await Promise.all(pending)
+    await view.state.startRename('A')
+    await view.state.finishRename('A')
+    await view.state.startRename('A')
+    view.state.renameText = '   '
+    await view.state.finishRename('A')
+    assert.equal(calls, 1)
+  } finally {
+    gate.resolve()
+    await Promise.all(pending)
+    view.close()
+  }
+})
+
+test('中文输入法确认和旧输入框事件不会误保存后来新开的重命名草稿', async () => {
+  const calls = []
+  const view = await mount({
+    updateConvTitle: async (id, title) => {
+      calls.push(title)
+      return { conversation_id: id, title, saved: true }
+    },
+  })
+  try {
+    view.state.conversations = [{ id: 'A', title: '原标题' }]
+    await view.state.startRename('A')
+    const oldKey = view.state.renameSession.key
+    view.state.renameText = '正在选中文字'
+    await view.state.finishRename('A', { isComposing: true })
+    view.state.cancelRename({ isComposing: true })
+    assert.equal(view.state.renamingConvId, 'A')
+    assert.equal(calls.length, 0)
+    view.state.cancelRename()
+    await view.state.startRename('A')
+    view.state.renameText = '新草稿'
+    const oldEvent = { currentTarget: { dataset: { renameKey: String(oldKey) } } }
+    await view.state.finishRename('A', oldEvent)
+    view.state.cancelRename(oldEvent)
+    assert.equal(calls.length, 0)
+    assert.equal(view.state.renameText, '新草稿')
+    await view.state.finishRename('A')
+    assert.deepEqual(calls, ['新草稿'])
+  } finally {
+    view.close()
+  }
+})
+
+test('重命名回执丢失但服务端已保存时，读取核实后关闭编辑器而不重复写入', async () => {
+  let writes = 0
+  const view = await mount({
+    updateConvTitle: async () => {
+      writes++
+      throw new Error('回执丢失')
+    },
+    getConversation: async (id) => ({ id, title: '已保存新标题', messages: [] }),
+  })
+  try {
+    view.state.conversations = [{ id: 'A', title: '原标题' }]
+    await view.state.startRename('A')
+    view.state.renameText = '已保存新标题'
+    await view.state.finishRename('A')
+    assert.equal(writes, 1)
+    assert.equal(view.state.conversations[0].title, '已保存新标题')
+    assert.equal(view.state.renamingConvId, null)
+    assert.equal(view.notices.length, 0)
+  } finally {
+    view.close()
+  }
+})
+
+test('重命名冲突沿用确认框，取消保留草稿，确认时使用最新原标题', async () => {
+  const versions = []
+  const view = await mount({
+    updateConvTitle: async (id, title, _signal, expected) => {
+      versions.push(expected)
+      if (versions.length === 1) throw new Error('标题变更')
+      return { conversation_id: id, title, saved: true }
+    },
+    getConversation: async (id) => ({ id, title: '其他位置新标题', messages: [] }),
+  })
+  try {
+    view.state.conversations = [{ id: 'A', title: '原标题' }]
+    await view.state.startRename('A')
+    view.state.renameText = '自己的标题'
+    await view.state.finishRename('A')
+    const cancelled = view.state.finishRename('A')
+    assert.equal(view.state.confirmState.visible, true)
+    view.state.resolveConfirm(false)
+    await cancelled
+    assert.equal(view.state.renameText, '自己的标题')
+    assert.equal(versions.length, 1)
+    const approved = view.state.finishRename('A')
+    view.state.resolveConfirm(true)
+    await approved
+    assert.deepEqual(versions, ['原标题', '其他位置新标题'])
+    assert.equal(view.state.conversations[0].title, '自己的标题')
+  } finally {
+    view.close()
+  }
+})
+
+test('自动命名只允许替换默认标题，不覆盖已自定义的会话标题', async () => {
+  const expected = []
+  const view = await mount({
+    updateConvTitle: async (_id, _title, _signal, original) => expected.push(original),
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.input = '第一条问题'
+    await view.state.sendText()
+    assert.deepEqual(expected, ['新对话'])
+  } finally {
+    view.close()
+  }
+})
+
 test('列表刷新只采用最近一次请求的结果，不让迟到旧列表覆盖标题及顺序', async () => {
   const old = deferred()
   let calls = 0
@@ -2731,9 +2916,10 @@ for (const change of ['create', 'rename']) {
     const entered = deferred()
     const titleGate = deferred()
     const view = await mount({
-      updateConvTitle: async () => {
+      updateConvTitle: async (id, title) => {
         entered.resolve()
         await titleGate.promise
+        return { conversation_id: id, title, saved: true }
       },
     })
     let calls = 0
