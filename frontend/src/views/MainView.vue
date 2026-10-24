@@ -828,10 +828,6 @@ async function loadConversation(id) {
         }
         return msg
       })
-    // 跳过以问候语作为首条消息的旧数据（向后兼容）
-    if (msgs.length && msgs[0].content && msgs[0].content.includes('AI 法律助手')) {
-      msgs.shift()
-    }
     messages.value = msgs
     restoreMessageEdit()
     showPreview.value = false

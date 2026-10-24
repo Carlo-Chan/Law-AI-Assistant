@@ -2820,6 +2820,146 @@ test('缓存恢复等待 DOM 期间切换目标，不抢回页面或滚动新的
   }
 })
 
+const legacyGreeting =
+  '您好！我是 AI 法律助手。您可以向我咨询法律问题，或上传合同文件进行风险审查。'
+
+for (const [description, first] of [
+  ['用户提到产品名', savedBubble(1, 'user', 'AI 法律助手能帮我审查租赁合同吗？')],
+  ['用户引用旧欢迎语', savedBubble(1, 'user', legacyGreeting)],
+  [
+    '助手正常回复提到产品名',
+    savedBubble(1, 'assistant', 'AI 法律助手仅提供参考，请核对合同原文。'),
+  ],
+  [
+    '助手回复以旧欢迎语开头但有正文',
+    savedBubble(1, 'assistant', legacyGreeting + '\n\n以下是分析。'),
+  ],
+  [
+    '内容相同但带合同报告',
+    {
+      ...savedBubble(1, 'assistant', legacyGreeting),
+      contract_data: JSON.stringify({
+        raw_text: '合同原文',
+        chat_reply: legacyGreeting,
+        risk_points: [],
+      }),
+    },
+  ],
+  ['内容相同但带附件', { ...savedBubble(1, 'assistant', legacyGreeting), file_name: '合同.txt' }],
+  [
+    '内容相同但带工具过程',
+    {
+      ...savedBubble(1, 'assistant', legacyGreeting),
+      thinking_chain: JSON.stringify([{ type: 'tool', label: '检索记录' }]),
+    },
+  ],
+]) {
+  test(`历史读取保留真实首条消息：${description}`, async () => {
+    const stored = [first, savedBubble(2, 'assistant', '后续回复')]
+    const snapshot = structuredClone(stored)
+    const view = await mount({ getConversation: async (id) => ({ id, messages: stored }) })
+    try {
+      await view.state.loadConversation('A')
+      assert.equal(view.state.messages.length, 2)
+      assert.equal(view.state.messages[0].id, first.id)
+      assert.equal(view.state.messages[0].revision, first.revision)
+      assert.equal(view.state.messages[0].role, first.role)
+      assert.equal(view.state.messages[0].content, first.content)
+      if (first.contract_data)
+        assert.equal(view.state.messages[0].contractData.raw_text, '合同原文')
+      if (first.file_name) assert.equal(view.state.messages[0].file.name, first.file_name)
+      if (first.thinking_chain)
+        assert.equal(view.state.messages[0].thinkingChain[0].label, '检索记录')
+      assert.deepEqual(stored, snapshot)
+      assert.equal(view.writes.length, 0)
+    } finally {
+      view.close()
+    }
+  })
+}
+
+for (const emptySteps of [false, true]) {
+  test(`历史读取不再特殊过滤旧欢迎语，空过程字段为${emptySteps}`, async () => {
+    const greeting = {
+      ...savedBubble(1, 'assistant', legacyGreeting),
+      ...(emptySteps ? { thinking_chain: '[]' } : {}),
+    }
+    const stored = [greeting, savedBubble(2, 'user', '真实问题'), savedBubble(3)]
+    const snapshot = structuredClone(stored)
+    const view = await mount({ getConversation: async (id) => ({ id, messages: stored }) })
+    try {
+      await view.state.loadConversation('A')
+      assert.deepEqual(
+        view.state.messages.map((message) => message.id),
+        [1, 2, 3],
+      )
+      assert.equal(view.state.messages[0].content, legacyGreeting)
+      assert.deepEqual(stored, snapshot)
+      assert.equal(view.writes.length, 0)
+    } finally {
+      view.close()
+    }
+  })
+}
+
+test('历史中非首条的欢迎语保留，不能按全文关键字清理问答', async () => {
+  const view = await mount({
+    getConversation: async (id) => ({
+      id,
+      messages: [
+        savedBubble(1, 'user', '请输出欢迎语'),
+        savedBubble(2, 'assistant', legacyGreeting),
+      ],
+    }),
+  })
+  try {
+    await view.state.loadConversation('A')
+    assert.deepEqual(
+      view.state.messages.map((message) => message.id),
+      [1, 2],
+    )
+  } finally {
+    view.close()
+  }
+})
+
+for (const onlyGreeting of [false, true]) {
+  test(`历史为空或仅有一条消息时按实际内容恢复：${onlyGreeting}`, async () => {
+    const view = await mount({
+      getConversation: async (id) => ({
+        id,
+        messages: onlyGreeting ? [savedBubble(1, 'assistant', legacyGreeting)] : [],
+      }),
+    })
+    try {
+      await view.state.loadConversation('A')
+      assert.equal(view.state.messages.length, onlyGreeting ? 1 : 0)
+      if (onlyGreeting) assert.equal(view.state.messages[0].content, legacyGreeting)
+      assert.equal(view.state.historyLoading, false)
+      assert.equal(view.state.showScrollBtn, false)
+    } finally {
+      view.close()
+    }
+  })
+}
+
+test('提到产品名的首条问题恢复后，继续发送仍提供完整原始上下文', async () => {
+  const first = savedBubble(1, 'user', '请问 AI 法律助手如何审查合同？')
+  const second = savedBubble(2, 'assistant', '请提供合同原文。')
+  const view = await mount({ getConversation: async (id) => ({ id, messages: [first, second] }) })
+  try {
+    await view.state.loadConversation('A')
+    view.state.input = '继续说明'
+    await view.state.sendText()
+    assert.deepEqual(
+      view.streams[0].history,
+      [first, second].map(({ role, content }) => ({ role, content })),
+    )
+  } finally {
+    view.close()
+  }
+})
+
 test('列表刷新只采用最近一次请求的结果，不让迟到旧列表覆盖标题及顺序', async () => {
   const old = deferred()
   let calls = 0
