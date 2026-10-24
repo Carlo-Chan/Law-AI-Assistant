@@ -670,6 +670,113 @@ function seedChatRegeneration(state) {
   ]
 }
 
+for (const regeneration of [false, true]) {
+  test(`${regeneration ? '咨询重生成' : '首次生成'}卸载后清空逐字队列，迟到正文不重开动画但仍可完成保存`, async (context) => {
+    const gate = deferred()
+    const entered = deferred()
+    let callbacks
+    let signal
+    const text = '已收到的较长正文'.repeat(60)
+    const stream = async (...args) => {
+      callbacks = args.at(-1)
+      signal = args.at(-2)
+      callbacks.onToken(text)
+      entered.resolve()
+      await gate.promise
+      await callbacks.onDone(regeneration ? chatRegenerationDone(text + '后续片段') : {})
+    }
+    const view = await mount({
+      chatStream: stream,
+      regenerateChatStream: stream,
+    })
+    context.mock.timers.enable({ apis: ['setInterval'] })
+    const intervals = context.mock.method(globalThis, 'setInterval')
+    const cleared = context.mock.method(globalThis, 'clearInterval')
+    let closed = false
+    let pending
+    try {
+      if (regeneration) {
+        seedChatRegeneration(view.state)
+        pending = view.state.regenerateMessage(1)
+      } else {
+        view.state.currentConvId = 'A'
+        view.state.input = '问题'
+        pending = view.state.sendText()
+      }
+      await entered.promise
+      const assistant = view.state.messages[1]
+      const animated = regeneration ? assistant.regenerationDraft : assistant
+      assert.equal(animated.fullContent, text)
+      assert.notEqual(animated.content, text)
+      assert.equal(intervals.mock.callCount(), 1)
+      view.close()
+      closed = true
+      assert.equal(animated.content, text)
+      assert.equal(cleared.mock.callCount(), 1)
+      if (regeneration) assert.equal(assistant.content, '原回复')
+      callbacks.onToken('后续片段')
+      assert.equal(animated.content, text + '后续片段')
+      assert.equal(intervals.mock.callCount(), 1)
+      context.mock.timers.tick(1000)
+      assert.equal(animated.content, text + '后续片段')
+      assert.equal(signal.aborted, false)
+      gate.resolve()
+      await pending
+      assert.equal(assistant.content, text + '后续片段')
+      assert.equal(view.writes.length, regeneration ? 0 : 1)
+      if (!regeneration) assert.equal(view.writes[0][2], text + '后续片段')
+      assert.equal(view.state.loadingConvIds.size, 0)
+      assert.deepEqual(view.state.abortControllers, {})
+      assert.equal(view.notices.length, 0)
+    } finally {
+      gate.resolve()
+      await pending
+      if (!closed) view.close()
+    }
+  })
+}
+
+test('切换会话后下一帧补齐后台剩余逐字内容并停掉所属动画，不误停生成', async (context) => {
+  const gate = deferred()
+  const entered = deferred()
+  let signal
+  const text = '后台完整正文'.repeat(80)
+  const view = await mount({
+    chatStream: async (_query, _history, ownedSignal, callbacks) => {
+      signal = ownedSignal
+      callbacks.onToken(text)
+      entered.resolve()
+      await gate.promise
+      await callbacks.onDone({})
+    },
+  })
+  context.mock.timers.enable({ apis: ['setInterval'] })
+  const cleared = context.mock.method(globalThis, 'clearInterval')
+  let pending
+  try {
+    view.state.currentConvId = 'A'
+    view.state.input = '问题'
+    pending = view.state.sendText()
+    await entered.promise
+    const assistant = view.state.messages[1]
+    await view.state.loadConversation('B')
+    context.mock.timers.tick(30)
+    assert.equal(assistant.content, text)
+    assert.equal(cleared.mock.callCount(), 1)
+    assert.equal(signal.aborted, false)
+    assert.equal(view.state.messages[1].content, 'B原回复')
+    gate.resolve()
+    await pending
+    assert.equal(view.writes.length, 1)
+    assert.equal(view.writes[0][0], 'A')
+    assert.equal(view.writes[0][2], text)
+  } finally {
+    gate.resolve()
+    await pending
+    view.close()
+  }
+})
+
 test('普通重生成只替换目标，流式预览不先删问答且保留草稿和待发附件', async () => {
   const gate = deferred()
   const entered = deferred()

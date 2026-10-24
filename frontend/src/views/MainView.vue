@@ -446,7 +446,7 @@ import { renderHighlightedContract } from '../utils/highlight'
 import { getHighlightRect, isSameHighlight, setHighlightPinned } from '../utils/highlightSelection'
 import { getContractUploadError } from '../utils/upload'
 import { normalizeContractInstruction } from '../utils/contractInstruction'
-import { appendToTypewriter, flushTypewriter } from '../composables/useTypewriter'
+import { createTypewriterScope } from '../composables/useTypewriter'
 import { createConversationRequests, LOADING_DOTS } from '../composables/conversationRequests'
 import { createDraftRecovery } from '../composables/draftRecovery'
 import {
@@ -464,6 +464,7 @@ import {
 } from '../composables/contractRegeneration'
 
 // ---- 状态 ----
+const { appendToTypewriter, flushTypewriter, dispose: disposeTypewriters } = createTypewriterScope()
 const messages = ref([])
 const input = ref('')
 const draftInputs = {} // 按对话ID记忆输入框草稿
@@ -1876,6 +1877,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  disposeTypewriters()
   // 取消尚未执行的确认操作；已发出的网络请求不等于能够撤回，不能伪称回滚。
   confirmationDisposed = true
   resolveConfirm(false)
