@@ -499,7 +499,10 @@ const editingText = computed({
 const dropdownOpenIndex = ref(-1)
 const confirmState = reactive({ visible: false, message: '', okText: '确定', cancelText: '取消' })
 let confirmResolve = null
+let confirmationDisposed = false
 function showConfirm(message, { okText, cancelText } = {}) {
+  // 同时只接收一个确认请求，不能覆盖旧等待者；卸载后不再打开弹窗。
+  if (confirmationDisposed || confirmResolve) return Promise.resolve(false)
   return new Promise((resolve) => {
     confirmState.message = message
     confirmState.okText = okText || '确定'
@@ -509,11 +512,10 @@ function showConfirm(message, { okText, cancelText } = {}) {
   })
 }
 function resolveConfirm(result) {
+  const resolve = confirmResolve
+  confirmResolve = null
   confirmState.visible = false
-  if (confirmResolve) {
-    confirmResolve(result)
-    confirmResolve = null
-  }
+  resolve?.(result === true)
 }
 const sidebarMenuConvId = ref(null)
 const renamingConvId = ref(null)
@@ -864,7 +866,7 @@ function forgetConversation(id) {
 async function handleDeleteConv(id) {
   if (deletedConvIds.has(id) || deletingConvIds.value.has(id) || confirmState.visible) return
   const ok = await showConfirm('删除后不可恢复', { okText: '删除', cancelText: '取消' })
-  if (!ok || deletedConvIds.has(id) || deletingConvIds.value.has(id)) return
+  if (!ok || confirmationDisposed || deletedConvIds.has(id) || deletingConvIds.value.has(id)) return
   deletingConvIds.value.add(id)
   let release
   const outcome = new Promise((resolve) => {
@@ -984,7 +986,7 @@ async function deleteMessage(idx) {
       ? '删除这条消息会停止本轮重新生成，其他消息将保留。删除后不可恢复。'
       : '删除后不可恢复'
   const ok = await showConfirm(prompt, { okText: '删除', cancelText: '取消' })
-  if (!ok) return
+  if (!ok || confirmationDisposed) return
   pendingMessageDeletions.value.add(operation)
   try {
     const request = operation.request
@@ -1291,7 +1293,7 @@ async function saveEdit() {
           '\n\n是否用你的编辑覆盖这条消息？其他消息和附件不受影响。',
         { okText: '覆盖保存', cancelText: '返回编辑' },
       )
-      if (!ok || cancelled()) return
+      if (!ok || confirmationDisposed || cancelled()) return
     }
     if (session.request && !hasMessageIdentity(session.target)) {
       showContractWarning('本轮消息尚未保存，修改将在本轮完成后保存，生成不会中断。')
@@ -1874,6 +1876,9 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  // 取消尚未执行的确认操作；已发出的网络请求不等于能够撤回，不能伪称回滚。
+  confirmationDisposed = true
+  resolveConfirm(false)
   stopDividerDrag?.()
   window.removeEventListener('resize', checkNarrow)
   clearContractSelection()

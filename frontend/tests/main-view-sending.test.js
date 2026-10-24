@@ -456,6 +456,190 @@ function savedPairReceipt() {
   return { messages: [savedBubble(101, 'user'), savedBubble(102)] }
 }
 
+function startConfirmedOperation(view, kind) {
+  view.state.currentConvId = 'A'
+  view.state.messages = [savedBubble(1, 'user', '原问题'), savedBubble(2)]
+  if (kind === 'conversation') return view.state.handleDeleteConv('A')
+  if (kind === 'message') return view.state.deleteMessage(0)
+  view.state.editMessage(0)
+  view.state.editingText = '待确认的修改'
+  view.state.editSession.conflict = true
+  return view.state.saveEdit()
+}
+
+async function mountConfirmation() {
+  const mutations = []
+  const view = await mount({
+    deleteConversation: async (id) => mutations.push(['conversation', id]),
+    deleteSavedMessage: async (_cid, id) => {
+      mutations.push(['message', id])
+      return { message_id: id, conversation_deleted: false }
+    },
+    editSavedMessage: async (_cid, id, _rev, content) => {
+      mutations.push(['edit', id])
+      return editAck(id, content)
+    },
+  })
+  return { ...view, mutations }
+}
+
+for (const kind of ['conversation', 'message', 'edit']) {
+  for (const accepted of [false, true]) {
+    test(`${kind} 确认${accepted ? '点击后立即' : '等待期间'}卸载，不遗留等待或迟到写入`, async () => {
+      const view = await mountConfirmation()
+      let closed = false
+      let settled = false
+      const pending = startConfirmedOperation(view, kind).then(() => {
+        settled = true
+      })
+      try {
+        assert.equal(view.state.confirmState.visible, true)
+        if (accepted) view.state.resolveConfirm(true)
+        view.close()
+        closed = true
+        await new Promise(setImmediate)
+        assert.equal(settled, true)
+        assert.equal(view.state.confirmState.visible, false)
+        assert.deepEqual(view.mutations, [])
+        assert.equal(view.state.pendingMessageEdits.size, 0)
+        assert.equal(view.state.pendingMessageDeletions.size, 0)
+        assert.equal(view.state.messages[0].content, '原问题')
+        if (kind === 'edit') {
+          assert.equal(view.state.editingText, '待确认的修改')
+          assert.equal(view.state.editSession.saving, false)
+        }
+      } finally {
+        view.state.resolveConfirm(false)
+        await pending
+        if (!closed) view.close()
+      }
+    })
+  }
+
+  test(`已有确认框时 ${kind} 操作不替换原提示、不提交修改或占住操作锁`, async () => {
+    const view = await mountConfirmation()
+    const first = view.state.showConfirm('保留原确认提示')
+    try {
+      await startConfirmedOperation(view, kind)
+      assert.equal(view.state.confirmState.visible, true)
+      assert.equal(view.state.confirmState.message, '保留原确认提示')
+      assert.deepEqual(view.mutations, [])
+      assert.equal(view.state.pendingMessageEdits.size, 0)
+      assert.equal(view.state.pendingMessageDeletions.size, 0)
+    } finally {
+      view.state.resolveConfirm(false)
+      await first
+      view.close()
+    }
+  })
+
+  test(`${kind} 已确认并发出请求后卸载，不自动重试或假定撤回服务端操作`, async () => {
+    const view = await mountConfirmation()
+    const entered = deferred()
+    const gate = deferred()
+    const apiName = {
+      conversation: 'deleteConversation',
+      message: 'deleteSavedMessage',
+      edit: 'editSavedMessage',
+    }[kind]
+    const original = globalThis.__sendingTestApi[apiName]
+    let calls = 0
+    globalThis.__sendingTestApi[apiName] = async (...args) => {
+      calls++
+      entered.resolve()
+      await gate.promise
+      return original(...args)
+    }
+    let closed = false
+    const pending = startConfirmedOperation(view, kind)
+    try {
+      view.state.resolveConfirm(true)
+      await entered.promise
+      view.close()
+      closed = true
+      gate.resolve()
+      await pending
+      assert.equal(calls, 1)
+      assert.equal(view.mutations.length, 1)
+      assert.equal(view.state.confirmState.visible, false)
+      assert.equal(view.notices.length, 0)
+    } finally {
+      gate.resolve()
+      view.state.resolveConfirm(false)
+      await pending
+      if (!closed) view.close()
+    }
+  })
+}
+
+test('重复请求确认只保留当前弹窗，新请求取消而不覆盖原等待者', async () => {
+  const view = await mountConfirmation()
+  const results = []
+  const first = view.state
+    .showConfirm('原提示', { okText: '删除', cancelText: '取消' })
+    .then((result) => results.push(['first', result]))
+  const firstResolve = view.state.confirmResolve
+  const second = view.state
+    .showConfirm('不应显示的新提示')
+    .then((result) => results.push(['second', result]))
+  try {
+    await new Promise(setImmediate)
+    assert.deepEqual(results, [['second', false]])
+    assert.equal(view.state.confirmState.message, '原提示')
+    assert.equal(view.state.confirmState.okText, '删除')
+    view.state.resolveConfirm(true)
+    await first
+    assert.deepEqual(results, [
+      ['second', false],
+      ['first', true],
+    ])
+  } finally {
+    firstResolve(false)
+    view.state.resolveConfirm(false)
+    await Promise.all([first, second])
+    view.close()
+  }
+})
+
+test('确认框卸载后拒绝新请求和迟到确认，不重新显示弹窗或产生写入', async () => {
+  const view = await mountConfirmation()
+  view.close()
+  let result
+  const pending = view.state.showConfirm('卸载后不能再弹出').then((value) => {
+    result = value
+  })
+  try {
+    await new Promise(setImmediate)
+    assert.equal(result, false)
+    assert.equal(view.state.confirmState.visible, false)
+    view.state.resolveConfirm(true)
+    await startConfirmedOperation(view, 'conversation')
+    assert.deepEqual(view.mutations, [])
+  } finally {
+    view.state.resolveConfirm(false)
+    await pending
+  }
+})
+
+test('正常确认只结算一次，后续独立确认仍可取消且不停止生成控制器', async () => {
+  const view = await mountConfirmation()
+  const controller = new AbortController()
+  view.state.abortControllers.A = controller
+  try {
+    const first = view.state.showConfirm('第一次')
+    view.state.resolveConfirm(true)
+    view.state.resolveConfirm(false)
+    assert.equal(await first, true)
+    const second = view.state.showConfirm('第二次')
+    view.state.resolveConfirm(false)
+    assert.equal(await second, false)
+    assert.equal(view.state.confirmState.visible, false)
+    assert.equal(controller.signal.aborted, false)
+  } finally {
+    view.close()
+  }
+})
+
 const editAck = (id, content) => ({
   message_id: id,
   content,
