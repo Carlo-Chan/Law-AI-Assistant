@@ -1,4 +1,6 @@
 import { createRegenerationProgress } from './regenerationProgress.js'
+import { hasMessageIdentity, resolveSavedMessage } from './messageIdentity.js'
+import { contractSource, contractInstruction } from '../utils/contractMetadata.js'
 
 /** 合同重跑只在收到保存确认后更新目标对象，不操作当前页面的草稿或消息数组。 */
 export class ContractRegenerationError extends Error {
@@ -6,57 +8,6 @@ export class ContractRegenerationError extends Error {
     super(message)
     this.name = 'ContractRegenerationError'
   }
-}
-
-function contractData(message) {
-  let data = message.contractData ?? message.contract_data
-  if (typeof data === 'string') {
-    try {
-      data = JSON.parse(data)
-    } catch {
-      data = null
-    }
-  }
-  return data
-}
-
-export function contractSource(message) {
-  const source = contractData(message)?.raw_text ?? message.contractRawText
-  return typeof source === 'string' ? source : ''
-}
-
-export function contractInstruction(message) {
-  const instruction = contractData(message)?.instruction
-  return typeof instruction === 'string' ? instruction : ''
-}
-
-function hasIdentity(message) {
-  return Number.isInteger(message.id) && message.id > 0 && /^[0-9a-f]{64}$/.test(message.revision)
-}
-
-/** 新生成的消息尚无 ID 时，只允许按完整一致的消息顺序对齐，不能猜测相同报告。 */
-function resolveTarget(snapshot, index, savedMessages) {
-  if (
-    !Array.isArray(savedMessages) ||
-    savedMessages.length !== snapshot.length ||
-    !snapshot.every(
-      (message, position) =>
-        message.role === savedMessages[position].role &&
-        message.content === savedMessages[position].content,
-    )
-  ) {
-    throw new ContractRegenerationError('报告尚未保存或记录已变更，请稍后刷新会话后重试。')
-  }
-  const target = savedMessages[index]
-  if (
-    !target ||
-    !hasIdentity(target) ||
-    contractSource(target) !== snapshot[index].source ||
-    contractInstruction(target) !== snapshot[index].instruction
-  ) {
-    throw new ContractRegenerationError('无法确认目标合同报告，请刷新会话后重试。')
-  }
-  return target
 }
 
 export async function regenerateContractReport({
@@ -73,31 +24,30 @@ export async function regenerateContractReport({
   if (!source.trim()) {
     throw new ContractRegenerationError('此记录未保存合同原文，请重新上传原文件；原报告已保留。')
   }
-  const snapshot = messages.map((message) => ({
-    role: message.role,
-    content: message.content,
-    source: contractSource(message),
-    instruction: contractInstruction(message),
-  }))
   const index = messages.indexOf(target)
   const content = target.content
+  const originalIdentity = { id: target.id, revision: target.revision }
   if (index < 0 || target.role !== 'assistant') {
     throw new ContractRegenerationError('目标报告已移除，请刷新会话后重试。')
   }
-  let identity = { id: target.id, revision: target.revision }
+  let identity = originalIdentity
   if (signal?.aborted) return { status: 'aborted' }
-  if (!hasIdentity(identity)) {
-    let saved
+  if (!hasMessageIdentity(identity)) {
     try {
-      saved = await getConversation(convId, signal)
+      // 与编辑、删除及普通重跑共用核实边界，不能为合同另按相同正文猜测身份。
+      identity = await resolveSavedMessage(convId, target, messages, (id) =>
+        getConversation(id, signal),
+      )
     } catch {
       if (signal?.aborted) return { status: 'aborted' }
-      throw new ContractRegenerationError('暂时无法读取已保存的报告，请稍后重试。')
+      throw new ContractRegenerationError('无法确认目标合同报告，请刷新会话后重试。')
     }
-    identity = resolveTarget(snapshot, index, saved.messages)
   }
   if (signal?.aborted) return { status: 'aborted' }
   const unchanged = () =>
+    messages.includes(target) &&
+    target.id === originalIdentity.id &&
+    target.revision === originalIdentity.revision &&
     target.content === content &&
     contractSource(target) === source &&
     contractInstruction(target) === instruction
@@ -113,7 +63,7 @@ export async function regenerateContractReport({
   if (
     terminal?.saved !== true ||
     terminal.message_id !== identity.id ||
-    !hasIdentity({
+    !hasMessageIdentity({
       id: terminal.message_id,
       revision: terminal.revision,
     }) ||

@@ -4030,6 +4030,109 @@ async function mountUnconfirmedRegeneration(contract, regenerate) {
   return { ...view, savedMessages, reads, writeCount: () => writes }
 }
 
+for (const role of ['user', 'assistant']) {
+  test(`合同保存回执丢失后可核实并定点删除${role}，不被回复的附件镜像误拦截`, async () => {
+    const view = await mountUnconfirmedRegeneration(true, () => assert.fail('删除不能重跑'))
+    const deletions = []
+    globalThis.__sendingTestApi.deleteSavedMessage = async (...args) => {
+      deletions.push(args)
+      return { message_id: args[1], conversation_deleted: false }
+    }
+    try {
+      const index = role === 'user' ? 0 : 1
+      const retained = view.state.messages[1 - index]
+      const deletion = view.state.deleteMessage(index)
+      view.state.resolveConfirm(true)
+      await deletion
+      assert.equal(deletions.length, 1)
+      assert.deepEqual(deletions[0].slice(0, 3), ['A', index + 1, messageRevision])
+      assert.equal(view.state.messages.length, 1)
+      assert.equal(view.state.messages[0], retained)
+      assert.equal(view.writeCount(), 1)
+      assert.equal(view.notices.length, 1)
+    } finally {
+      view.close()
+    }
+  })
+}
+
+test('合同保存回执丢失后可核实并编辑用户正文，保留原附件与报告', async () => {
+  const view = await mountUnconfirmedRegeneration(true, () => assert.fail('编辑不能重跑'))
+  const edits = []
+  globalThis.__sendingTestApi.editSavedMessage = async (...args) => {
+    edits.push(args)
+    return editAck(args[1], args[3])
+  }
+  try {
+    const assistant = view.state.messages[1]
+    const contractData = assistant.contractData
+    const file = view.state.messages[0].file
+    view.state.editMessage(0)
+    view.state.editingText = '只修正问题正文'
+    await view.state.saveEdit()
+    assert.deepEqual(edits, [['A', 1, messageRevision, '只修正问题正文']])
+    assert.equal(view.state.messages[0].content, '只修正问题正文')
+    assert.equal(view.state.messages[0].file, file)
+    assert.equal(view.state.messages[1], assistant)
+    assert.equal(assistant.contractData, contractData)
+    assert.equal(assistant.saveFailed, true)
+    assert.equal(view.state.editingIndex, -1)
+    assert.equal(view.writeCount(), 1)
+    assert.equal(view.notices.length, 1)
+  } finally {
+    view.close()
+  }
+})
+
+for (const operation of ['delete', 'edit', 'regenerate']) {
+  test(`身份回查返回另一会话时不执行${operation}，保留所属消息与未确认缓存`, async () => {
+    const mutations = []
+    const view = await mountUnconfirmedRegeneration(false, () => assert.fail('不应启动重跑'))
+    globalThis.__sendingTestApi.getConversation = async () => ({
+      id: 'B',
+      messages: JSON.parse(JSON.stringify(view.savedMessages)),
+    })
+    globalThis.__sendingTestApi.deleteSavedMessage = async (...args) => {
+      mutations.push(args)
+      return { message_id: args[1], conversation_deleted: false }
+    }
+    globalThis.__sendingTestApi.editSavedMessage = async (...args) => {
+      mutations.push(args)
+      return editAck(args[1], args[3])
+    }
+    globalThis.__sendingTestApi.regenerateChatStream = async (...args) => {
+      mutations.push(args.slice(0, 3))
+      args.at(-1).onError('不应启动重新生成。')
+    }
+    try {
+      const owned = view.state.messages
+      const originalContent = owned.map((message) => message.content)
+      if (operation === 'delete') {
+        const deleting = view.state.deleteMessage(0)
+        view.state.resolveConfirm(true)
+        await deleting
+      } else if (operation === 'edit') {
+        view.state.editMessage(0)
+        view.state.editingText = '不能提交的修改'
+        await view.state.saveEdit()
+        assert.equal(view.state.editingText, '不能提交的修改')
+      } else await view.state.regenerateMessage(1)
+      assert.deepEqual(mutations, [])
+      assert.equal(view.state.messages, owned)
+      assert.deepEqual(
+        owned.map((message) => message.content),
+        originalContent,
+      )
+      assert.equal(owned[1].saveFailed, true)
+      assert.equal(view.state.streamMessageCache.A.messages, owned)
+      assert.equal(view.state.loading, false)
+      assert.equal(view.writeCount(), 1)
+    } finally {
+      view.close()
+    }
+  })
+}
+
 for (const contract of [false, true]) {
   const mode = contract ? '合同' : '咨询'
   test(`${mode}重跑确认保存后解除目标未确认标记，切回历史不再显示过期警告`, async () => {

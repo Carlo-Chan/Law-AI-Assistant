@@ -69,11 +69,13 @@ test('当前内存报告无 ID 时依据完整保存顺序取得目标身份', a
   delete state.target.id
   delete state.target.revision
   const getConversation = mock.fn(async () => ({
+    id: 'conversation-A',
     messages: state.messages.map((message, index) => ({
       role: message.role,
       content: message.content,
       id: index === 1 ? 12 : index + 20,
       revision,
+      file_name: message.file?.name || null,
       contract_data: message.contractData ? JSON.stringify(message.contractData) : null,
     })),
   }))
@@ -95,6 +97,7 @@ test('保存历史与本地顺序不一致时不猜测相同报告的归属', as
     regenerateContractReport({
       ...options(state, stream),
       getConversation: async () => ({
+        id: 'conversation-A',
         messages: [
           {
             role: 'assistant',
@@ -106,7 +109,7 @@ test('保存历史与本地顺序不一致时不猜测相同报告的归属', as
         ],
       }),
     }),
-    /尚未保存或记录已变更/,
+    /无法确认目标合同/,
   )
   assert.equal(stream.mock.callCount(), 0)
   assert.deepEqual(state.target, original)
@@ -330,6 +333,7 @@ test('原文不一致的保存记录不能作为同一份合同重跑', async ()
     regenerateContractReport({
       ...options(state, stream),
       getConversation: async () => ({
+        id: 'conversation-A',
         messages: state.messages.map((message, index) => ({
           ...message,
           id: index + 10,
@@ -420,6 +424,7 @@ test('相同原文但不同指令的无 ID 记录不猜测对应关系', async (
     regenerateContractReport({
       ...options(state, stream),
       getConversation: async () => ({
+        id: 'conversation-A',
         messages: state.messages.map((message, index) => ({
           ...message,
           id: index + 10,
@@ -434,4 +439,65 @@ test('相同原文但不同指令的无 ID 记录不猜测对应关系', async (
     /无法确认目标合同/,
   )
   assert.equal(stream.mock.callCount(), 0)
+})
+
+for (const change of [
+  'wrong-conversation',
+  'known-id',
+  'filename',
+  'other-contract-source',
+  'local-target-removed',
+  'local-identity-changed',
+]) {
+  test(`合同身份回查遇到${change}不启动审查或改写原报告`, async () => {
+    const state = fixture()
+    delete state.target.id
+    state.messages[0].id = 11
+    state.messages[0].revision = revision
+    state.messages[3].contractData = { raw_text: '另一份已保存原文' }
+    const saved = {
+      id: 'conversation-A',
+      messages: state.messages.map((message, index) => ({
+        ...structuredClone(message),
+        id: index + 11,
+        revision,
+      })),
+    }
+    if (change === 'wrong-conversation') saved.id = 'conversation-B'
+    if (change === 'known-id') saved.messages[0].id = 50
+    if (change === 'filename') saved.messages[0].file.name = '另一合同.pdf'
+    if (change === 'other-contract-source') saved.messages[3].contractData.raw_text = '被替换的原文'
+    const before = structuredClone(state.target)
+    const stream = mock.fn(async (_cid, _id, _revision, _signal, callbacks) => {
+      callbacks.onDone(state.done)
+    })
+    await assert.rejects(
+      regenerateContractReport({
+        ...options(state, stream),
+        getConversation: async () => {
+          if (change === 'local-target-removed') state.messages.splice(1, 1)
+          if (change === 'local-identity-changed') state.messages[0].id = 60
+          return saved
+        },
+      }),
+      (error) => error instanceof ContractRegenerationError,
+    )
+    assert.equal(stream.mock.callCount(), 0)
+    assert.deepEqual(state.target, before)
+  })
+}
+
+test('合同重跑生成期间移除目标不恢复已脱离消息列表的报告', async () => {
+  const state = fixture()
+  const before = structuredClone(state.target)
+  await assert.rejects(
+    regenerateContractReport(
+      options(state, async (_cid, _id, _revision, _signal, callbacks) => {
+        state.messages.splice(1, 1)
+        callbacks.onDone(state.done)
+      }),
+    ),
+    /未覆盖页面内容/,
+  )
+  assert.deepEqual(state.target, before)
 })
