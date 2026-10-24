@@ -125,6 +125,174 @@ async function mountHighlights() {
   }
 }
 
+// 布局宽度和动画帧由替身控制，直接验证真实页面拖拽的事件归属及资源释放。
+async function mountDivider(context, { width = 1000, layout = true } = {}) {
+  const view = await mount()
+  const frames = new Map()
+  let nextFrame = 0
+  const previousBodyStyle = document.body.style.cssText
+  const descriptors = ['requestAnimationFrame', 'cancelAnimationFrame'].map((name) => [
+    name,
+    Object.getOwnPropertyDescriptor(globalThis, name),
+  ])
+  globalThis.requestAnimationFrame = (callback) => {
+    const id = nextFrame++
+    frames.set(id, callback)
+    return id
+  }
+  globalThis.cancelAnimationFrame = (id) => frames.delete(id)
+  const panel = document.createElement('div')
+  panel.className = 'app-layout'
+  Object.defineProperty(panel, 'offsetWidth', { value: width })
+  if (layout) document.body.append(panel)
+  view.state.showPreview = true
+  await nextTick()
+  document.body.style.setProperty('user-select', 'text', 'important')
+  document.body.style.setProperty('cursor', 'crosshair', 'important')
+  let closed = false
+  function unmount() {
+    if (closed) return
+    view.close()
+    closed = true
+  }
+  const mouse = (type, clientX = 100, button = 0) =>
+    new dom.window.MouseEvent(type, { clientX, button, cancelable: true })
+  context.after(() => {
+    // 旧实现的红灯验证也要清理残留监听，不能污染后续用例。
+    document.dispatchEvent(mouse('mouseup'))
+    unmount()
+    panel.remove()
+    document.body.style.cssText = previousBodyStyle
+    for (const [name, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor)
+      else delete globalThis[name]
+    }
+  })
+  return {
+    ...view,
+    frames,
+    mouse,
+    unmount,
+    start: (button = 0) => view.state.onDividerDragStart(mouse('mousedown', 100, button)),
+    move: (clientX) => document.dispatchEvent(mouse('mousemove', clientX)),
+    end: () => document.dispatchEvent(mouse('mouseup')),
+    flush() {
+      for (const [id, callback] of [...frames]) {
+        frames.delete(id)
+        callback()
+      }
+    },
+  }
+}
+
+function assertDividerReleased(view) {
+  assert.equal(view.state.dragging, false)
+  assert.equal(view.frames.size, 0)
+  assert.equal(document.body.style.userSelect, 'text')
+  assert.equal(document.body.style.cursor, 'crosshair')
+  assert.equal(document.body.style.getPropertyPriority('user-select'), 'important')
+  assert.equal(document.body.style.getPropertyPriority('cursor'), 'important')
+  const ratio = view.state.splitRatio
+  view.move(800)
+  assert.equal(view.frames.size, 0)
+  assert.equal(view.state.splitRatio, ratio)
+}
+
+for (const reason of ['unmount', 'close', 'blur', 'narrow']) {
+  test(`拖拽中${reason}会撤销待执行动画、全局事件并恢复原有光标样式`, async (context) => {
+    const view = await mountDivider(context)
+    const removed = context.mock.method(document, 'removeEventListener')
+    const removedWindow = context.mock.method(window, 'removeEventListener')
+    view.start()
+    view.move(300)
+    assert.equal(view.frames.size, 1)
+    if (reason === 'unmount') view.unmount()
+    if (reason === 'close') {
+      view.state.showPreview = false
+      await nextTick()
+    }
+    if (reason === 'blur') window.dispatchEvent(new dom.window.Event('blur'))
+    if (reason === 'narrow') {
+      const oldWidth = window.innerWidth
+      try {
+        window.innerWidth = 600
+        window.dispatchEvent(new dom.window.Event('resize'))
+      } finally {
+        window.innerWidth = oldWidth
+      }
+    }
+    assertDividerReleased(view)
+    for (const type of ['mousemove', 'mouseup'])
+      assert.equal(removed.mock.calls.filter((call) => call.arguments[0] === type).length, 1)
+    assert.equal(removedWindow.mock.calls.filter((call) => call.arguments[0] === 'blur').length, 1)
+  })
+}
+
+test('正常拖拽一帧内使用最后鼠标位置，鼠标释放后恢复原有样式', async (context) => {
+  const view = await mountDivider(context)
+  view.start()
+  view.move(200)
+  view.move(250)
+  assert.equal(view.frames.size, 1)
+  view.flush()
+  assert.ok(Math.abs(view.state.splitRatio - 0.7) < 1e-9)
+  view.move(900)
+  view.flush()
+  assert.equal(view.state.splitRatio, 0.75)
+  view.move(-900)
+  view.flush()
+  assert.equal(view.state.splitRatio, 0.25)
+  view.end()
+  assertDividerReleased(view)
+})
+
+test('重复开始拖拽先清理上一次任务，重复结束也不会覆盖恢复的样式', async (context) => {
+  const view = await mountDivider(context)
+  view.start()
+  view.move(200)
+  const previousCallback = [...view.frames.values()][0]
+  view.start()
+  assert.equal(view.frames.size, 0)
+  previousCallback()
+  assert.equal(view.state.splitRatio, 0.55)
+  view.move(300)
+  assert.equal(view.frames.size, 1)
+  view.end()
+  assertDividerReleased(view)
+  view.end()
+  view.unmount()
+  assertDividerReleased(view)
+})
+
+test('原本没有内联光标和选字样式时，拖拽结束不会额外留下样式', async (context) => {
+  const view = await mountDivider(context)
+  document.body.style.removeProperty('user-select')
+  document.body.style.removeProperty('cursor')
+  view.start()
+  view.move(300)
+  view.end()
+  assert.equal(view.state.dragging, false)
+  assert.equal(view.frames.size, 0)
+  assert.equal(document.body.style.userSelect, '')
+  assert.equal(document.body.style.cursor, '')
+  view.move(800)
+  assert.equal(view.frames.size, 0)
+})
+
+for (const options of [{ layout: false }, { width: 0 }, { width: Infinity }, { button: 2 }]) {
+  test(`无效拖拽不改变状态或注册事件：${JSON.stringify(options)}`, async (context) => {
+    const view = await mountDivider(context, options)
+    const added = context.mock.method(document, 'addEventListener')
+    view.start(options.button)
+    assertDividerReleased(view)
+    assert.equal(
+      added.mock.calls.filter((call) => ['mousemove', 'mouseup'].includes(call.arguments[0]))
+        .length,
+      0,
+    )
+  })
+}
+
 test('真实页面点击任一交叉片段钉住完整范围，再点另一个片段完整取消', async () => {
   const view = await mountHighlights()
   try {

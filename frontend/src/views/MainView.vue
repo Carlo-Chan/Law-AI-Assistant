@@ -622,11 +622,13 @@ const filteredConvs = computed(() => {
 })
 const splitRatio = ref(0.55)
 const dragging = ref(false)
+let stopDividerDrag = null
 const isNarrow = ref(false)
 function checkNarrow() {
   const wasNarrow = isNarrow.value
   // 预览区全屏临界宽度：700px
   isNarrow.value = window.innerWidth < 700
+  if (isNarrow.value) stopDividerDrag?.()
   // 侧边栏适配：最小需要侧边栏(260) + 聊天区(400) + 预览区(280)
   const needForSidebar = 260 + 400 + (showPreview.value && !isNarrow.value ? 280 : 0)
   sidebarFits.value = window.innerWidth >= needForSidebar
@@ -1763,40 +1765,60 @@ function onContractClick(e) {
 
 // ---- 分隔条拖拽 ----
 function onDividerDragStart(e) {
+  if (e.button !== 0) return
   e.preventDefault()
-  dragging.value = true
+  stopDividerDrag?.()
   const appLayout = document.querySelector('.app-layout')
-  if (!appLayout) return
+  const totalW = appLayout?.offsetWidth
+  if (!showPreview.value || isNarrow.value || !Number.isFinite(totalW) || totalW <= 0) return
+  dragging.value = true
   const startX = e.clientX
   const startRatio = splitRatio.value
-  const totalW = appLayout.offsetWidth
+  let latestX = startX
   let rafId = null
+  let active = true
+  const bodyStyle = document.body.style
+  const previousStyles = ['user-select', 'cursor'].map((name) => [
+    name,
+    bodyStyle.getPropertyValue(name),
+    bodyStyle.getPropertyPriority(name),
+  ])
 
-  // 拖拽分割条时禁用文本选择
-  document.body.style.userSelect = 'none'
-  document.body.style.cursor = 'col-resize'
+  // 仅在本次拖拽期间占用全局光标和选字样式，结束后还原原值及优先级。
+  bodyStyle.userSelect = 'none'
+  bodyStyle.cursor = 'col-resize'
 
   function onMove(ev) {
-    if (rafId) return
+    if (!active) return
+    latestX = ev.clientX
+    if (rafId !== null) return
     rafId = requestAnimationFrame(() => {
       rafId = null
-      const dx = ev.clientX - startX
+      if (!active) return
+      const dx = latestX - startX
       const newRatio = startRatio + dx / totalW
       splitRatio.value = Math.max(0.25, Math.min(0.75, newRatio))
     })
   }
 
   function onUp() {
-    if (rafId) cancelAnimationFrame(rafId)
+    if (!active) return
+    active = false
+    if (rafId !== null) cancelAnimationFrame(rafId)
+    rafId = null
     dragging.value = false
-    document.body.style.userSelect = ''
-    document.body.style.cursor = ''
+    for (const [name, value, priority] of previousStyles)
+      bodyStyle.setProperty(name, value, priority)
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
+    window.removeEventListener('blur', onUp)
+    if (stopDividerDrag === onUp) stopDividerDrag = null
   }
 
+  stopDividerDrag = onUp
   document.addEventListener('mousemove', onMove)
   document.addEventListener('mouseup', onUp)
+  window.addEventListener('blur', onUp)
 }
 
 // 合同预览区悬停事件：显示高亮气泡
@@ -1837,7 +1859,10 @@ onMounted(() => {
   window.addEventListener('resize', checkNarrow)
   watch(showPreview, (val) => {
     nextTick(checkNarrow)
-    if (!val) clearContractSelection()
+    if (!val) {
+      stopDividerDrag?.()
+      clearContractSelection()
+    }
   })
   watch(previewData, clearContractSelection)
   refreshConvList()
@@ -1849,6 +1874,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  stopDividerDrag?.()
   window.removeEventListener('resize', checkNarrow)
   clearContractSelection()
   if (tooltipEl) {
