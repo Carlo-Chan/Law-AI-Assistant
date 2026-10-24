@@ -149,62 +149,15 @@ def test_update_title_preserves_messages_and_other_conversations(history_store):
     assert history_store.get_conversation(other["id"])["title"] == "其他会话"
 
 
-def test_rebuild_replaces_messages_and_preserves_other_conversations(history_store, monkeypatch):
-    """重建后只保留新消息及附加数据，并更新目标会话时间。"""
-    clock = Mock()
-    clock.now.return_value = datetime(2026, 10, 20, 9)
-    monkeypatch.setattr(history_store, "datetime", clock)
-    target = history_store.create_conversation("目标会话")
-    other = history_store.create_conversation("其他会话")
-    history_store.add_message(target["id"], "user", "旧消息")
-    history_store.add_message(other["id"], "user", "其他会话消息")
-    other_before = history_store.get_conversation(other["id"])
-    replacement = [
-        {"role": "user", "content": "修改后的问题", "file_name": "合同.pdf"},
-        {
-            "role": "assistant",
-            "content": "新的回复",
-            "contract_data": {"raw_text": "合同原文", "risk_points": []},
-            "thinking_chain": [{"type": "tool", "content": "法律检索"}],
-        },
-    ]
-    clock.now.return_value = datetime(2026, 10, 23, 9)
-
-    history_store.rebuild_messages(target["id"], replacement)
-
-    rebuilt = history_store.get_conversation(target["id"])
-    assert rebuilt["title"] == target["title"]
-    assert rebuilt["created_at"] == target["created_at"]
-    assert rebuilt["updated_at"] == datetime(2026, 10, 23, 9).isoformat()
-    assert [message["content"] for message in rebuilt["messages"]] == [
-        "修改后的问题",
-        "新的回复",
-    ]
-    assert rebuilt["messages"][0]["file_name"] == "合同.pdf"
-    assert json.loads(rebuilt["messages"][1]["contract_data"]) == replacement[1]["contract_data"]
-    assert rebuilt["messages"][1]["thinking_chain"] == replacement[1]["thinking_chain"]
-    assert history_store.get_conversation(other["id"]) == other_before
-
-
-def test_rebuild_with_empty_list_clears_messages(history_store):
-    """存储层允许清空消息，是否删除空会话由调用方决定。"""
-    conversation = history_store.create_conversation()
-    history_store.add_message(conversation["id"], "user", "待清空的消息")
-
-    history_store.rebuild_messages(conversation["id"], [])
-
-    assert history_store.get_conversation(conversation["id"])["messages"] == []
-
-
-def test_rebuild_failure_preserves_original_messages(history_store, tracked_connections):
-    """重建中途插入失败时回滚整笔事务，旧消息和会话时间保持完整。"""
+def test_batch_insert_failure_preserves_original_messages(history_store, tracked_connections):
+    """批量追加中途失败时回滚整笔事务，旧消息和会话时间保持完整。"""
     conversation = history_store.create_conversation()
     history_store.add_message(conversation["id"], "user", "原始问题")
     history_store.add_message(conversation["id"], "assistant", "原始回复")
     before = history_store.get_conversation(conversation["id"])
 
     with pytest.raises(sqlite3.IntegrityError):
-        history_store.rebuild_messages(
+        history_store.add_messages(
             conversation["id"],
             [
                 {"role": "user", "content": "已插入的新问题"},
@@ -249,7 +202,10 @@ def test_connections_close_after_success_and_early_return(history_store, tracked
     history_store.get_conversation(conversation["id"])
     history_store.get_conversation("missing-conversation")
     history_store.update_title(conversation["id"], "新标题")
-    history_store.rebuild_messages(conversation["id"], [])
+    message = history_store.get_conversation(conversation["id"])["messages"][0]
+    history_store.edit_user_message(
+        conversation["id"], message["id"], message["revision"], "更新消息"
+    )
     history_store.delete_conversation(conversation["id"])
 
     assert tracked_connections

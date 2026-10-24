@@ -5,7 +5,7 @@ API 路由：法律问答 + 合同审查
 import json
 import logging
 from contextlib import aclosing
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, File, Form, HTTPException, Path, UploadFile
 from fastapi.responses import StreamingResponse
@@ -296,25 +296,6 @@ def _require_conversation(conv_id: str):
 async def update_title(conv_id: str, req: UpdateTitleRequest):
     result = history.update_title(conv_id, req.title, req.expected_title)
     return ConvResponse(code=200, data={"ok": True, **result})
-
-
-class RebuildMessage(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str
-    file_name: str | None = None
-    contract_data: dict | None = None
-    thinking_chain: list | None = None
-
-
-class RebuildMessagesRequest(BaseModel):
-    messages: list[RebuildMessage]
-
-
-@router.post("/conversations/{conv_id}/rebuild", response_model=ConvResponse)
-async def rebuild_conv(conv_id: str, payload: RebuildMessagesRequest):
-    _require_conversation(conv_id)
-    history.rebuild_messages(conv_id, [message.model_dump() for message in payload.messages])
-    return ConvResponse(code=200, data={"ok": True})
 
 
 @router.delete("/conversations/{conv_id}", response_model=ConvResponse)

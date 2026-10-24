@@ -22,6 +22,10 @@ try {
   axios.defaults.adapter = previousAdapter
 }
 
+test('前端不再导出整段历史重建接口', () => {
+  assert.equal(Object.hasOwn(api, 'rebuildMessages'), false)
+})
+
 test('准备接口封装原样传递调用方指定的取消信号', async () => {
   calls.length = 0
   const signal = new AbortController().signal

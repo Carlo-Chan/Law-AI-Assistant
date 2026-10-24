@@ -355,7 +355,7 @@ test('重复完成帧和完成后的错误不能重复替换已确认结果', as
   assert.equal(state.target.content, '新审查报告')
 })
 
-test('原指令随保存确认保留，重新导出时也不丢失', async () => {
+test('原指令随保存确认保留，下一次重跑仍使用同一指令', async () => {
   const state = fixture()
   state.target.contractData.instruction = '重点审查乙方责任\n检查押金'
   state.done.instruction = state.target.contractData.instruction
@@ -365,8 +365,15 @@ test('原指令随保存确认保留，重新导出时也不丢失', async () =>
     ),
   )
   assert.equal(state.target.contractData.instruction, state.done.instruction)
-  const { toExportable } = await import('../src/composables/messageExport.js')
-  assert.equal(toExportable(state.messages)[1].contract_data.instruction, state.done.instruction)
+  const instruction = state.done.instruction
+  state.done = { ...state.done, chat_reply: '再次审查后的报告' }
+  await regenerateContractReport(
+    options(state, async (_cid, _id, _revision, _signal, callbacks) =>
+      callbacks.onDone(state.done),
+    ),
+  )
+  assert.equal(state.target.content, '再次审查后的报告')
+  assert.equal(state.target.contractData.instruction, instruction)
 })
 
 for (const changed of [undefined, '另一套审查重点']) {

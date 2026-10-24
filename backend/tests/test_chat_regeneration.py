@@ -191,7 +191,6 @@ def test_incomplete_or_failed_generation_keeps_original(client, stored, monkeypa
         "delete-source",
         "delete-target",
         "delete-conversation",
-        "rebuild",
         "another-result",
     ],
 )
@@ -208,8 +207,6 @@ def test_changed_context_or_target_cannot_be_overwritten(client, stored, monkeyp
             history.delete_message(stored["id"], target["id"], target["revision"])
         elif operation == "delete-conversation":
             history.delete_conversation(stored["id"])
-        elif operation == "rebuild":
-            history.rebuild_messages(stored["id"], [{"role": "user", "content": "重建后的消息"}])
         else:
             prefix, _, _ = load_chat_source(
                 stored["id"], stored["target"]["id"], stored["target"]["revision"]

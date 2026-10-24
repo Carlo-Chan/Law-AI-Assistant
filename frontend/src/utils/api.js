@@ -107,11 +107,6 @@ export async function updateConvTitle(convId, title, signal, expectedTitle) {
   return data.data
 }
 
-/** 保留旧重建接口的兼容封装，当前页面消息操作不再调用。 */
-export async function rebuildMessages(convId, messages) {
-  await api.post(`/conversations/${convId}/rebuild`, { messages })
-}
-
 /** 法律咨询流式接口 */
 export async function chatStream(query, history, signal, callbacks) {
   return readSSEStream(

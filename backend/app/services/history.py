@@ -389,14 +389,6 @@ def update_title(conv_id: str, title: str, expected_title: str | None = None) ->
     return {"conversation_id": conv_id, "title": title, "saved": True}
 
 
-def rebuild_messages(conv_id: str, messages: list[dict]):
-    """删除指定会话的所有消息并从列表重新插入"""
-    with _get_conn() as conn:
-        conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv_id,))
-        _insert_messages(conn, conv_id, messages, datetime.now().isoformat())
-    logger.debug("会话消息重建完成：消息数=%d", len(messages))
-
-
 def delete_conversation(conv_id: str):
     """删除会话及其全部消息"""
     with _get_conn() as conn:

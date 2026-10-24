@@ -35,7 +35,6 @@ const apiNames = [
   'analyzeContractStream',
   'regenerateContractStream',
   'regenerateChatStream',
-  'rebuildMessages',
 ]
 const apiModule =
   'data:text/javascript;base64,' +
@@ -791,7 +790,6 @@ test('普通重生成只替换目标，流式预览不先删问答且保留草�
       await gate.promise
       callbacks.onDone(chatRegenerationDone())
     },
-    rebuildMessages: () => assert.fail('不能重建历史'),
     saveMessages: () => assert.fail('不能追加问答'),
     chatStream: () => assert.fail('不能当作新问题发送'),
     analyzeContractStream: () => assert.fail('不能误传待发附件'),
@@ -1006,7 +1004,6 @@ test('编辑保存仅更新目标，服务端确认前不改正文，不重建�
       calls.push(args)
       return gate.promise
     },
-    rebuildMessages: () => assert.fail('不能重建历史'),
     chatStream: () => assert.fail('不能重新生成'),
   })
   try {
@@ -1320,7 +1317,6 @@ test('编辑保存期间拒绝同会话的删除与重新生成，避免整段�
   const gate = deferred()
   const view = await mount({
     editSavedMessage: () => gate.promise,
-    rebuildMessages: () => assert.fail('不能与编辑同时重建'),
     deleteSavedMessage: () => assert.fail('不能与编辑同时删除'),
   })
   try {
@@ -1472,7 +1468,6 @@ test('单条删除固定确认时的会话和消息，切换页面及下标变�
       deletes.push(args)
       return { message_id: args[1], conversation_deleted: false }
     },
-    rebuildMessages: () => assert.fail('不能重建整段历史'),
   })
   try {
     view.state.currentConvId = 'A'

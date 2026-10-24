@@ -10,20 +10,19 @@ from app.core.errors import PublicError
 from app.main import app
 
 
-@pytest.mark.parametrize("operation", ["append", "rebuild"])
-def test_deleted_conversation_cannot_receive_orphan_messages(history_store, operation):
+def test_deleted_conversation_cannot_receive_orphan_messages(history_store):
     conv_id = history_store.create_conversation()["id"]
     history_store.delete_conversation(conv_id)
-    write = history_store.add_messages if operation == "append" else history_store.rebuild_messages
     with pytest.raises(PublicError) as failure:
-        write(conv_id, [{"role": "assistant", "content": "删除后才到达的后台回复"}])
+        history_store.add_messages(
+            conv_id, [{"role": "assistant", "content": "删除后才到达的后台回复"}]
+        )
     assert failure.value.info.status_code == 404
     with closing(sqlite3.connect(history_store.DB_PATH)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("operation", ["messages", "rebuild"])
-def test_delete_between_route_check_and_storage_returns_404(history_store, monkeypatch, operation):
+def test_delete_between_route_check_and_storage_returns_404(history_store, monkeypatch):
     conv_id = history_store.create_conversation()["id"]
     original_exists = history_store.conversation_exists
 
@@ -33,13 +32,9 @@ def test_delete_between_route_check_and_storage_returns_404(history_store, monke
         return existed
 
     monkeypatch.setattr(history_store, "conversation_exists", check_then_delete)
-    payload = (
-        {"user_content": "问题", "assistant_content": "迟到回复"}
-        if operation == "messages"
-        else {"messages": [{"role": "assistant", "content": "迟到回复"}]}
-    )
+    payload = {"user_content": "问题", "assistant_content": "迟到回复"}
     with TestClient(app) as client:
-        response = client.post(f"/api/conversations/{conv_id}/{operation}", json=payload)
+        response = client.post(f"/api/conversations/{conv_id}/messages", json=payload)
     assert response.status_code == 404
     assert response.json()["detail"] == "会话不存在"
     assert history_store.get_conversation(conv_id) is None

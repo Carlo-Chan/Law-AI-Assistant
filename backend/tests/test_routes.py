@@ -28,8 +28,42 @@ def test_health_endpoint(client):
     assert response.json() == {"status": "ok", "version": "0.1.0"}
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"messages": []},
+        {"messages": [{"role": "user", "content": "不能整段覆盖"}]},
+        {},
+        {"messages": None},
+        {"messages": "not-a-list"},
+        {"messages": [{"role": "user", "content": None}]},
+        {"messages": [{"role": "system", "content": "不允许的角色"}]},
+    ],
+)
+def test_removed_rebuild_endpoint_cannot_change_history(client, payload):
+    """废弃入口不再处理任何请求，合法旧载荷也不能清空或覆盖现有历史。"""
+    conversation_id = client.post("/api/conversations").json()["data"]["id"]
+    url = f"/api/conversations/{conversation_id}"
+    client.post(f"{url}/messages", json={"user_content": "原问题", "assistant_content": "原回复"})
+    before = client.get(url).json()["data"]
+
+    response = client.post(f"{url}/rebuild", json=payload)
+
+    assert response.status_code == 404
+    assert client.get(url).json()["data"] == before
+
+
+def test_removed_rebuild_is_not_exposed_in_api_schema(client, history_store):
+    """公开接口文档和存储层均不再暴露整段历史重建能力。"""
+    schema = client.get("/openapi.json").json()
+    assert "/api/conversations/{conv_id}/rebuild" not in schema["paths"]
+    assert "RebuildMessagesRequest" not in schema["components"]["schemas"]
+    assert "RebuildMessage" not in schema["components"]["schemas"]
+    assert not hasattr(history_store, "rebuild_messages")
+
+
 def test_conversation_crud_round_trip(client):
-    """会话从创建、保存、重命名和重建到删除可完整往返。"""
+    """会话从创建、保存、重命名、定点编辑和删除到整会话删除可完整往返。"""
     assert client.get("/api/conversations").json()["data"] == []
     created = client.post("/api/conversations")
     assert created.status_code == 200
@@ -60,13 +94,27 @@ def test_conversation_crud_round_trip(client):
     assert client.post(f"{url}/title", json={"title": "合同审查记录"}).status_code == 200
     assert client.get(url).json()["data"]["title"] == "合同审查记录"
     assert client.get("/api/conversations").json()["data"][0]["id"] == conversation_id
-    replacement = [{"role": "user", "content": "修改后的问题"}]
-    assert client.post(f"{url}/rebuild", json={"messages": replacement}).status_code == 200
-    assert [message["content"] for message in client.get(url).json()["data"]["messages"]] == [
+    user = messages[0]
+    edited = client.patch(
+        f"{url}/messages/{user['id']}",
+        json={"expected_revision": user["revision"], "content": "修改后的问题"},
+    )
+    assert edited.status_code == 200
+    after = client.get(url).json()["data"]["messages"]
+    assert [message["id"] for message in after] == [message["id"] for message in messages]
+    assert [message["content"] for message in after] == [
         "修改后的问题",
+        "审查报告",
     ]
-    assert client.post(f"{url}/rebuild", json={"messages": []}).status_code == 200
-    assert client.get(url).json()["data"]["messages"] == []
+    assert after[0]["file_name"] == "租赁合同.pdf"
+    assert after[1] == messages[1]
+    deleted = client.request(
+        "DELETE",
+        f"{url}/messages/{user['id']}",
+        json={"expected_revision": edited.json()["data"]["revision"]},
+    )
+    assert deleted.status_code == 200
+    assert client.get(url).json()["data"]["messages"] == [messages[1]]
     assert client.delete(url).status_code == 200
     assert client.get(url).status_code == 404
     assert client.get("/api/conversations").json()["data"] == []
@@ -77,39 +125,15 @@ def test_conversation_crud_round_trip(client):
     [
         ("title", {"title": "新标题"}),
         ("messages", {"user_content": "问题", "assistant_content": "回复"}),
-        ("rebuild", {"messages": [{"role": "user", "content": "问题"}]}),
     ],
 )
 def test_writing_missing_conversation_returns_404(client, history_store, suffix, payload):
-    """不存在的会话不能写入消息、重建消息或修改标题。"""
+    """不存在的会话不能写入消息或修改标题。"""
     response = client.post(f"/api/conversations/missing/{suffix}", json=payload)
 
     assert response.status_code == 404
     assert response.json()["detail"] == "会话不存在"
     assert history_store.list_conversations() == []
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {},
-        {"messages": None},
-        {"messages": "not-a-list"},
-        {"messages": [{"role": "user", "content": None}]},
-        {"messages": [{"role": "system", "content": "不允许的角色"}]},
-    ],
-)
-def test_invalid_rebuild_request_keeps_existing_messages(client, payload):
-    """不合法的重建请求必须先被校验拒绝，不能误清空或部分覆盖原消息。"""
-    conversation_id = client.post("/api/conversations").json()["data"]["id"]
-    url = f"/api/conversations/{conversation_id}"
-    client.post(f"{url}/messages", json={"user_content": "原问题", "assistant_content": "原回复"})
-    before = client.get(url).json()["data"]
-
-    response = client.post(f"{url}/rebuild", json=payload)
-
-    assert response.status_code == 422
-    assert client.get(url).json()["data"] == before
 
 
 def test_message_pair_save_rolls_back_if_assistant_insert_fails(client, history_store):
