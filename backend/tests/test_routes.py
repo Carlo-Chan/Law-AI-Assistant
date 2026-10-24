@@ -62,6 +62,43 @@ def test_removed_rebuild_is_not_exposed_in_api_schema(client, history_store):
     assert not hasattr(history_store, "rebuild_messages")
 
 
+@pytest.mark.parametrize("contract", [False, True])
+def test_message_save_receipt_matches_only_current_persisted_pair(client, contract):
+    """两会话交错追加相同正文时，回执仍只确认本次提交的两个真实消息身份。"""
+    first = client.post("/api/conversations").json()["data"]["id"]
+    second = client.post("/api/conversations").json()["data"]["id"]
+    payload = {"user_content": "相同问题", "assistant_content": "相同回复"}
+    if contract:
+        payload.update(
+            file_name="合同.txt",
+            contract_data={"raw_text": "合同原文", "chat_reply": "相同回复", "risk_points": []},
+            thinking_chain=[{"type": "tool", "label": "检索"}],
+        )
+    identities = set()
+    for conv_id in [first, second, first]:
+        url = f"/api/conversations/{conv_id}"
+        before = client.get(url).json()["data"]["messages"]
+        response = client.post(f"{url}/messages", json=payload)
+        assert response.status_code == 200
+        receipt = response.json()["data"]
+        stored = client.get(url).json()["data"]["messages"]
+        assert receipt["ok"] is True
+        assert stored[:-2] == before
+        assert receipt["messages"] == [
+            {key: message[key] for key in ("id", "role", "revision")} for message in stored[-2:]
+        ]
+        assert [message["role"] for message in receipt["messages"]] == ["user", "assistant"]
+        current_ids = {message["id"] for message in receipt["messages"]}
+        assert len(current_ids) == 2
+        assert identities.isdisjoint(current_ids)
+        identities.update(current_ids)
+        assert [message["content"] for message in stored[-2:]] == ["相同问题", "相同回复"]
+        for message in receipt["messages"]:
+            assert isinstance(message["id"], int) and message["id"] > 0
+            assert len(message["revision"]) == 64
+            assert all(character in "0123456789abcdef" for character in message["revision"])
+
+
 def test_conversation_crud_round_trip(client):
     """会话从创建、保存、重命名、定点编辑和删除到整会话删除可完整往返。"""
     assert client.get("/api/conversations").json()["data"] == []

@@ -31,7 +31,7 @@ export function messageSnapshot(message) {
   }
 }
 
-/** 兼容旧保存回执：只有整段已保存顺序和内容一致，才允许定位尚无 ID 的消息。 */
+/** 保存身份未获确认时，只有整段已保存顺序和内容一致，才允许定位尚无 ID 的消息。 */
 export async function resolveSavedMessage(convId, target, messages, getConversation) {
   if (hasMessageIdentity(target)) return { id: target.id, revision: target.revision }
   const snapshot = messages.map(messageSnapshot)

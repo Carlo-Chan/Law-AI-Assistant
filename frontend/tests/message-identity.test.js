@@ -44,7 +44,7 @@ test('已有稳定身份不按正文重新查找，重复正文也不会猜测�
   assert.deepEqual(await resolveSavedMessage('A', target, [], () => assert.fail()), target)
 })
 
-test('旧回执只允许整段顺序完全一致时对齐身份', async () => {
+test('保存身份未确认时只允许整段顺序完全一致后对齐身份', async () => {
   const messages = [
     { role: 'user', content: '重复' },
     { role: 'assistant', content: '重复' },
@@ -57,7 +57,7 @@ test('旧回执只允许整段顺序完全一致时对齐身份', async () => {
 })
 
 for (const change of ['order', 'missing', 'source', 'instruction', 'during-lookup']) {
-  test(`旧消息定位遇到 ${change} 拒绝删除`, async () => {
+  test(`未确认身份定位遇到 ${change} 拒绝删除`, async () => {
     const messages = [
       { role: 'user', content: '提问' },
       {

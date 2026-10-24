@@ -403,6 +403,7 @@ async function mount(overrides = {}) {
   const writes = []
   const streams = []
   const notices = []
+  let nextSavedId = 101
   globalThis.__sendingTestNotices = notices
   globalThis.__sendingTestApi = {
     listConversations: async () => [],
@@ -417,6 +418,9 @@ async function mount(overrides = {}) {
     updateConvTitle: async (id, title) => ({ conversation_id: id, title, saved: true }),
     saveMessages: async (...args) => {
       writes.push(args)
+      const receipt = savedPairReceipt(nextSavedId)
+      nextSavedId += 2
+      return receipt
     },
     chatStream: async (query, history, _signal, callbacks) => {
       streams.push({ query, history })
@@ -451,8 +455,8 @@ const messageRevision = 'a'.repeat(64)
 function savedBubble(id, role = 'assistant', content = '原回复') {
   return { id, role, content, revision: messageRevision }
 }
-function savedPairReceipt() {
-  return { messages: [savedBubble(101, 'user'), savedBubble(102)] }
+function savedPairReceipt(firstId = 101) {
+  return { ok: true, messages: [savedBubble(firstId, 'user'), savedBubble(firstId + 1)] }
 }
 
 function startConfirmedOperation(view, kind) {
@@ -1747,7 +1751,7 @@ test('保存尚在途时删除等待身份回执，不重复保存或提前移�
   }
 })
 
-test('旧回执与服务器记录不能安全对齐时不尝试删除', async () => {
+test('未确认保存的消息与服务器记录不能安全对齐时不尝试删除', async () => {
   const view = await mount({ deleteSavedMessage: () => assert.fail('不能猜测删除身份') })
   try {
     view.state.currentConvId = 'A'
@@ -2211,6 +2215,7 @@ for (const saveFails of [false, true]) {
       saveMessages: async () => {
         entered.resolve()
         await saveGate.promise
+        return savedPairReceipt()
       },
     })
     try {
@@ -2402,6 +2407,7 @@ test('保存延迟期间保持本会话锁，其他会话可发送且旧清理�
         saving.resolve()
         await saveGate.promise
       }
+      return savedPairReceipt(convId === 'A' ? 101 : 201)
     },
     chatStream: async (query, _history, _signal, callbacks) => {
       if (query === 'B问题') {
@@ -3545,6 +3551,192 @@ test('模型已开始后停止仍保存部分回复，不把已提交请求恢�
   }
 })
 
+function invalidSaveReceipt(kind) {
+  if (kind === 'missing') return undefined
+  if (kind === 'ok-only') return { ok: true }
+  const receipt = savedPairReceipt()
+  if (kind === 'missing-status') delete receipt.ok
+  if (kind === 'not-confirmed') receipt.ok = false
+  if (kind === 'partial') receipt.messages[1].revision = 'invalid'
+  if (kind === 'duplicate') receipt.messages[1].id = receipt.messages[0].id
+  return receipt
+}
+
+for (const contract of [false, true]) {
+  for (const kind of [
+    'missing',
+    'ok-only',
+    'missing-status',
+    'not-confirmed',
+    'partial',
+    'duplicate',
+  ]) {
+    test(`${contract ? '合同' : '咨询'}保存回执为 ${kind} 时保留未确认缓存，不伪装已保存或重试`, async () => {
+      const entered = deferred()
+      const saveGate = deferred()
+      const writes = []
+      const view = await mount({
+        saveMessages: async (...args) => {
+          writes.push(args)
+          entered.resolve()
+          return saveGate.promise
+        },
+        getConversation: () => assert.fail('恢复未确认缓存不能重读并覆盖页面内容'),
+      })
+      let sending
+      try {
+        const state = view.state
+        state.currentConvId = 'A'
+        state.input = '原问题'
+        if (contract) state.pendingFile = new File(['合同原文'], '合同.txt')
+        sending = contract ? state.sendFile(state.input) : state.sendText()
+        await entered.promise
+        const assistant = state.messages.at(-1)
+        const text = assistant.content
+        const file = new File(['下一份合同'], '待发.txt')
+        state.input = '下一条草稿'
+        state.pendingFile = file
+        saveGate.resolve(invalidSaveReceipt(kind))
+        await sending
+        assert.equal(assistant.saveFailed, true)
+        assert.equal(assistant.content, text)
+        assert.equal(assistant.fullContent, text)
+        assert.equal(assistant.id, undefined)
+        assert.equal(state.messages[0].id, undefined)
+        assert.equal(state.streamMessageCache.A.messages, state.messages)
+        assert.equal(writes.length, 1)
+        assert.equal(view.streams.length, 1)
+        assert.equal(view.notices.length, 1)
+        assert.match(view.notices[0].options.message, /未确认保存/)
+        assert.equal(state.loading, false)
+        assert.deepEqual(state.abortControllers, {})
+        assert.equal(state.input, '下一条草稿')
+        assert.equal(state.pendingFile, file)
+        if (contract) assert.equal(assistant.contractData.raw_text, '合同原文')
+        await state.newChat()
+        await state.loadConversation('A')
+        assert.equal(state.messages.at(-1), assistant)
+        assert.equal(state.messages.at(-1).content, text)
+        assert.equal(state.input, '下一条草稿')
+        assert.equal(state.pendingFile, file)
+        assert.equal(writes.length, 1)
+      } finally {
+        saveGate.resolve(invalidSaveReceipt(kind))
+        await sending
+        view.close()
+      }
+    })
+  }
+
+  test(`${contract ? '合同' : '咨询'}有效保存回执绑定本轮两个身份并正常释放缓存`, async () => {
+    const view = await mount()
+    try {
+      view.state.currentConvId = 'A'
+      view.state.input = '原问题'
+      if (contract) view.state.pendingFile = new File(['合同原文'], '合同.txt')
+      await (contract ? view.state.sendFile() : view.state.sendText())
+      assert.deepEqual(
+        view.state.messages.map((message) => message.id),
+        [101, 102],
+      )
+      assert.equal(view.state.messages.at(-1).saveFailed, false)
+      assert.equal(view.state.streamMessageCache.A, undefined)
+      assert.equal(view.state.loading, false)
+      assert.equal(view.writes.length, 1)
+      assert.equal(view.notices.length, 0)
+    } finally {
+      view.close()
+    }
+  })
+}
+
+test('后台保存回执无效只保留所属缓存，不释放另一会话的锁或覆盖过程', async () => {
+  const savingA = deferred()
+  const saveA = deferred()
+  const streamingB = deferred()
+  const streamB = deferred()
+  const view = await mount({
+    saveMessages: async (id) => {
+      if (id === 'A') {
+        savingA.resolve()
+        return saveA.promise
+      }
+      return savedPairReceipt(201)
+    },
+    chatStream: async (query, _history, _signal, callbacks) => {
+      callbacks.onThinking(query + '工具')
+      callbacks.onToken(query + '正文')
+      if (query === 'B问题') {
+        streamingB.resolve()
+        await streamB.promise
+      }
+      await callbacks.onDone({})
+    },
+  })
+  let first
+  let second
+  try {
+    const state = view.state
+    state.currentConvId = 'A'
+    state.input = 'A问题'
+    first = state.sendText()
+    await savingA.promise
+    const assistantA = state.messages.at(-1)
+    await state.loadConversation('B')
+    state.input = 'B问题'
+    second = state.sendText()
+    await streamingB.promise
+    const controller = state.abortControllers.B
+    saveA.resolve({ ok: true })
+    await first
+    assert.equal(assistantA.saveFailed, true)
+    assert.equal(state.streamMessageCache.A.messages.at(-1), assistantA)
+    assert.equal(state.currentConvId, 'B')
+    assert.equal(state.loading, true)
+    assert.equal(state.abortControllers.B, controller)
+    assert.equal(controller.signal.aborted, false)
+    assert.equal(state.thinkingSteps.at(-1).label, 'B问题工具')
+    streamB.resolve()
+    await second
+    assert.equal(state.messages.at(-1).id, 202)
+    assert.equal(state.messages.at(-1).saveFailed, false)
+    assert.equal(state.streamMessageCache.B, undefined)
+    await state.loadConversation('A')
+    assert.equal(state.messages.at(-1), assistantA)
+    assert.equal(assistantA.content, 'A问题正文')
+  } finally {
+    saveA.resolve({ ok: true })
+    streamB.resolve()
+    await Promise.all([first, second])
+    view.close()
+  }
+})
+
+test('后续一轮保存成功不清除前一轮无效回执的未确认标记或缓存', async () => {
+  let writes = 0
+  const view = await mount({
+    saveMessages: async () => (++writes === 1 ? { ok: true } : savedPairReceipt(201)),
+  })
+  try {
+    const state = view.state
+    state.currentConvId = 'A'
+    state.input = '第一轮'
+    await state.sendText()
+    const first = state.messages.at(-1)
+    state.input = '第二轮'
+    await state.sendText()
+    assert.equal(first.saveFailed, true)
+    assert.equal(state.messages.at(-1).saveFailed, false)
+    assert.equal(state.messages.at(-1).id, 202)
+    assert.equal(state.streamMessageCache.A.messages, state.messages)
+    assert.equal(state.messages.length, 4)
+    assert.equal(writes, 2)
+    assert.equal(view.notices.length, 1)
+  } finally {
+    view.close()
+  }
+})
+
 const streamFrame = (event) => 'data: ' + JSON.stringify(event) + '\n\n'
 const streamResponse = (events) =>
   new Response(events.map(streamFrame).join(''), {
@@ -3746,6 +3938,7 @@ test('真实读取器等待保存期间停止也不二次终止或重复保存',
       saves++
       entered.resolve()
       await gate.promise
+      return savedPairReceipt()
     },
   })
   try {
@@ -3773,6 +3966,7 @@ test('已保存但刷新列表失败时，不误报消息保存失败', async ()
   const view = await mount({
     saveMessages: async () => {
       saved = true
+      return savedPairReceipt()
     },
     listConversations: async () => {
       if (saved) throw new Error('列表不可用')

@@ -1541,7 +1541,9 @@ async function executeMessageRequest(
           assistant.thinkingChain,
         )
         if (request.invalidated) return
-        assignSavedMessageIdentities(request, saved)
+        if (saved?.ok !== true || !assignSavedMessageIdentities(request, saved)) {
+          throw new Error('消息保存回执缺少明确确认或完整有效的身份')
+        }
         assistant.saveFailed = false
       } catch (error) {
         const deletion = pendingConversationDeletions.get(request.convId)
