@@ -453,6 +453,7 @@ import { createConversationRequests, LOADING_DOTS } from '../composables/convers
 import { createDraftRecovery } from '../composables/draftRecovery'
 import { createLatestRead } from '../composables/latestRead'
 import { createConversationRenaming } from '../composables/conversationRenaming'
+import { createMessageScroll } from '../composables/messageScroll'
 import {
   assignSavedMessageIdentities,
   hasMessageIdentity,
@@ -608,12 +609,16 @@ const thinkingLabel = computed(() => {
 })
 const msgContainer = ref(null)
 const showScrollBtn = ref(false)
+const messageScroll = createMessageScroll({
+  onChange: (visible) => {
+    showScrollBtn.value = messages.value.length > 0 && visible
+  },
+})
+watch(msgContainer, (element) => messageScroll.connect(element), { flush: 'post' })
 
 // 监听聊天区滚动事件，控制一键到底按钮显隐
 function onMsgScroll() {
-  const el = msgContainer.value
-  if (!el) return
-  showScrollBtn.value = el.scrollHeight - el.scrollTop - el.clientHeight > 100
+  messageScroll.sync()
 }
 
 const showPreview = ref(false)
@@ -686,10 +691,11 @@ const highlightedContract = computed(() => {
 // ---- 滚动 ----
 // 滚动聊天区到底部
 async function scrollToBottom() {
+  const owner = pageKey()
+  const ownedMessages = messages.value
   await nextTick()
-  if (msgContainer.value) {
-    msgContainer.value.scrollTop = msgContainer.value.scrollHeight
-  }
+  if (pageKey() !== owner || messages.value !== ownedMessages) return
+  messageScroll.toBottom()
 }
 
 // ---- 文本发送 ----
@@ -771,12 +777,18 @@ async function loadConversation(id) {
     previewData.value = null
     historyLoading.value = false
     draftRecovery.resume(id)
-    historyReads.finish(read)
-    if (cache.messages.some((message) => message.saveFailed)) {
-      showContractWarning(
-        '此会话有未确认保存的回复，内容仍保留在页面。请先复制，再刷新会话确认。',
-        6500,
-      )
+    try {
+      await nextTick()
+      if (!historyReads.isCurrent(read)) return
+      messageScroll.toBottom()
+      if (cache.messages.some((message) => message.saveFailed)) {
+        showContractWarning(
+          '此会话有未确认保存的回复，内容仍保留在页面。请先复制，再刷新会话确认。',
+          6500,
+        )
+      }
+    } finally {
+      historyReads.finish(read)
     }
     return
   }
@@ -822,12 +834,12 @@ async function loadConversation(id) {
     }
     messages.value = msgs
     restoreMessageEdit()
+    showPreview.value = false
+    previewData.value = null
     await nextTick()
     if (!historyReads.isCurrent(read)) return
     // DOM 更新后再次复核归属，不能让旧读取滚动或关闭后来切换的页面。
-    if (msgContainer.value) msgContainer.value.scrollTop = msgContainer.value.scrollHeight
-    showPreview.value = false
-    previewData.value = null
+    messageScroll.toBottom()
   } catch (error) {
     if (historyReads.isCurrent(read)) console.warn('加载历史对话失败，异常类型：', error.name)
   } finally {
@@ -1468,9 +1480,7 @@ async function executeMessageRequest(
   const publish = () => requests.publish(request)
   const scrollOwned = async () => {
     await nextTick()
-    if (isActive() && msgContainer.value) {
-      msgContainer.value.scrollTop = msgContainer.value.scrollHeight
-    }
+    if (isActive()) messageScroll.toBottom()
   }
   let completion = null
   let settled = false
@@ -1905,6 +1915,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  messageScroll.dispose()
   renaming.dispose()
   historyReads.dispose()
   conversationListReads.dispose()

@@ -2751,6 +2751,75 @@ test('自动命名只允许替换默认标题，不覆盖已自定义的会话�
   }
 })
 
+test('恢复缓存对话也在 DOM 更新后定位到底，不等待下一次模型片段', async () => {
+  const view = await mount({ getConversation: () => assert.fail('缓存恢复不应读取数据库') })
+  try {
+    const container = { scrollTop: 25, scrollHeight: 1800, clientHeight: 600 }
+    view.state.msgContainer = container
+    view.state.streamMessageCache.A = {
+      messages: [savedBubble(1, 'user', '问题'), savedBubble(2)],
+      thinkingSteps: [{ type: 'tool', label: '已有过程' }],
+    }
+    await view.state.loadConversation('A')
+    assert.equal(container.scrollTop, 1800)
+    assert.equal(view.state.messages[1].content, '原回复')
+    assert.equal(view.state.thinkingSteps[0].label, '已有过程')
+    assert.equal(view.state.showScrollBtn, false)
+  } finally {
+    view.close()
+  }
+})
+
+test('点击一键到底立即更新按钮状态，不依赖浏览器再派发滚动事件', async () => {
+  const view = await mount()
+  try {
+    view.state.messages = [savedBubble(2)]
+    const container = { scrollTop: 0, scrollHeight: 1800, clientHeight: 600 }
+    view.state.msgContainer = container
+    await nextTick()
+    view.state.onMsgScroll()
+    assert.equal(view.state.showScrollBtn, true)
+    await view.state.scrollToBottom()
+    assert.equal(container.scrollTop, 1800)
+    assert.equal(view.state.showScrollBtn, false)
+  } finally {
+    view.close()
+  }
+})
+
+test('已排队的一键到底操作不滚动后来切换的新对话', async () => {
+  const view = await mount()
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [savedBubble(2)]
+    view.state.msgContainer = { scrollTop: 20, scrollHeight: 1800, clientHeight: 600 }
+    const pending = view.state.scrollToBottom()
+    const switching = view.state.newChat()
+    view.state.msgContainer.scrollTop = 17
+    await Promise.all([pending, switching])
+    assert.equal(view.state.msgContainer.scrollTop, 17)
+    assert.equal(view.state.showScrollBtn, false)
+  } finally {
+    view.close()
+  }
+})
+
+test('缓存恢复等待 DOM 期间切换目标，不抢回页面或滚动新的目标', async () => {
+  const view = await mount()
+  try {
+    view.state.msgContainer = { scrollTop: 12, scrollHeight: 1800, clientHeight: 600 }
+    view.state.streamMessageCache.A = { messages: [savedBubble(2)], thinkingSteps: [] }
+    const first = view.state.loadConversation('A')
+    await view.state.newChat()
+    view.state.msgContainer.scrollTop = 17
+    await first
+    assert.equal(view.state.currentConvId, null)
+    assert.equal(view.state.msgContainer.scrollTop, 17)
+  } finally {
+    view.close()
+  }
+})
+
 test('列表刷新只采用最近一次请求的结果，不让迟到旧列表覆盖标题及顺序', async () => {
   const old = deferred()
   let calls = 0
