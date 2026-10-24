@@ -3627,43 +3627,31 @@ test('首个异步等待前停止，不调用创建接口', async () => {
   }
 })
 
-for (const stage of ['title', 'list']) {
-  test(`${stage} 等待时取消会归还已有会话草稿，不写假回复`, async () => {
-    const entered = deferred()
-    let hold = false
-    const view = await mount({
-      updateConvTitle: (_id, _title, signal) =>
-        stage === 'title' ? waitForAbort(signal, entered) : Promise.resolve(),
-      listConversations: (signal) =>
-        hold && stage === 'list' ? waitForAbort(signal, entered) : Promise.resolve([]),
-    })
-    try {
-      const state = view.state
-      state.currentConvId = 'A'
-      const original =
-        stage === 'list'
-          ? [
-              { role: 'user', content: '原问题' },
-              { role: 'assistant', content: '原回复' },
-            ]
-          : []
-      state.messages = structuredClone(original)
-      state.input = '准备阶段取消'
-      hold = true
-      const sending = state.sendText()
-      await entered.promise
-      state.stopGeneration('A')
-      await sending
-      assert.equal(state.input, '准备阶段取消')
-      assert.deepEqual(state.messages, original)
-      assert.equal(state.loadingConvIds.size, 0)
-      assert.equal(view.writes.length, 0)
-      assert.equal(view.streams.length, 0)
-    } finally {
-      view.close()
-    }
+test('标题准备等待时取消会归还已有会话草稿，不写假回复', async () => {
+  const entered = deferred()
+  const view = await mount({
+    updateConvTitle: (_id, _title, signal) => waitForAbort(signal, entered),
   })
-}
+  let sending
+  try {
+    const state = view.state
+    state.currentConvId = 'A'
+    state.input = '准备阶段取消'
+    sending = state.sendText()
+    await entered.promise
+    state.stopGeneration('A')
+    await sending
+    assert.equal(state.input, '准备阶段取消')
+    assert.deepEqual(state.messages, [])
+    assert.equal(state.loadingConvIds.size, 0)
+    assert.equal(view.writes.length, 0)
+    assert.equal(view.streams.length, 0)
+  } finally {
+    view.state.stopGeneration('A')
+    await sending
+    view.close()
+  }
+})
 
 test('失败的旧空白页不覆盖新草稿，槽位空闲后可逐次恢复', async () => {
   const creation = deferred()
@@ -4571,6 +4559,300 @@ test('已保存但刷新列表失败时，不误报消息保存失败', async ()
     assert.equal(state.messages.at(-1).saveFailed, false)
     assert.equal(view.notices.length, 0)
     assert.equal(state.streamMessageCache.A, undefined)
+  } finally {
+    view.close()
+  }
+})
+
+// 列表读取始终由测试显式放行，不用真实超时或网络来判断主流程是否被阻塞。
+function holdSidebarReads(skip = 0) {
+  const reads = []
+  let released = false
+  globalThis.__sendingTestApi.listConversations = (signal) => {
+    if (released || skip-- > 0) return Promise.resolve([])
+    const gate = deferred()
+    reads.push({ ...gate, signal })
+    return gate.promise
+  }
+  return {
+    reads,
+    release() {
+      released = true
+      for (const read of reads) read.resolve([])
+    },
+  }
+}
+
+for (const contract of [false, true]) {
+  test(`${contract ? '合同' : '咨询'}发送不等待侧边栏列表就启动模型，过程仍归属原请求`, async () => {
+    const modelGate = deferred()
+    let started = false
+    const stream = async (callbacks) => {
+      started = true
+      callbacks.onThinking('正常工具')
+      await modelGate.promise
+      await callbacks.onDone(
+        contract ? { raw_text: '合同原文', chat_reply: '完整报告', risk_points: [] } : {},
+      )
+    }
+    const view = await mount({
+      chatStream: (_query, _history, _signal, callbacks) => stream(callbacks),
+      analyzeContractStream: (_file, _signal, callbacks) => stream(callbacks),
+    })
+    const sidebar = holdSidebarReads()
+    let pending
+    try {
+      view.state.currentConvId = 'A'
+      view.state.input = '问题'
+      if (contract) view.state.pendingFile = new File(['合同原文'], '合同.txt')
+      pending = contract ? view.state.sendFile() : view.state.sendText()
+      await new Promise(setImmediate)
+      assert.equal(started, true)
+      assert.equal(sidebar.reads.length, 1)
+      assert.equal(view.state.loading, true)
+      assert.equal(view.state.thinkingSteps[0].label, '正常工具')
+      assert.equal(view.writes.length, 0)
+      assert.equal(view.state.abortControllers.A.signal.aborted, false)
+    } finally {
+      sidebar.release()
+      modelGate.resolve()
+      await pending
+      view.close()
+    }
+  })
+
+  for (const confirmed of [false, true]) {
+    test(`${contract ? '合同' : '咨询'}保存回执${confirmed ? '有效' : '未确认'}时不等待侧边栏刷新才收尾`, async () => {
+      const view = await mount({
+        saveMessages: async (...args) => {
+          const result = confirmed ? savedPairReceipt(101 + view.writes.length * 2) : { ok: true }
+          view.writes.push(args)
+          return result
+        },
+      })
+      const sidebar = holdSidebarReads(1)
+      let pending
+      let next
+      let settled = false
+      try {
+        view.state.currentConvId = 'A'
+        view.state.input = '问题'
+        if (contract) view.state.pendingFile = new File(['合同原文'], '合同.txt')
+        pending = (contract ? view.state.sendFile() : view.state.sendText()).then(() => {
+          settled = true
+        })
+        await new Promise(setImmediate)
+        assert.equal(sidebar.reads.length, 1)
+        assert.equal(settled, true)
+        assert.equal(view.state.loading, false)
+        assert.deepEqual(view.state.abortControllers, {})
+        const target = view.state.messages[1]
+        assert.equal(target.saveFailed, !confirmed)
+        assert.equal(view.writes.length, 1)
+        if (confirmed) {
+          assert.equal(target.id, 102)
+          assert.equal(view.state.streamMessageCache.A, undefined)
+          view.state.input = '第二轮问题'
+          let nextSettled = false
+          next = view.state.sendText().then(() => {
+            nextSettled = true
+          })
+          await new Promise(setImmediate)
+          assert.equal(nextSettled, true)
+          assert.equal(view.writes.length, 2)
+          assert.equal(view.state.messages.length, 4)
+          assert.equal(view.state.messages[3].id, 104)
+          assert.equal(view.notices.length, 0)
+        } else {
+          assert.equal(target.id, undefined)
+          assert.equal(view.state.streamMessageCache.A.messages[1], target)
+          assert.match(view.notices.at(-1).options.message, /未确认保存/)
+        }
+      } finally {
+        sidebar.release()
+        await Promise.all([pending, next])
+        view.close()
+      }
+    })
+  }
+}
+
+for (const operation of ['edit', 'delete', 'chat-regeneration', 'contract-regeneration']) {
+  test(`${operation}确认成功后不因侧边栏刷新而遗留操作锁`, async () => {
+    const view = await mount({
+      editSavedMessage: async (_cid, id, _revision, content) => editAck(id, content),
+      deleteSavedMessage: async (_cid, id) => ({ message_id: id, conversation_deleted: false }),
+      regenerateChatStream: async (_cid, _id, _revision, _signal, callbacks) =>
+        callbacks.onDone(chatRegenerationDone()),
+      regenerateContractStream: async (_cid, _id, _revision, _signal, callbacks) =>
+        callbacks.onDone({
+          saved: true,
+          message_id: 2,
+          revision: 'b'.repeat(64),
+          raw_text: '合同原文',
+          chat_reply: '新合同报告',
+          risk_points: [],
+          thinking_chain: [],
+        }),
+    })
+    const sidebar = holdSidebarReads()
+    let pending
+    let settled = false
+    try {
+      seedChatRegeneration(view.state)
+      const target = view.state.messages[1]
+      view.state.input = '下一条待发问题'
+      if (operation === 'edit') {
+        view.state.editMessage(0)
+        view.state.editingText = '修正问题'
+        pending = view.state.saveEdit()
+      } else if (operation === 'delete') {
+        pending = view.state.deleteMessage(1)
+        view.state.resolveConfirm(true)
+      } else {
+        if (operation === 'contract-regeneration') {
+          view.state.messages[0].file = { name: '合同.txt' }
+          target.contractData = {
+            raw_text: '合同原文',
+            chat_reply: target.content,
+            risk_points: [],
+          }
+        }
+        pending = view.state.regenerateMessage(1)
+      }
+      pending = pending.then(() => {
+        settled = true
+      })
+      await new Promise(setImmediate)
+      assert.equal(sidebar.reads.length, 1)
+      assert.equal(settled, true)
+      assert.equal(view.state.loading, false)
+      assert.equal(view.state.pendingMessageEdits.size, 0)
+      assert.equal(view.state.pendingMessageDeletions.size, 0)
+      assert.equal(view.state.canSend, true)
+      assert.deepEqual(view.state.abortControllers, {})
+      if (operation === 'edit') assert.equal(view.state.messages[0].content, '修正问题')
+      if (operation === 'delete') assert.equal(view.state.messages.includes(target), false)
+      if (operation.endsWith('regeneration')) assert.equal(target.regenerating, false)
+      assert.equal(view.notices.length, 0)
+    } finally {
+      sidebar.release()
+      await pending
+      view.close()
+    }
+  })
+}
+
+test('后台列表慢读不阻塞完成，迟到旧列表也不能覆盖保存后的新列表', async () => {
+  const view = await mount()
+  const sidebar = holdSidebarReads()
+  let pending
+  let settled = false
+  try {
+    view.state.currentConvId = 'A'
+    view.state.input = '问题'
+    pending = view.state.sendText().then(() => {
+      settled = true
+    })
+    await new Promise(setImmediate)
+    assert.equal(settled, true)
+    assert.equal(sidebar.reads.length, 2)
+    assert.equal(sidebar.reads[0].signal.aborted, true)
+    sidebar.reads[1].resolve([{ id: 'A', title: '保存后的新标题' }])
+    await new Promise(setImmediate)
+    sidebar.reads[0].resolve([])
+    await new Promise(setImmediate)
+    assert.deepEqual(view.state.conversations, [{ id: 'A', title: '保存后的新标题' }])
+    assert.equal(view.writes.length, 1)
+  } finally {
+    sidebar.release()
+    await pending
+    view.close()
+  }
+})
+
+test('后台列表等待时停止已启动模型，保存部分回复而非恢复为未发送草稿', async () => {
+  let started = false
+  const entered = deferred()
+  const view = await mount({
+    chatStream: (_query, _history, signal, callbacks) => {
+      started = true
+      callbacks.onToken('已收到的部分回复')
+      return waitForAbort(signal, entered)
+    },
+  })
+  const sidebar = holdSidebarReads()
+  let pending
+  try {
+    view.state.currentConvId = 'A'
+    view.state.input = '问题'
+    pending = view.state.sendText()
+    await new Promise(setImmediate)
+    assert.equal(started, true)
+    const controller = view.state.abortControllers.A
+    view.state.stopGeneration('A')
+    await new Promise(setImmediate)
+    assert.equal(controller.signal.aborted, true)
+    assert.equal(sidebar.reads[0].signal.aborted, true)
+    assert.equal(view.state.loading, false)
+    assert.equal(view.writes.length, 1)
+    assert.equal(view.writes[0][2], '已收到的部分回复')
+    assert.equal(view.state.input, '')
+    assert.equal(view.state.messages.length, 2)
+  } finally {
+    view.state.stopGeneration('A')
+    sidebar.release()
+    await pending
+    view.close()
+  }
+})
+
+test('后台完成刷新在卸载时独立取消，迟到列表不改变已释放页面', async () => {
+  const view = await mount()
+  const sidebar = holdSidebarReads(1)
+  let pending
+  let closed = false
+  let settled = false
+  try {
+    view.state.currentConvId = 'A'
+    view.state.input = '问题'
+    pending = view.state.sendText().then(() => {
+      settled = true
+    })
+    await new Promise(setImmediate)
+    assert.equal(settled, true)
+    const before = [...view.state.conversations]
+    assert.equal(sidebar.reads[0].signal.aborted, false)
+    view.close()
+    closed = true
+    assert.equal(sidebar.reads[0].signal.aborted, true)
+    sidebar.reads[0].resolve([{ id: 'stale', title: '迟到列表' }])
+    await new Promise(setImmediate)
+    assert.deepEqual(view.state.conversations, before)
+    assert.equal(view.state.messages[1].saveFailed, false)
+    assert.equal(view.notices.length, 0)
+  } finally {
+    sidebar.release()
+    await pending
+    if (!closed) view.close()
+  }
+})
+
+test('后台列表即使以空异常拒绝也自行收尾，不中断生成或误报保存失败', async () => {
+  const view = await mount()
+  globalThis.__sendingTestApi.listConversations = async () => {
+    throw null
+  }
+  try {
+    view.state.currentConvId = 'A'
+    view.state.input = '问题'
+    await view.state.sendText()
+    await new Promise(setImmediate)
+    assert.equal(view.streams.length, 1)
+    assert.equal(view.writes.length, 1)
+    assert.equal(view.state.messages[1].saveFailed, false)
+    assert.equal(view.state.loading, false)
+    assert.equal(view.notices.length, 0)
   } finally {
     view.close()
   }

@@ -703,6 +703,7 @@ async function scrollToBottom() {
 
 // ---- 文本发送 ----
 // ---- 会话管理 ----
+// 列表同步独立收尾，不能让辅助读取阻塞模型启动或已确认变更的解锁。
 async function refreshConvList(signal) {
   const read = conversationListReads.begin({ signal })
   if (!read) return
@@ -712,7 +713,7 @@ async function refreshConvList(signal) {
       conversations.value = result.filter((conv) => !deletedConvIds.has(conv.id))
   } catch (error) {
     if (!conversationListReads.isCurrent(read)) return
-    console.warn('刷新历史对话列表失败，异常类型：', error.name)
+    console.warn('刷新历史对话列表失败，异常类型：', error?.name || '未知异常')
   } finally {
     conversationListReads.finish(read)
   }
@@ -974,7 +975,7 @@ async function doSaveMessages(
     contractData,
     thinkingChain,
   )
-  await refreshConvList()
+  void refreshConvList()
   return result
 }
 
@@ -1105,7 +1106,7 @@ async function deleteMessage(idx) {
       }
     }
     if (result.conversation_deleted) forgetConversation(convId)
-    await refreshConvList()
+    void refreshConvList()
   } catch (error) {
     console.warn('删除消息未获确认，异常类型：', error.name)
     showContractWarning('删除未获确认，页面暂保留原消息，请刷新会话确认后再操作。', 6500)
@@ -1215,7 +1216,7 @@ async function regenerateSavedReply(target, contract) {
         clearContractSelection()
         previewData.value = target.contractData
       }
-      await refreshConvList()
+      void refreshConvList()
     } else if (
       ![...pendingMessageDeletions.value].some(
         (operation) => operation.regenerationTarget === target,
@@ -1411,7 +1412,7 @@ async function saveEdit() {
     applyConfirmedUserEdit(session, convId, result)
     messageEditDrafts.delete(session)
     if (editSession.value === session) editSession.value = null
-    await refreshConvList()
+    void refreshConvList()
   } catch (error) {
     if (!cancelled()) {
       console.warn('保存消息修改未获确认，异常类型：', error.name)
@@ -1623,7 +1624,7 @@ async function executeMessageRequest(
       restoreDraft = true
       return
     }
-    await refreshConvList(request.controller.signal)
+    void refreshConvList(request.controller.signal)
     if (request.controller.signal.aborted) {
       restoreDraft = true
       return
