@@ -1199,6 +1199,8 @@ async function regenerateSavedReply(target, contract) {
     if (abortControllers.value[convId] !== controller) return
     completed = result.status === 'completed'
     if (completed) {
+      // 定点重跑已确认保存，只解除目标回复的未确认状态，不清除其他轮次的标记。
+      target.saveFailed = false
       if (!contract) {
         if (!confirmedMessageEdits.has(convId)) confirmedMessageEdits.set(convId, new Map())
         for (const message of [target, result.user])

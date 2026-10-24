@@ -3961,6 +3961,191 @@ test('后续一轮保存成功不清除前一轮无效回执的未确认标记�
   }
 })
 
+// 模拟首次写入已提交但回执缺少身份，再通过现行定点重跑确认目标的保存状态。
+async function mountUnconfirmedRegeneration(contract, regenerate) {
+  const savedMessages = []
+  const reads = []
+  let writes = 0
+  const stream = async (...args) => {
+    const callbacks = args.at(-1)
+    const done = {
+      ...(contract
+        ? savedMessages[1].contract_data
+        : {
+            source_message_id: 1,
+            source_revision: messageRevision,
+            query: savedMessages[0].content,
+          }),
+      saved: true,
+      message_id: 2,
+      revision: 'b'.repeat(64),
+      chat_reply: '重新确认保存的完整回复',
+      thinking_chain: [{ type: 'tool', label: '新过程' }],
+    }
+    const finish = () => {
+      Object.assign(savedMessages[1], {
+        content: done.chat_reply,
+        revision: done.revision,
+        thinking_chain: done.thinking_chain,
+        ...(contract
+          ? { contract_data: { ...savedMessages[1].contract_data, chat_reply: done.chat_reply } }
+          : {}),
+      })
+      callbacks.onDone(done)
+    }
+    await regenerate({ callbacks, done, finish, signal: args.at(-2) })
+  }
+  const view = await mount({
+    saveMessages: async (_id, user, assistant, fileName, contractData, thinkingChain) => {
+      writes++
+      savedMessages.push(
+        { ...savedBubble(1, 'user', user), file_name: fileName },
+        {
+          ...savedBubble(2, 'assistant', assistant),
+          contract_data: contractData,
+          thinking_chain: thinkingChain,
+        },
+      )
+      return { ok: true }
+    },
+    getConversation: async (id) => {
+      reads.push(id)
+      return {
+        id,
+        messages:
+          id === 'A'
+            ? JSON.parse(JSON.stringify(savedMessages))
+            : [savedBubble(21, 'user', 'B问题'), savedBubble(22, 'assistant', 'B回复')],
+      }
+    },
+    regenerateChatStream: stream,
+    regenerateContractStream: stream,
+  })
+  view.state.currentConvId = 'A'
+  view.state.input = '原问题'
+  if (contract) view.state.pendingFile = new File(['合同正文'], '合同.txt')
+  await (contract ? view.state.sendFile('审查重点') : view.state.sendText())
+  assert.equal(view.state.messages[1].saveFailed, true)
+  assert.equal(view.state.messages[1].id, undefined)
+  return { ...view, savedMessages, reads, writeCount: () => writes }
+}
+
+for (const contract of [false, true]) {
+  const mode = contract ? '合同' : '咨询'
+  test(`${mode}重跑确认保存后解除目标未确认标记，切回历史不再显示过期警告`, async () => {
+    const view = await mountUnconfirmedRegeneration(contract, ({ finish }) => finish())
+    try {
+      const target = view.state.messages[1]
+      await view.state.regenerateMessage(1)
+      assert.equal(view.notices.length, 1, JSON.stringify(view.notices))
+      assert.equal(target.content, '重新确认保存的完整回复')
+      assert.equal(target.id, 2)
+      assert.equal(target.saveFailed, false)
+      assert.equal(view.state.streamMessageCache.A, undefined)
+      assert.equal(view.writeCount(), 1)
+      assert.deepEqual(view.reads, ['A'])
+      const noticeCount = view.notices.length
+      await view.state.newChat()
+      await view.state.loadConversation('A')
+      assert.deepEqual(view.reads, ['A', 'A'])
+      assert.equal(view.state.messages[1].content, target.content)
+      assert.equal(view.notices.length, noticeCount)
+    } finally {
+      view.close()
+    }
+  })
+
+  test(`${mode}后台重跑确认保存只释放所属未确认缓存，不影响当前页草稿与控制器`, async () => {
+    const entered = deferred()
+    const gate = deferred()
+    const view = await mountUnconfirmedRegeneration(contract, async ({ finish }) => {
+      entered.resolve()
+      await gate.promise
+      finish()
+    })
+    let pending
+    try {
+      const target = view.state.messages[1]
+      pending = view.state.regenerateMessage(1)
+      pending.then(() => entered.resolve())
+      await entered.promise
+      await view.state.loadConversation('B')
+      const controller = new AbortController()
+      view.state.loadingConvIds.add('B')
+      view.state.abortControllers.B = controller
+      view.state.input = 'B未发送文字'
+      const file = new File(['B附件'], 'B.txt')
+      view.state.pendingFile = file
+      gate.resolve()
+      await pending
+      assert.equal(target.saveFailed, false)
+      assert.equal(view.state.streamMessageCache.A, undefined)
+      assert.equal(view.state.currentConvId, 'B')
+      assert.equal(view.state.messages[1].content, 'B回复')
+      assert.equal(view.state.input, 'B未发送文字')
+      assert.equal(view.state.pendingFile, file)
+      assert.equal(view.state.abortControllers.B, controller)
+      assert.equal(view.state.loading, true)
+      assert.equal(controller.signal.aborted, false)
+      assert.equal(view.writeCount(), 1)
+    } finally {
+      gate.resolve()
+      await pending
+      view.close()
+    }
+  })
+
+  test(`${mode}重跑解除目标标记时仍保留其他未确认回复及会话缓存`, async () => {
+    const view = await mountUnconfirmedRegeneration(contract, ({ finish }) => finish())
+    try {
+      const other = { role: 'assistant', content: '另一条未确认回复', saveFailed: true }
+      view.state.messages.push({ role: 'user', content: '另一问题' }, other)
+      view.savedMessages.push(
+        savedBubble(3, 'user', '另一问题'),
+        savedBubble(4, 'assistant', other.content),
+      )
+      const target = view.state.messages[1]
+      await view.state.regenerateMessage(1)
+      assert.equal(target.saveFailed, false)
+      assert.equal(view.state.messages[3].saveFailed, true)
+      assert.equal(view.state.messages[3].content, other.content)
+      assert.equal(view.state.streamMessageCache.A.messages, view.state.messages)
+      assert.equal(view.writeCount(), 1)
+      const noticeCount = view.notices.length
+      await view.state.newChat()
+      await view.state.loadConversation('A')
+      assert.equal(view.state.messages[1], target)
+      assert.match(view.notices.at(-1).options.message, /未确认保存/)
+      assert.equal(view.notices.length, noticeCount + 1)
+    } finally {
+      view.close()
+    }
+  })
+
+  for (const failure of ['error', 'abort', 'unconfirmed']) {
+    test(`${mode}重跑${failure}仍保留原未确认标记、正文和缓存`, async () => {
+      const view = await mountUnconfirmedRegeneration(contract, ({ callbacks }) => {
+        if (failure === 'error') callbacks.onError('本次重跑未完成。')
+        if (failure === 'abort') callbacks.onDone({ aborted: true })
+        if (failure === 'unconfirmed') callbacks.onDone({ saved: true, chat_reply: '缺少身份' })
+      })
+      try {
+        const target = view.state.messages[1]
+        const original = target.content
+        await view.state.regenerateMessage(1)
+        assert.equal(target.content, original)
+        assert.equal(target.id, undefined)
+        assert.equal(target.saveFailed, true)
+        assert.equal(view.state.streamMessageCache.A.messages[1], target)
+        assert.equal(view.state.loading, false)
+        assert.equal(view.writeCount(), 1)
+      } finally {
+        view.close()
+      }
+    })
+  }
+}
+
 const streamFrame = (event) => 'data: ' + JSON.stringify(event) + '\n\n'
 const streamResponse = (events) =>
   new Response(events.map(streamFrame).join(''), {
