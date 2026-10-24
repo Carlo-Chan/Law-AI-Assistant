@@ -3557,6 +3557,233 @@ for (const deletedId of ['A', 'B']) {
   })
 }
 
+function seedHistoryEditor(state, id = 'A', text = '尚未保存的修改') {
+  state.currentConvId = id
+  state.messages = [savedBubble(1, 'user', id + '原问题'), savedBubble(2)]
+  state.editMessage(0)
+  state.editingText = text
+  return state.editSession
+}
+
+for (const failure of ['网络异常', '空响应', '错误身份', '无效消息']) {
+  test(`编辑中切换历史遇到${failure}，保留当前编辑器及最新文字并可直接保存`, async (context) => {
+    context.mock.method(console, 'warn', () => {})
+    const gate = deferred()
+    const edits = []
+    const view = await mount({
+      getConversation: () => gate.promise,
+      editSavedMessage: async (...args) => {
+        edits.push(args)
+        return editAck(args[1], args[3])
+      },
+    })
+    let reading
+    try {
+      const state = view.state
+      const session = seedHistoryEditor(state)
+      const original = state.messages
+      state.input = '主输入框草稿'
+      const file = new File(['合同'], '待发附件.txt')
+      state.pendingFile = file
+      reading = state.loadConversation('B')
+      assert.equal(state.historyLoading, true)
+      assert.equal(state.editSession, session)
+      assert.equal(state.editingIndex, 0)
+      state.editingText = '等待期间继续修改\n保留换行'
+      await state.saveEdit()
+      assert.deepEqual(edits, [])
+      if (failure === '网络异常') gate.reject(new Error('sk-private failure'))
+      else if (failure === '空响应') gate.resolve(null)
+      else if (failure === '错误身份') gate.resolve({ id: 'C', messages: [] })
+      else gate.resolve({ id: 'B', messages: [null] })
+      await reading
+      assert.equal(state.currentConvId, 'A')
+      assert.equal(state.messages, original)
+      assert.equal(state.editSession, session)
+      assert.equal(state.editingText, '等待期间继续修改\n保留换行')
+      assert.equal(state.historyLoading, false)
+      assert.equal(state.input, '主输入框草稿')
+      assert.equal(state.pendingFile, file)
+      assert.equal(state.messages[0].content, 'A原问题')
+      assert.equal(view.streams.length, 0)
+      assert.equal(view.writes.length, 0)
+      assert.match(view.notices.at(-1).options.message, /当前页面已保留/)
+      await state.saveEdit()
+      assert.deepEqual(edits, [['A', 1, messageRevision, '等待期间继续修改\n保留换行']])
+      assert.equal(state.messages[0].content, '等待期间继续修改\n保留换行')
+      assert.equal(state.editSession, null)
+    } finally {
+      gate.resolve({ id: 'B', messages: [] })
+      await reading
+      view.close()
+    }
+  })
+}
+
+for (const cached of [false, true]) {
+  test(`${cached ? '缓存' : '远端'}历史成功切换才隐藏原编辑器，返回时恢复所属草稿`, async () => {
+    const gate = deferred()
+    const view = await mount({
+      getConversation: async (id) =>
+        id === 'B'
+          ? gate.promise
+          : { id, messages: [savedBubble(1, 'user', 'A原问题'), savedBubble(2)] },
+    })
+    let reading
+    try {
+      const state = view.state
+      const session = seedHistoryEditor(state)
+      const target = [savedBubble(1, 'user', 'B原问题'), savedBubble(2)]
+      if (cached) state.streamMessageCache = { B: { messages: target, thinkingSteps: [] } }
+      reading = state.loadConversation('B')
+      if (!cached) {
+        assert.equal(state.currentConvId, 'A')
+        assert.equal(state.editSession, session)
+        gate.resolve({ id: 'B', messages: target })
+      }
+      await reading
+      assert.equal(state.currentConvId, 'B')
+      assert.equal(state.editingIndex, -1)
+      assert.equal(state.editSession, null)
+      assert.equal(state.messages[0].content, 'B原问题')
+      await state.loadConversation('A')
+      assert.equal(state.editSession, session)
+      assert.equal(state.editingIndex, 0)
+      assert.equal(state.editingText, '尚未保存的修改')
+      assert.equal(state.messages[0].content, 'A原问题')
+      assert.equal(view.writes.length, 0)
+    } finally {
+      gate.resolve({ id: 'B', messages: [] })
+      await reading
+      view.close()
+    }
+  })
+}
+
+test('编辑时历史读取被新对话取代，迟到失败不重新打开原编辑器', async () => {
+  const gate = deferred()
+  const view = await mount({ getConversation: () => gate.promise })
+  let reading
+  try {
+    const state = view.state
+    seedHistoryEditor(state)
+    reading = state.loadConversation('B')
+    await state.newChat()
+    state.input = '新对话草稿'
+    gate.reject(new Error('旧历史失败'))
+    await reading
+    assert.equal(state.currentConvId, null)
+    assert.equal(state.messages.length, 0)
+    assert.equal(state.editSession, null)
+    assert.equal(state.input, '新对话草稿')
+    assert.equal(state.historyLoading, false)
+    assert.equal(view.notices.length, 0)
+  } finally {
+    gate.resolve({ id: 'B', messages: [] })
+    await reading
+    view.close()
+  }
+})
+
+test('编辑时历史读取被另一个历史取代，迟到失败不关闭新页面编辑器', async () => {
+  const gate = deferred()
+  const view = await mount({
+    getConversation: async (id) =>
+      id === 'B' ? gate.promise : { id, messages: [savedBubble(1, 'user', 'C原问题')] },
+  })
+  let reading
+  try {
+    const state = view.state
+    seedHistoryEditor(state)
+    reading = state.loadConversation('B')
+    await state.loadConversation('C')
+    state.editMessage(0)
+    state.editingText = 'C编辑草稿'
+    const current = state.editSession
+    gate.reject(new Error('旧历史失败'))
+    await reading
+    assert.equal(state.currentConvId, 'C')
+    assert.equal(state.editSession, current)
+    assert.equal(state.editingText, 'C编辑草稿')
+    assert.equal(state.messages[0].content, 'C原问题')
+    assert.equal(view.notices.length, 0)
+  } finally {
+    gate.resolve({ id: 'B', messages: [] })
+    await reading
+    view.close()
+  }
+})
+
+test('历史等待期间明确取消原编辑，读取失败也不复活已取消草稿', async (context) => {
+  context.mock.method(console, 'warn', () => {})
+  const gate = deferred()
+  const view = await mount({ getConversation: () => gate.promise })
+  let reading
+  try {
+    const state = view.state
+    const session = seedHistoryEditor(state)
+    reading = state.loadConversation('B')
+    state.cancelEdit()
+    assert.equal(session.cancelled, true)
+    gate.reject(new Error('历史失败'))
+    await reading
+    assert.equal(state.currentConvId, 'A')
+    assert.equal(state.editSession, null)
+    state.restoreMessageEdit()
+    assert.equal(state.editingIndex, -1)
+    assert.equal(state.messages[0].content, 'A原问题')
+    assert.equal(view.writes.length, 0)
+  } finally {
+    gate.resolve({ id: 'B', messages: [] })
+    await reading
+    view.close()
+  }
+})
+
+for (const saved of [false, true]) {
+  test(`历史等待期间原编辑保存${saved ? '成功不恢复过期编辑器' : '失败仍可继续编辑'}，不误改目标历史`, async (context) => {
+    context.mock.method(console, 'warn', () => {})
+    const history = deferred()
+    const patch = deferred()
+    const view = await mount({
+      getConversation: async (id) =>
+        id === 'B'
+          ? history.promise
+          : { id, messages: [savedBubble(1, 'user', 'A原问题'), savedBubble(2)] },
+      editSavedMessage: () => patch.promise,
+    })
+    let reading
+    let saving
+    try {
+      const state = view.state
+      const session = seedHistoryEditor(state)
+      saving = state.saveEdit()
+      await new Promise(setImmediate)
+      assert.equal(session.submitted, true)
+      reading = state.loadConversation('B')
+      if (saved) patch.resolve(editAck(1, '尚未保存的修改'))
+      else patch.reject(new Error('写入失败'))
+      await saving
+      history.reject(new Error('历史失败'))
+      await reading
+      assert.equal(state.currentConvId, 'A')
+      assert.equal(state.historyLoading, false)
+      assert.equal(state.pendingMessageEdits.size, 0)
+      assert.equal(state.messages[0].content, saved ? '尚未保存的修改' : 'A原问题')
+      assert.equal(state.editSession, saved ? null : session)
+      assert.equal(state.editingIndex, saved ? -1 : 0)
+      if (!saved) assert.equal(state.editingText, '尚未保存的修改')
+      assert.equal(view.streams.length, 0)
+      assert.equal(view.writes.length, 0)
+    } finally {
+      patch.resolve(editAck(1, '尚未保存的修改'))
+      history.resolve({ id: 'B', messages: [] })
+      await Promise.all([reading, saving])
+      view.close()
+    }
+  })
+}
+
 for (const [description, result] of [
   ['空响应', null],
   ['缺少字段', {}],

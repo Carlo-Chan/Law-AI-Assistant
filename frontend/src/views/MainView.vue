@@ -753,7 +753,7 @@ async function loadConversation(id) {
   const read = historyReads.begin({ key: id })
   if (!read) return
   const editVersion = messageEditVersion
-  editSession.value = null
+  // 目标加载成功前仍显示原页面，保留其编辑会话；切换成功后再恢复目标草稿。
   historyLoading.value = true
   showScrollBtn.value = false
   // 保存当前对话的输入框草稿
