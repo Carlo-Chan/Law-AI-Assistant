@@ -6,7 +6,10 @@ import { JSDOM } from 'jsdom'
 import {
   chatStream as realChatStream,
   analyzeContractStream as realContractStream,
+  regenerateChatStream as realChatRegenerationStream,
+  regenerateContractStream as realContractRegenerationStream,
 } from '../src/utils/api.js'
+import { SSE_MAX_FRAME_BYTES } from '../src/utils/sse.js'
 
 // 只挂载真实页面的脚本逻辑，接口全部替换为离线函数，不连接数据库或模型。
 const dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/' })
@@ -2410,6 +2413,109 @@ const streamResponse = (events) =>
   new Response(events.map(streamFrame).join(''), {
     headers: { 'Content-Type': 'text/event-stream' },
   })
+
+function oversizedStreamResponse() {
+  const encoder = new TextEncoder()
+  const chunk = encoder.encode('x'.repeat(64 * 1024))
+  let remaining = SSE_MAX_FRAME_BYTES + 1
+  const state = { cancelled: 0 }
+  state.response = new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            streamFrame({ type: 'thinking', label: '检索工具' }) +
+              streamFrame({ type: 'token', content: '已收到的部分正文' }) +
+              'data: ',
+          ),
+        )
+      },
+      pull(controller) {
+        if (remaining <= 0) {
+          controller.enqueue(encoder.encode('\n\n' + streamFrame({ type: 'done' })))
+          controller.close()
+        } else {
+          controller.enqueue(chunk.subarray(0, Math.min(remaining, chunk.length)))
+          remaining -= chunk.length
+        }
+      },
+      cancel() {
+        state.cancelled++
+      },
+    }),
+    { headers: { 'Content-Type': 'text/event-stream' } },
+  )
+  return state
+}
+
+for (const contract of [false, true]) {
+  test(`真实读取器${contract ? '合同' : '咨询'}首次生成超限保留部分正文，保存一次并释放状态`, async (context) => {
+    const stream = oversizedStreamResponse()
+    context.mock.method(globalThis, 'fetch', async () => stream.response)
+    const view = await mount({
+      chatStream: realChatStream,
+      analyzeContractStream: realContractStream,
+    })
+    try {
+      view.state.currentConvId = 'A'
+      view.state.input = '问题'
+      if (contract) view.state.pendingFile = new File(['合同'], '合同.txt')
+      await (contract ? view.state.sendFile() : view.state.sendText())
+      const assistant = view.state.messages.at(-1)
+      assert.match(assistant.content, /已收到的部分正文/)
+      assert.match(assistant.content, /单次回复数据过大/)
+      assert.equal(assistant.contractData, undefined)
+      assert.equal(view.writes.length, 1)
+      assert.equal(view.writes[0][2], assistant.content)
+      assert.equal(view.state.loadingConvIds.size, 0)
+      assert.deepEqual(view.state.abortControllers, {})
+      assert.equal(stream.cancelled, 1)
+      assert.equal(stream.response.body.locked, false)
+    } finally {
+      view.close()
+    }
+  })
+
+  test(`真实读取器${contract ? '合同' : '咨询'}重生成超限保留旧回复、草稿及附件，不追加保存`, async (context) => {
+    const stream = oversizedStreamResponse()
+    context.mock.method(globalThis, 'fetch', async () => stream.response)
+    const view = await mount({
+      regenerateChatStream: realChatRegenerationStream,
+      regenerateContractStream: realContractRegenerationStream,
+    })
+    try {
+      seedChatRegeneration(view.state)
+      if (contract) {
+        view.state.messages[0].file = { name: '历史合同.txt' }
+        view.state.messages[1].contractData = {
+          raw_text: '合同原文',
+          chat_reply: '原回复',
+          risk_points: [],
+        }
+      }
+      const before = JSON.parse(JSON.stringify(view.state.messages))
+      const file = new File(['待发附件'], '待发.txt')
+      view.state.input = '待发草稿'
+      view.state.pendingFile = file
+      await view.state.regenerateMessage(1)
+      assert.equal(view.state.messages[1].content, before[1].content)
+      assert.deepEqual(view.state.messages[1].thinkingChain, before[1].thinkingChain)
+      assert.deepEqual(view.state.messages[1].contractData, before[1].contractData)
+      assert.deepEqual(view.state.messages.slice(2), before.slice(2))
+      assert.equal(view.state.messages[1].regenerationDraft, undefined)
+      assert.equal(view.state.input, '待发草稿')
+      assert.equal(view.state.pendingFile, file)
+      assert.equal(view.writes.length, 0)
+      assert.match(view.notices.at(-1).options.message, /单次回复数据过大/)
+      assert.equal(view.state.loadingConvIds.size, 0)
+      assert.deepEqual(view.state.abortControllers, {})
+      assert.equal(stream.cancelled, 1)
+      assert.equal(stream.response.body.locked, false)
+    } finally {
+      view.close()
+    }
+  })
+}
 
 test('真实读取器截断时保留正文并仅保存一次带提示的结果', async (context) => {
   context.mock.method(globalThis, 'fetch', async () =>

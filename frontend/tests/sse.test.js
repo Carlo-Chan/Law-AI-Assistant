@@ -357,3 +357,181 @@ test('异步正文回调等待期间停止，不接受同一分包中尚未处�
   assert.deepEqual(await pending, { status: 'aborted' })
   assert.deepEqual(onDone.mock.calls[0].arguments[0], { aborted: true })
 })
+
+for (const [name, oversized] of [
+  ['无换行的数据', 'data: ' + 'x'.repeat(81)],
+  ['未结束的多行事件', 'data: {\ndata: "type":"done"\ndata: ' + ' '.repeat(60)],
+  ['无换行的注释', ':' + 'x'.repeat(81)],
+  ['无换行的未知字段', 'unknown: ' + 'x'.repeat(81)],
+  ['夹有心跳但未结束的事件', 'data: {\n' + ': heartbeat\n'.repeat(10)],
+]) {
+  for (const bytewise of [false, true]) {
+    test(`${name}超限时停止接收，${bytewise ? '逐字节' : '整包'}传输结果一致`, async (context) => {
+      let cancelled = 0
+      let transport
+      const bytes = encoder.encode(oversized + '\n\n' + frame({ type: 'done' }))
+      const body = new ReadableStream({
+        start(controller) {
+          if (bytewise) for (const byte of bytes) controller.enqueue(Uint8Array.of(byte))
+          else controller.enqueue(bytes)
+        },
+        cancel() {
+          cancelled++
+        },
+      })
+      context.mock.method(globalThis, 'fetch', async (_url, options) => {
+        transport = options.signal
+        return response(body)
+      })
+      const onError = mock.fn()
+      const onDone = mock.fn()
+      assert.deepEqual(await send({ onError, onDone }, undefined, { maxFrameBytes: 80 }), {
+        status: 'error',
+      })
+      assert.equal(onError.mock.callCount(), 1)
+      assert.equal(onError.mock.calls[0].arguments[1].kind, 'limit')
+      assert.match(onError.mock.calls[0].arguments[0], /单次回复数据过大/)
+      assert.equal(onDone.mock.callCount(), 0)
+      assert.equal(cancelled, 1)
+      assert.equal(body.locked, false)
+      assert.equal(transport.aborted, true)
+    })
+  }
+}
+
+for (const newline of ['\n', '\r', '\r\n']) {
+  test(`单帧按 UTF-8 字节计数，${JSON.stringify(newline)} 分隔符不影响边界`, async (context) => {
+    const event = frame({ type: 'token', content: '中文😀' })
+    const limit = encoder.encode(event.trimEnd()).byteLength
+    for (const delta of [0, -1]) {
+      const bytes = encoder.encode(event.replaceAll('\n', newline) + frame({ type: 'done' }))
+      context.mock.method(globalThis, 'fetch', async () =>
+        response(
+          new ReadableStream({
+            start(controller) {
+              for (const byte of bytes) controller.enqueue(Uint8Array.of(byte))
+              controller.close()
+            },
+          }),
+        ),
+      )
+      const onToken = mock.fn()
+      const onError = mock.fn()
+      const result = await send({ onToken, onError }, undefined, { maxFrameBytes: limit + delta })
+      assert.equal(result.status, delta === 0 ? 'completed' : 'error')
+      assert.equal(onToken.mock.callCount(), delta === 0 ? 1 : 0)
+      if (delta === 0) assert.equal(onToken.mock.calls[0].arguments[0], '中文😀')
+      else assert.equal(onError.mock.calls[0].arguments[1].kind, 'limit')
+    }
+  })
+}
+
+test('完整事件分发后释放额度，不把整包、整段回复或心跳总量作为单帧大小', async (context) => {
+  const events = [
+    ...Array.from({ length: 1000 }, () => frame({ type: 'token', content: '合法片段' })),
+    ...Array.from({ length: 1000 }, () => ': heartbeat\n\n'),
+    frame({ type: 'done' }),
+  ].join('')
+  context.mock.method(globalThis, 'fetch', async () => response(events))
+  const onToken = mock.fn()
+  assert.deepEqual(await send({ onToken }, undefined, { maxFrameBytes: 80 }), {
+    status: 'completed',
+  })
+  assert.equal(onToken.mock.callCount(), 1000)
+})
+
+test('合法多行事件和 EOF 尾帧共用累计额度', async (context) => {
+  const event = 'data: {\ndata: "type":"done"\ndata: }'
+  const size = encoder.encode(event.replaceAll('\n', '')).byteLength
+  for (const delta of [0, -1]) {
+    context.mock.method(globalThis, 'fetch', async () => response(event))
+    const onError = mock.fn()
+    const result = await send({ onError }, undefined, { maxFrameBytes: size + delta })
+    assert.equal(result.status, delta === 0 ? 'completed' : 'error')
+    if (delta) assert.equal(onError.mock.calls[0].arguments[1].kind, 'limit')
+  }
+})
+
+test('超限前分发的正文保留，超限后的完成帧和正文不再执行', async (context) => {
+  context.mock.method(globalThis, 'fetch', async () =>
+    response(
+      frame({ type: 'token', content: '已收到正文' }) +
+        'data: ' +
+        'x'.repeat(81) +
+        '\n\n' +
+        frame({ type: 'done' }) +
+        frame({ type: 'token', content: '不可追加' }),
+    ),
+  )
+  const onToken = mock.fn()
+  const onDone = mock.fn()
+  const onError = mock.fn()
+  await send({ onToken, onDone, onError }, undefined, { maxFrameBytes: 80 })
+  assert.deepEqual(
+    onToken.mock.calls.map((call) => call.arguments[0]),
+    ['已收到正文'],
+  )
+  assert.equal(onDone.mock.callCount(), 0)
+  assert.equal(onError.mock.callCount(), 1)
+})
+
+for (const maxFrameBytes of [0, -1, 1.5, Infinity, NaN, '80']) {
+  test(`非法帧大小配置不发起请求：${String(maxFrameBytes)}`, async (context) => {
+    const fetch = context.mock.method(globalThis, 'fetch', async () =>
+      response(frame({ type: 'done' })),
+    )
+    await assert.rejects(send({}, undefined, { maxFrameBytes }), RangeError)
+    assert.equal(fetch.mock.callCount(), 0)
+  })
+}
+
+test('较大的合法合同完成事件跨解码分段仍完整保留原文、报告和风险点', async (context) => {
+  const event = {
+    type: 'done',
+    raw_text: '合同原文😀'.repeat(20_000),
+    chat_reply: '完整审查报告'.repeat(2000),
+    risk_points: [{ quote: '合同原文', level: 'high', bubble_text: '风险分析' }],
+  }
+  context.mock.method(globalThis, 'fetch', async () => response(frame(event)))
+  const onDone = mock.fn()
+  const onError = mock.fn()
+  assert.deepEqual(await send({ onDone, onError }), { status: 'completed' })
+  assert.deepEqual(onDone.mock.calls[0].arguments[0], event)
+  assert.equal(onError.mock.callCount(), 0)
+})
+
+test('超限收尾等待异步错误回调，回调失败也不能触发第二次终止', async (context) => {
+  const gate = deferred()
+  const entered = deferred()
+  let cancelled = 0
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: ' + 'x'.repeat(81)))
+    },
+    cancel() {
+      cancelled++
+    },
+  })
+  context.mock.method(globalThis, 'fetch', async () => response(body))
+  const onError = mock.fn(async () => {
+    entered.resolve()
+    await gate.promise
+    throw new Error('sk-private failure')
+  })
+  let settled = false
+  const pending = send({ onError }, undefined, { maxFrameBytes: 80 })
+  const checked = assert.rejects(pending, StreamCallbackError).then(() => {
+    settled = true
+  })
+  try {
+    await entered.promise
+    await new Promise(setImmediate)
+    assert.equal(settled, false)
+    assert.equal(cancelled, 1)
+  } finally {
+    gate.resolve()
+    await checked
+  }
+  assert.equal(onError.mock.callCount(), 1)
+  assert.equal(body.locked, false)
+})

@@ -1,4 +1,6 @@
 export const SSE_IDLE_TIMEOUT_MS = 180_000
+export const SSE_MAX_FRAME_BYTES = 16 * 1024 * 1024
+const DECODE_CHUNK_BYTES = 16 * 1024
 
 export class StreamCallbackError extends Error {
   constructor() {
@@ -9,6 +11,7 @@ export class StreamCallbackError extends Error {
 
 class StreamProtocolError extends Error {}
 class StreamInterrupted extends Error {}
+class StreamLimitError extends Error {}
 
 const fields = {
   thinking: ['label'],
@@ -28,8 +31,10 @@ export async function readSSEStream(
   options,
   signal,
   callbacks = {},
-  { idleTimeoutMs = SSE_IDLE_TIMEOUT_MS } = {},
+  { idleTimeoutMs = SSE_IDLE_TIMEOUT_MS, maxFrameBytes = SSE_MAX_FRAME_BYTES } = {},
 ) {
+  if (!Number.isSafeInteger(maxFrameBytes) || maxFrameBytes <= 0)
+    throw new RangeError('单个 SSE 事件大小上限必须为正整数。')
   const transport = new AbortController()
   let reader
   let body
@@ -95,6 +100,18 @@ export async function readSSEStream(
 
   let buffer = ''
   let data = []
+  let frameBytes = 0
+  let skipLF = false
+  const encoder = new TextEncoder()
+
+  function append(text) {
+    // 按行内容累计 UTF-8 字节，包含注释和未知字段，不能靠心跳绕过未结束事件的限制。
+    const size = encoder.encode(text).byteLength
+    if (frameBytes + size > maxFrameBytes) throw new StreamLimitError()
+    frameBytes += size
+    buffer += text
+  }
+
   async function dispatch() {
     if (interruption && !terminal) throw new StreamInterrupted()
     if (!data.length || terminal) return
@@ -160,16 +177,27 @@ export async function readSSEStream(
   }
 
   async function feed(text, final = false) {
-    buffer += text
-    while (!terminal) {
+    let start = 0
+    if (skipLF && text.length) {
+      if (text[0] === '\n') start = 1
+      skipLF = false
+    }
+    // 仅扫描本批新文本，不反复扫描已累计的长行；CRLF 跨分包时仍只算一次换行。
+    for (let index = start; index < text.length && !terminal; index++) {
       if (interruption) throw new StreamInterrupted()
-      const index = buffer.search(/[\r\n]/)
-      if (index < 0 || (!final && buffer[index] === '\r' && index === buffer.length - 1)) break
-      const width = buffer[index] === '\r' && buffer[index + 1] === '\n' ? 2 : 1
-      const textLine = buffer.slice(0, index)
-      buffer = buffer.slice(index + width)
+      if (text[index] !== '\r' && text[index] !== '\n') continue
+      append(text.slice(start, index))
+      const textLine = buffer
+      buffer = ''
+      if (textLine === '') frameBytes = 0
+      if (text[index] === '\r') {
+        if (text[index + 1] === '\n') index++
+        else if (index === text.length - 1) skipLF = true
+      }
+      start = index + 1
       await line(textLine)
     }
+    if (!terminal) append(text.slice(start))
     if (final && !terminal) {
       if (buffer) await line(buffer)
       buffer = ''
@@ -203,13 +231,24 @@ export async function readSSEStream(
       while (!terminal) {
         const { done, value } = await waitIO(() => reader.read())
         if (interruption) throw new StreamInterrupted()
-        let text
-        try {
-          text = done ? decoder.decode() : decoder.decode(value, { stream: true })
-        } catch {
-          throw new StreamProtocolError()
+        // 网络分包可能包含许多合法事件，分段解码而不是把整个分包误当作一个事件限长。
+        for (
+          let offset = 0;
+          offset < (done ? 1 : value.byteLength) && !terminal;
+          offset += DECODE_CHUNK_BYTES
+        ) {
+          let text
+          try {
+            text = done
+              ? decoder.decode()
+              : decoder.decode(value.subarray(offset, offset + DECODE_CHUNK_BYTES), {
+                  stream: true,
+                })
+          } catch {
+            throw new StreamProtocolError()
+          }
+          await feed(text, done)
         }
-        await feed(text, done)
         if (done) {
           if (!terminal)
             await finish('error', '回复传输未完整结束，已接收内容暂保留，请稍后重试。', {
@@ -224,6 +263,10 @@ export async function readSSEStream(
     if (terminal) throw error
     if (error instanceof StreamCallbackError) {
       await finish('error', error.message, { kind: 'processing' })
+    } else if (error instanceof StreamLimitError) {
+      await finish('error', '单次回复数据过大，已停止接收，请刷新会话核实结果。', {
+        kind: 'limit',
+      })
     } else if (error instanceof StreamProtocolError) {
       await finish('error', '回复数据格式异常，已接收内容暂保留，请稍后重试。', {
         kind: 'protocol',
