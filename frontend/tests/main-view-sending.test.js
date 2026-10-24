@@ -995,6 +995,76 @@ test('缺少对应问题时不删旧回复，不创建新请求', async () => {
     view.close()
   }
 })
+function mockClipboard(context, writeText) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { clipboard: { writeText } },
+  })
+  context.after(() => {
+    if (previous) Object.defineProperty(globalThis, 'navigator', previous)
+    else delete globalThis.navigator
+  })
+}
+
+for (const draft of [false, true]) {
+  for (const markdown of [false, true]) {
+    test(`${draft ? '重生成预览' : '已完成回复'}复制${markdown ? 'Markdown' : '纯文本'}保留实际内容，不修改消息`, async (context) => {
+      const source = '# 报告\n\n`民法典第585条`\n\n```text\n原文：退还押金。\n```'
+      const copied = []
+      mockClipboard(context, async (text) => copied.push(text))
+      const view = await mount()
+      try {
+        view.state.messages = [
+          {
+            role: 'assistant',
+            content: draft ? '原回复' : source,
+            ...(draft ? { regenerationDraft: { content: source } } : {}),
+          },
+        ]
+        await view.state.copyMessage(0, markdown)
+        assert.deepEqual(copied, [markdown ? source : '报告\n\n民法典第585条\n\n原文：退还押金。'])
+        assert.equal(view.state.messages[0].content, draft ? '原回复' : source)
+        if (draft) assert.equal(view.state.messages[0].regenerationDraft.content, source)
+        assert.deepEqual(view.notices, [{ kind: 'success', options: '已复制到剪贴板' }])
+        assert.equal(view.writes.length, 0)
+      } finally {
+        view.close()
+      }
+    })
+  }
+}
+
+test('剪贴板拒绝写入时只提示复制失败，不修改消息或暴露异常', async (context) => {
+  mockClipboard(context, async () => {
+    throw new Error('私有异常 sk-private')
+  })
+  const view = await mount()
+  try {
+    view.state.messages = [{ role: 'assistant', content: '完整原文' }]
+    await view.state.copyMessage(0)
+    assert.equal(view.state.messages[0].content, '完整原文')
+    assert.deepEqual(view.notices, [{ kind: 'error', options: '复制失败' }])
+  } finally {
+    view.close()
+  }
+})
+
+test('空回复和失效下标不调用剪贴板，也不误报复制成功', async (context) => {
+  const copied = []
+  mockClipboard(context, async (text) => copied.push(text))
+  const view = await mount()
+  try {
+    view.state.messages = [{ role: 'assistant', content: '' }]
+    await view.state.copyMessage(0)
+    await view.state.copyMessage(8)
+    assert.deepEqual(copied, [])
+    assert.deepEqual(view.notices, [])
+  } finally {
+    view.close()
+  }
+})
+
 const editConflict = () =>
   Object.assign(new Error('message_changed'), {
     response: { status: 409, data: { code: 'message_changed' } },
