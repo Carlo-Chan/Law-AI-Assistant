@@ -16,7 +16,7 @@ const dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/'
 for (const name of ['window', 'document', 'Element', 'SVGElement', 'HTMLElement']) {
   globalThis[name] = name === 'window' ? dom.window : dom.window[name]
 }
-const { createApp, h, nextTick } = await import('vue')
+const { createApp, h, nextTick, compile } = await import('vue')
 const { renderHighlightedContract } = await import('../src/utils/highlight.js')
 const sourceUrl = new URL('../src/views/MainView.vue', import.meta.url)
 const source = await readFile(sourceUrl, 'utf8')
@@ -1069,6 +1069,263 @@ const editConflict = () =>
   Object.assign(new Error('message_changed'), {
     response: { status: 409, data: { code: 'message_changed' } },
   })
+
+function inputTemplate(model) {
+  const pending = [descriptor.template.ast]
+  while (pending.length) {
+    const node = pending.pop()
+    if (
+      node.type === 1 &&
+      node.props.some(
+        (prop) => prop.type === 7 && prop.name === 'model' && prop.exp?.content === model,
+      )
+    )
+      return node.loc.source
+    pending.push(...(node.children || []))
+  }
+  assert.fail('未找到实际页面的输入框模板：' + model)
+}
+
+// 编译实际输入框片段来验证修饰符顺序；只用可控 textarea 替代输入组件，不模拟布局。
+async function mountKeyboardProbe(model, overrides = {}) {
+  const view = await mount(overrides)
+  const state = view.state
+  state.currentConvId = 'A'
+  if (model === 'input') state.input = '正在确认的候选词'
+  if (model === 'editingText') {
+    state.messages = [savedBubble(1, 'user', '原问题'), savedBubble(2)]
+    state.editMessage(0)
+    state.editingText = '正在修改的候选词'
+  }
+  if (model === 'renameText') {
+    state.conversations = [{ id: 'A', title: '原标题' }]
+    await state.startRename('A')
+    state.renameText = '正在重命名的候选词'
+  }
+  const scope = { conv: { id: 'A' } }
+  for (const name of Object.keys(state)) {
+    Object.defineProperty(scope, name, {
+      enumerable: true,
+      get: () => state[name],
+      set: (value) => {
+        state[name] = value
+      },
+    })
+  }
+  const root = document.createElement('div')
+  document.body.append(root)
+  const app = createApp({
+    setup: () => scope,
+    // 重命名输入框原本带 v-else，提供相邻条件节点而不改写它的真实事件绑定。
+    render: compile('<span v-if="renamingConvId !== conv.id"></span>' + inputTemplate(model)),
+  })
+  app.component('el-input', {
+    inheritAttrs: false,
+    props: ['modelValue', 'type', 'autosize', 'disabled', 'placeholder'],
+    emits: ['update:modelValue'],
+    setup:
+      (props, { attrs, emit }) =>
+      () =>
+        h('textarea', {
+          ...attrs,
+          value: props.modelValue,
+          disabled: props.disabled,
+          onInput: (event) => emit('update:modelValue', event.target.value),
+        }),
+  })
+  app.mount(root)
+  await nextTick()
+  const element = root.querySelector('textarea, input')
+  assert.ok(element)
+  return {
+    ...view,
+    key(key, options = {}) {
+      const event = new dom.window.KeyboardEvent('keydown', {
+        key,
+        bubbles: true,
+        cancelable: true,
+        ...options,
+      })
+      element.dispatchEvent(event)
+      return event
+    },
+    async close() {
+      app.unmount()
+      root.remove()
+      const tasks = new Set(
+        state.messages.map((message) => state.requests.findMessage(message)?.task).filter(Boolean),
+      )
+      try {
+        await Promise.all(tasks)
+      } finally {
+        view.close()
+      }
+    },
+  }
+}
+
+const compositionKeys = [
+  { name: 'isComposing', options: { isComposing: true } },
+  { name: 'keyCode229', options: { isComposing: false, keyCode: 229 } },
+]
+
+for (const file of [false, true]) {
+  for (const { name, options } of compositionKeys) {
+    test(`真实发送绑定在${name}候选确认时不拦截默认行为或误发${file ? '附件' : '文字'}`, async () => {
+      const view = await mountKeyboardProbe('input')
+      try {
+        const attachment = file ? new File(['合同'], '候选词.txt') : null
+        view.state.pendingFile = attachment
+        const event = view.key('Enter', options)
+        await new Promise(setImmediate)
+        assert.equal(event.defaultPrevented, false)
+        assert.equal(view.state.input, '正在确认的候选词')
+        assert.equal(view.state.pendingFile, attachment)
+        assert.deepEqual(view.state.messages, [])
+        assert.equal(view.streams.length, 0)
+        assert.equal(view.writes.length, 0)
+      } finally {
+        await view.close()
+      }
+    })
+  }
+}
+
+for (const { name, options } of compositionKeys) {
+  test(`消息编辑中的${name}候选取消不关闭编辑器或丢失修改`, async () => {
+    const view = await mountKeyboardProbe('editingText')
+    try {
+      const session = view.state.editSession
+      view.key('Escape', options)
+      await nextTick()
+      assert.equal(view.state.editSession, session)
+      assert.equal(view.state.editingText, '正在修改的候选词')
+      assert.equal(view.state.messages[0].content, '原问题')
+      assert.equal(view.state.editingIndex, 0)
+      assert.equal(view.writes.length, 0)
+    } finally {
+      await view.close()
+    }
+  })
+
+  for (const key of ['Enter', 'Escape']) {
+    test(`重命名原有${name}期间的${key}保护仍有效`, async () => {
+      const titles = []
+      const view = await mountKeyboardProbe('renameText', {
+        updateConvTitle: async (...args) => titles.push(args),
+      })
+      try {
+        const event = view.key(key, options)
+        await new Promise(setImmediate)
+        assert.equal(event.defaultPrevented, false)
+        assert.equal(view.state.renamingConvId, 'A')
+        assert.equal(view.state.renameText, '正在重命名的候选词')
+        assert.deepEqual(titles, [])
+      } finally {
+        await view.close()
+      }
+    })
+  }
+}
+
+for (const modifier of ['shiftKey', 'ctrlKey', 'altKey', 'metaKey']) {
+  test(`${modifier}加回车保留默认编辑行为，不发送消息`, async () => {
+    const view = await mountKeyboardProbe('input')
+    try {
+      const event = view.key('Enter', { [modifier]: true })
+      await new Promise(setImmediate)
+      assert.equal(event.defaultPrevented, false)
+      assert.equal(view.state.input, '正在确认的候选词')
+      assert.equal(view.streams.length, 0)
+    } finally {
+      await view.close()
+    }
+  })
+}
+
+test('按住回车的重复事件不发送新草稿，松开后正常回车仍可发送', async () => {
+  const view = await mountKeyboardProbe('input')
+  try {
+    for (let count = 0; count < 20; count++) {
+      assert.equal(view.key('Enter', { repeat: true }).defaultPrevented, true)
+    }
+    await new Promise(setImmediate)
+    assert.equal(view.streams.length, 0)
+    assert.equal(view.state.input, '正在确认的候选词')
+    assert.equal(view.key('Enter').defaultPrevented, true)
+    await new Promise(setImmediate)
+    assert.equal(view.streams.length, 1)
+    assert.equal(view.writes.length, 1)
+  } finally {
+    await view.close()
+  }
+})
+
+for (const file of [false, true]) {
+  test(`实际绑定连续回车仍只发送一次${file ? '附件' : '文字'}，不会误停止请求`, async () => {
+    const view = await mountKeyboardProbe('input')
+    try {
+      if (file) view.state.pendingFile = new File(['合同'], '合同.txt')
+      for (let count = 0; count < 30; count++) {
+        assert.equal(view.key('Enter').defaultPrevented, true)
+      }
+      await new Promise(setImmediate)
+      assert.equal(view.streams.length, 1)
+      assert.equal(view.writes.length, 1)
+      assert.equal(view.state.messages.length, 2)
+      assert.equal(view.state.messages[1].saveFailed, false)
+    } finally {
+      await view.close()
+    }
+  })
+}
+
+test('非组合状态下 Esc 仍正常取消消息编辑而不改写正文', async () => {
+  const view = await mountKeyboardProbe('editingText')
+  try {
+    view.key('Escape')
+    await nextTick()
+    assert.equal(view.state.editingIndex, -1)
+    assert.equal(view.state.messages[0].content, '原问题')
+  } finally {
+    await view.close()
+  }
+})
+
+test('非组合状态下重命名回车仍阻止默认行为并保存一次', async () => {
+  const titles = []
+  const view = await mountKeyboardProbe('renameText', {
+    updateConvTitle: async (id, title) => {
+      titles.push(title)
+      return { conversation_id: id, title, saved: true }
+    },
+  })
+  try {
+    assert.equal(view.key('Enter').defaultPrevented, true)
+    await new Promise(setImmediate)
+    assert.deepEqual(titles, ['正在重命名的候选词'])
+    assert.equal(view.state.renamingConvId, null)
+  } finally {
+    await view.close()
+  }
+})
+
+for (const file of [false, true]) {
+  test(`发送函数自身也阻止229组合键误发${file ? '附件' : '文字'}`, async () => {
+    const view = await mount()
+    try {
+      view.state.currentConvId = 'A'
+      view.state.input = '候选确认'
+      if (file) view.state.pendingFile = new File(['合同'], '合同.txt')
+      view.state.handleSend({ keyCode: 229, isComposing: false, type: 'keydown' })
+      await new Promise(setImmediate)
+      assert.equal(view.state.input, '候选确认')
+      assert.equal(view.streams.length, 0)
+    } finally {
+      view.close()
+    }
+  })
+}
 
 test('编辑保存仅更新目标，服务端确认前不改正文，不重建历史或调用模型', async () => {
   const gate = deferred()

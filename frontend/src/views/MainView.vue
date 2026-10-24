@@ -315,7 +315,7 @@
                   :autosize="{ minRows: 3, maxRows: 8 }"
                   placeholder="输入法律问题，或上传合同文件进行审查..."
                   :disabled="loading || historyLoading"
-                  @keydown.enter.exact.prevent="handleSend"
+                  @keydown.enter.exact="handleSend"
                 />
                 <div class="input-actions">
                   <el-upload
@@ -874,13 +874,17 @@ async function startRename(convId) {
   if (renameSession.value !== session) return
   document.querySelector(`.conv-title-input[data-rename-key="${session.key}"]`)?.focus()
 }
+// 输入法候选操作不交给业务快捷键处理；部分浏览器通过 229 标识组合输入。
+function isComposingKey(event) {
+  return event?.isComposing || event?.keyCode === 229
+}
 function finishRename(convId, event) {
-  if (event?.isComposing || event?.keyCode === 229) return
+  if (isComposingKey(event)) return
   event?.preventDefault?.()
   return renaming.save(convId, event?.currentTarget?.dataset?.renameKey)
 }
 function cancelRename(event) {
-  if (event?.isComposing || event?.keyCode === 229) return
+  if (isComposingKey(event)) return
   event?.preventDefault?.()
   renaming.cancel(event?.currentTarget?.dataset?.renameKey)
 }
@@ -981,11 +985,15 @@ async function doSaveMessages(
 
 // 发送与停止入口分开，旧发送按钮上的连续点击不能被误判为停止。
 function handleSend(event) {
+  if (isComposingKey(event)) return
+  if (event?.type === 'keydown') {
+    event.preventDefault?.()
+    if (event.repeat) return
+  }
   if (
     historyLoading.value ||
     deletingConvIds.value.has(pageKey()) ||
-    messageMutationBlocksCurrent() ||
-    event?.isComposing
+    messageMutationBlocksCurrent()
   )
     return
   const _key = pageKey()
@@ -1430,7 +1438,8 @@ async function saveEdit() {
   }
 }
 
-function cancelEdit() {
+function cancelEdit(event) {
+  if (isComposingKey(event)) return
   const session = editSession.value
   if (!session || session.submitted) return
   session.cancelled = true
