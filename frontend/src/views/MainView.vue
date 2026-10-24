@@ -481,8 +481,13 @@ const renamingConvId = ref(null)
 const renameText = ref('')
 const streamMessageCache = ref({})
 const thinkingSteps = ref([])
+const deletingConvIds = ref(new Set())
+const pendingConversationDeletions = new Map()
+// 页面生命周期内记住已确认删除的身份，阻止迟到的历史或列表响应重新显示它。
+const deletedConvIds = new Set()
 const requests = createConversationRequests({
-  currentKey: () => (historyLoading.value ? null : pageKey()),
+  currentKey: () =>
+    historyLoading.value || deletingConvIds.value.has(pageKey()) ? null : pageKey(),
   messages,
   thinkingSteps,
   loadingIds: loadingConvIds,
@@ -583,6 +588,7 @@ const canSend = computed(
   () =>
     (input.value.trim() || pendingFile.value) &&
     !historyLoading.value &&
+    !deletingConvIds.value.has(pageKey()) &&
     !loadingConvIds.value.has(pageKey()),
 )
 
@@ -605,7 +611,8 @@ async function scrollToBottom() {
 async function refreshConvList(signal) {
   try {
     const result = await listConversations(signal)
-    if (!signal?.aborted) conversations.value = result
+    if (!signal?.aborted)
+      conversations.value = result.filter((conv) => !deletedConvIds.has(conv.id))
   } catch (error) {
     if (signal?.aborted) return
     console.warn('刷新历史对话列表失败，异常类型：', error.name)
@@ -641,6 +648,7 @@ async function newChat() {
 }
 // 加载历史对话：缓存当前对话 → 恢复目标对话（缓存优先，否则查数据库）
 async function loadConversation(id) {
+  if (deletedConvIds.has(id) || deletingConvIds.value.has(id)) return
   const version = ++navigationVersion
   historyLoading.value = true
   showScrollBtn.value = false
@@ -678,7 +686,7 @@ async function loadConversation(id) {
   }
   try {
     const conv = await getConversation(id)
-    if (version !== navigationVersion) return
+    if (version !== navigationVersion || deletedConvIds.has(id)) return
     currentConvId.value = id
     pendingFile.value = draftFiles[id] || null
     input.value = draftInputs[id] || ''
@@ -757,18 +765,49 @@ function cancelRename() {
 
 // 删除对话：若为当前对话则清空界面
 async function handleDeleteConv(id) {
+  if (deletedConvIds.has(id) || deletingConvIds.value.has(id) || confirmState.visible) return
   const ok = await showConfirm('删除后不可恢复', { okText: '删除', cancelText: '取消' })
-  if (!ok) return
+  if (!ok || deletedConvIds.has(id) || deletingConvIds.value.has(id)) return
+  deletingConvIds.value.add(id)
+  let release
+  const outcome = new Promise((resolve) => {
+    release = resolve
+  })
+  pendingConversationDeletions.set(id, outcome)
+  let deleted = false
   try {
     await deleteConversation(id)
+    deleted = true
+    deletedConvIds.add(id)
+    const ownedMessages = requests.invalidate(id)
+    for (const message of ownedMessages) flushTypewriter(message)
+    conversations.value = conversations.value.filter((conv) => conv.id !== id)
+    delete draftInputs[id]
+    delete draftFiles[id]
+    draftRecovery.forget(id)
     if (currentConvId.value === id) {
+      // 只清理被删除的当前页，不取消用户已发起的其他历史加载，也不覆盖新对话草稿。
       currentConvId.value = null
+      draftKey.value = `__draft_${++nextDraftId}`
       messages.value = []
+      thinkingSteps.value = []
+      input.value = draftInputs.__new__ || ''
+      pendingFile.value = draftFiles.__new__ || null
+      editingIndex.value = -1
+      editingText.value = ''
+      showScrollBtn.value = false
+      showPreview.value = false
+      previewData.value = null
     }
-    await refreshConvList()
   } catch (error) {
-    console.warn('删除历史对话失败', error)
+    console.warn('删除历史对话未获确认，异常类型：', error.name)
+    showContractWarning('删除未获确认，页面暂保留原对话，请刷新确认后再操作。')
+  } finally {
+    pendingConversationDeletions.delete(id)
+    deletingConvIds.value.delete(id)
+    release()
   }
+  if (deleted) await refreshConvList()
 }
 // 创建结果只绑定原请求；用户已离开时不得切回或占用另一个新对话。
 async function ensureConversation(request) {
@@ -798,7 +837,7 @@ async function doSaveMessages(
 
 // 发送与停止入口分开，旧发送按钮上的连续点击不能被误判为停止。
 function handleSend(event) {
-  if (historyLoading.value || event?.isComposing) return
+  if (historyLoading.value || deletingConvIds.value.has(pageKey()) || event?.isComposing) return
   const _key = pageKey()
   if (loadingConvIds.value.has(_key)) return
   if (pendingFile.value) {
@@ -880,7 +919,7 @@ async function regenerateMessage(idx) {
 
 async function regenerateContractMessage(target) {
   const convId = currentConvId.value
-  if (!convId || loadingConvIds.value.has(convId)) return
+  if (!convId || loadingConvIds.value.has(convId) || deletingConvIds.value.has(convId)) return
   const ownedMessages = messages.value
   const previousData = target.contractData
   const previousExpanded = target.thinkingExpanded
@@ -905,6 +944,7 @@ async function regenerateContractMessage(target) {
       stream: regenerateContractStream,
       signal: controller.signal,
       onSteps(steps) {
+        if (abortControllers.value[convId] !== controller) return
         const cache = streamMessageCache.value[convId]
         streamMessageCache.value = {
           ...streamMessageCache.value,
@@ -913,6 +953,7 @@ async function regenerateContractMessage(target) {
         if (currentConvId.value === convId) thinkingSteps.value = steps
       },
     })
+    if (abortControllers.value[convId] !== controller) return
     completed = result.status === 'completed'
     if (completed) {
       if (currentConvId.value === convId && previewData.value === previousData) {
@@ -924,6 +965,7 @@ async function regenerateContractMessage(target) {
       showContractWarning('已停止重新审查，页面保留原报告；可刷新会话确认最新结果。')
     }
   } catch (error) {
+    if (abortControllers.value[convId] !== controller) return
     console.warn('合同重新审查未完成，异常类型：', error.name)
     showContractWarning(
       error instanceof ContractRegenerationError
@@ -933,14 +975,16 @@ async function regenerateContractMessage(target) {
   } finally {
     target.regenerating = false
     if (!completed) target.thinkingExpanded = previousExpanded
-    loadingConvIds.value.delete(convId)
-    if (abortControllers.value[convId] === controller) delete abortControllers.value[convId]
-    const cache = { ...streamMessageCache.value }
-    if (ownedMessages.some((message) => message.saveFailed)) {
-      cache[convId] = { messages: ownedMessages, thinkingSteps: target.thinkingChain || [] }
-    } else delete cache[convId]
-    streamMessageCache.value = cache
-    if (currentConvId.value === convId) thinkingSteps.value = target.thinkingChain || []
+    if (abortControllers.value[convId] === controller) {
+      loadingConvIds.value.delete(convId)
+      delete abortControllers.value[convId]
+      const cache = { ...streamMessageCache.value }
+      if (ownedMessages.some((message) => message.saveFailed)) {
+        cache[convId] = { messages: ownedMessages, thinkingSteps: target.thinkingChain || [] }
+      } else delete cache[convId]
+      streamMessageCache.value = cache
+      if (currentConvId.value === convId) thinkingSteps.value = target.thinkingChain || []
+    }
   }
 }
 
@@ -1036,6 +1080,10 @@ async function runMessageRequest(
   let modelStarted = false
   let restoreDraft = false
   async function complete(data = {}, errorMessage = null) {
+    // 删除结果明确前暂缓追加保存；删除失败时仍可正常完成，成功后绝不恢复已删除内容。
+    const deletion = pendingConversationDeletions.get(request.convId)
+    if (deletion) await deletion
+    if (request.invalidated) return
     flushTypewriter(assistant)
     if (assistant.fullContent) assistant.content = assistant.fullContent
     const validReport =
@@ -1089,8 +1137,12 @@ async function runMessageRequest(
           contractData,
           assistant.thinkingChain,
         )
+        if (request.invalidated) return
         assistant.saveFailed = false
       } catch (error) {
+        const deletion = pendingConversationDeletions.get(request.convId)
+        if (deletion) await deletion
+        if (request.invalidated) return
         console.warn('保存回复未获确认，异常类型：', error.name)
         assistant.saveFailed = true
         showContractWarning(
@@ -1145,35 +1197,35 @@ async function runMessageRequest(
     }
     const callbacks = {
       onThinking(label) {
-        if (settled) return
+        if (settled || request.invalidated) return
         steps.push({ type: 'tool', label })
         publish()
       },
       onReasoning(text) {
-        if (settled) return
+        if (settled || request.invalidated) return
         if (steps.at(-1)?.type === 'reasoning') steps.at(-1).label = text
         else steps.push({ type: 'reasoning', label: text })
         publish()
       },
       onReasoningToken(text) {
-        if (settled) return
+        if (settled || request.invalidated) return
         if (steps.at(-1)?.type !== 'reasoning') steps.push({ type: 'reasoning', label: '' })
         steps.at(-1).label += text
         publish()
       },
       onToolChunk(tool, content, first) {
-        if (settled) return
+        if (settled || request.invalidated) return
         if (first) steps.push({ type: 'done', label: tool + ' 完成', snippet: content })
         else if (steps.at(-1)?.type === 'done') steps.at(-1).snippet += content
         publish()
       },
       onToolResult(tool, output) {
-        if (settled) return
+        if (settled || request.invalidated) return
         steps.push({ type: 'done', label: tool + ' 完成', snippet: output })
         publish()
       },
       onToken(content) {
-        if (settled) return
+        if (settled || request.invalidated) return
         if (isActive()) {
           appendToTypewriter(assistant, content, isActive, scrollOwned)
         } else {
@@ -1205,13 +1257,18 @@ async function runMessageRequest(
     try {
       await completion
     } catch (error) {
-      console.warn('处理回复结果失败，异常类型：', error.name)
-      assistant.saveFailed = true
-      showContractWarning('回复处理未完成，内容暂保留在页面。请先复制内容，再刷新会话确认。', 6500)
+      if (!request.invalidated) {
+        console.warn('处理回复结果失败，异常类型：', error.name)
+        assistant.saveFailed = true
+        showContractWarning(
+          '回复处理未完成，内容暂保留在页面。请先复制内容，再刷新会话确认。',
+          6500,
+        )
+      }
     } finally {
       if (restoreDraft) requests.discard(request)
       requests.finish(request)
-      if (restoreDraft) recoverPreparation(request, draft)
+      if (restoreDraft && !request.invalidated) recoverPreparation(request, draft)
       await scrollOwned()
     }
   }

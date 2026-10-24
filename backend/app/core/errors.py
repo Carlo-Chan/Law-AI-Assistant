@@ -55,6 +55,7 @@ CONTRACT_INSTRUCTION_TOO_LONG = ErrorInfo(
     "contract_instruction_too_long", "附加审查指令不能超过 4000 字，请缩短后重试。", 422
 )
 REPORT_NOT_FOUND = ErrorInfo("report_not_found", "目标合同报告不存在，请刷新会话后重试。", 404)
+CONVERSATION_NOT_FOUND = ErrorInfo("conversation_not_found", "会话不存在", 404)
 REPORT_CHANGED = ErrorInfo(
     "report_changed", "原报告已变更或被删除，请刷新会话后重试；本次结果未覆盖原记录。", 409
 )

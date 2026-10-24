@@ -31,5 +31,12 @@ export function createDraftRecovery({ read, write, canRestore = () => true }) {
     return true
   }
 
-  return { recover, resume }
+  /** 会话确认删除后释放其待恢复草稿，不触及其他会话。 */
+  function forget(owner) {
+    for (let index = pending.length - 1; index >= 0; index--) {
+      if (pending[index].owner === owner) pending.splice(index, 1)
+    }
+  }
+
+  return { recover, resume, forget }
 }

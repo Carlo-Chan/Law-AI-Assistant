@@ -11,9 +11,11 @@ export function createConversationRequests({
   controllers,
   cache,
 }) {
-  const isActive = (request) => currentKey() === request.key
+  const pending = new Map()
+  const isActive = (request) => !request.invalidated && currentKey() === request.key
 
   function publish(request) {
+    if (request.invalidated) return
     cache.value = {
       ...cache.value,
       [request.key]: { messages: request.messages, thinkingSteps: [...request.steps] },
@@ -42,16 +44,21 @@ export function createConversationRequests({
       }),
       steps: [],
       controller: new AbortController(),
+      invalidated: false,
     }
     controllers.value[key] = request.controller
+    pending.set(key, request)
     ownedMessages.push(request.userMessage, request.assistant)
     publish(request)
     return request
   }
 
   function bind(request, convId) {
+    if (request.invalidated) return false
     const active = isActive(request)
     const previousKey = request.key
+    pending.delete(previousKey)
+    pending.set(convId, request)
     loadingIds.value.delete(previousKey)
     delete controllers.value[previousKey]
     const remaining = { ...cache.value }
@@ -66,6 +73,7 @@ export function createConversationRequests({
   }
 
   function finish(request) {
+    if (pending.get(request.key) === request) pending.delete(request.key)
     if (controllers.value[request.key] !== request.controller) return
     loadingIds.value.delete(request.key)
     delete controllers.value[request.key]
@@ -89,5 +97,21 @@ export function createConversationRequests({
     publish(request)
   }
 
-  return { begin, bind, publish, finish, discard, isActive }
+  /** 删除成功后失效整条请求，普通停止仍走原有部分回复保存流程。 */
+  function invalidate(key) {
+    const request = pending.get(key)
+    const ownedMessages = cache.value[key]?.messages || request?.messages || []
+    if (request) request.invalidated = true
+    pending.delete(key)
+    const controller = controllers.value[key]
+    loadingIds.value.delete(key)
+    delete controllers.value[key]
+    const remaining = { ...cache.value }
+    delete remaining[key]
+    cache.value = remaining
+    controller?.abort()
+    return ownedMessages
+  }
+
+  return { begin, bind, publish, finish, discard, invalidate, isActive }
 }

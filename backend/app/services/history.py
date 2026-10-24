@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from app.core.errors import REPORT_CHANGED, PublicError
+from app.core.errors import CONVERSATION_NOT_FOUND, REPORT_CHANGED, PublicError
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +187,10 @@ def replace_contract_report(original: dict, contract_data: dict, thinking_chain:
 
 def _insert_messages(conn, conv_id, messages, now):
     """在调用方事务内插入消息并更新会话时间。"""
+    # 先取得写锁并在同一事务内确认会话仍存在，关闭路由校验与插入之间的竞态窗口。
+    cursor = conn.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
+    if cursor.rowcount != 1:
+        raise PublicError(CONVERSATION_NOT_FOUND)
     for message in messages:
         conn.execute(
             "INSERT INTO messages (conversation_id, role, content, file_name, contract_data, thinking_chain, created_at) VALUES (?,?,?,?,?,?,?)",
@@ -204,10 +208,6 @@ def _insert_messages(conn, conv_id, messages, now):
                 now,
             ),
         )
-    conn.execute(
-        "UPDATE conversations SET updated_at=? WHERE id=?",
-        (now, conv_id),
-    )
 
 
 def add_messages(conv_id: str, messages: list[dict]):

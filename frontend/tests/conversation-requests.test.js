@@ -6,6 +6,53 @@ import {
   LOADING_DOTS,
 } from '../src/composables/conversationRequests.js'
 
+test('失效目标请求立即释放资源，迟到发布、绑定和清理不能复活缓存', () => {
+  const state = fixture()
+  const request = state.requests.begin('A', { role: 'user', content: '待删除的问题' })
+  assert.equal(state.requests.invalidate('A'), request.messages)
+  assert.equal(request.invalidated, true)
+  assert.equal(request.controller.signal.aborted, true)
+  assert.equal(state.loadingIds.value.has('A'), false)
+  assert.equal(state.controllers.value.A, undefined)
+  state.requests.publish(request)
+  assert.equal(state.requests.bind(request, 'late-A'), false)
+  state.requests.finish(request)
+  assert.deepEqual(state.cache.value, {})
+  assert.equal(state.loadingIds.value.size, 0)
+})
+
+test('失效一个请求不停止其他会话，也不改变其缓存、过程和展开状态', () => {
+  const state = fixture()
+  const first = state.requests.begin('A', { role: 'user', content: 'A问题' })
+  state.current.value = 'B'
+  state.messages.value = []
+  const second = state.requests.begin('B', { role: 'user', content: 'B问题' })
+  second.assistant.thinkingExpanded = true
+  second.steps.push({ type: 'tool', label: 'B工具' })
+  state.requests.publish(second)
+  const cache = state.cache.value.B
+  state.requests.invalidate('A')
+  first.assistant.saveFailed = true
+  state.requests.finish(first)
+  assert.equal(second.controller.signal.aborted, false)
+  assert.equal(state.cache.value.B, cache)
+  assert.equal(state.thinkingSteps.value[0].label, 'B工具')
+  assert.equal(second.assistant.thinkingExpanded, true)
+  assert.equal(state.loadingIds.value.has('B'), true)
+})
+
+test('没有活动请求的历史缓存与独立重跑控制器也能完整失效', () => {
+  const state = fixture()
+  const controller = new AbortController()
+  state.controllers.value.A = controller
+  state.cache.value.A = { messages: state.messages.value, thinkingSteps: [] }
+  state.loadingIds.value.add('A')
+  state.requests.invalidate('A')
+  assert.equal(controller.signal.aborted, true)
+  assert.equal(state.cache.value.A, undefined)
+  assert.equal(state.controllers.value.A, undefined)
+  assert.equal(state.loadingIds.value.size, 0)
+})
 function fixture(key = 'A') {
   const current = ref(key)
   const messages = ref([{ role: 'user', content: 'A之前的问题' }])

@@ -2,6 +2,21 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createDraftRecovery } from '../src/composables/draftRecovery.js'
 
+test('删除仅释放目标会话的待恢复草稿，不清空其他会话或新对话', () => {
+  const { recovery, drafts, busy } = fixture()
+  for (const owner of ['A', 'B', '__new__']) {
+    busy.add(owner)
+    recovery.recover(owner, { text: owner + '旧草稿', file: new File(['附件'], owner + '.txt') })
+  }
+  recovery.forget('A')
+  busy.clear()
+  assert.equal(recovery.resume('A'), false)
+  assert.equal(drafts.has('A'), false)
+  assert.equal(recovery.resume('B'), true)
+  assert.equal(recovery.resume('__new__'), true)
+  assert.equal(drafts.get('B').file.name, 'B.txt')
+})
+
 function fixture() {
   const drafts = new Map()
   const busy = new Set()

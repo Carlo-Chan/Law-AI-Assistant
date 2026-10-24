@@ -309,6 +309,323 @@ test('真实页面在自动命名等待期间切换历史，不串历史、占�
   }
 })
 
+test('删除正在生成的会话会中止原请求，迟到回调不能保存或复活缓存', async () => {
+  const entered = deferred()
+  const gate = deferred()
+  let callbacks
+  let signal
+  const view = await mount({
+    deleteConversation: async () => {},
+    chatStream: async (_query, _history, requestSignal, handlers) => {
+      signal = requestSignal
+      callbacks = handlers
+      callbacks.onThinking('旧工具')
+      entered.resolve()
+      await gate.promise
+      callbacks.onToken('不能复活的内容')
+      callbacks.onThinking('迟到工具')
+      await callbacks.onDone({})
+    },
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.input = 'A的问题'
+    const sending = view.state.sendText()
+    await entered.promise
+    const deleting = view.state.handleDeleteConv('A')
+    view.state.resolveConfirm(true)
+    await deleting
+    assert.equal(signal.aborted, true)
+    assert.equal(view.state.currentConvId, null)
+    assert.equal(view.state.loadingConvIds.has('A'), false)
+    assert.equal(view.state.streamMessageCache.A, undefined)
+    gate.resolve()
+    await sending
+    assert.equal(view.writes.length, 0)
+    assert.equal(view.state.streamMessageCache.A, undefined)
+    assert.equal(view.state.messages.length, 0)
+    assert.equal(view.notices.length, 0)
+  } finally {
+    gate.resolve()
+    view.close()
+  }
+})
+
+test('后台会话删除不清空当前会话及其草稿、附件、过程和展开状态', async () => {
+  const view = await mount({ deleteConversation: async () => {} })
+  try {
+    await view.state.loadConversation('B')
+    const messages = view.state.messages
+    const file = new File(['草稿'], 'B.txt')
+    view.state.pendingFile = file
+    view.state.input = 'B未发送的内容'
+    view.state.thinkingSteps = [{ type: 'tool', label: 'B工具' }]
+    messages.at(-1).thinkingExpanded = true
+    const deleting = view.state.handleDeleteConv('A')
+    view.state.resolveConfirm(true)
+    await deleting
+    assert.equal(view.state.currentConvId, 'B')
+    assert.equal(view.state.messages, messages)
+    assert.equal(messages.at(-1).thinkingExpanded, true)
+    assert.equal(view.state.input, 'B未发送的内容')
+    assert.equal(view.state.pendingFile, file)
+    assert.equal(view.state.thinkingSteps[0].label, 'B工具')
+  } finally {
+    view.close()
+  }
+})
+
+for (const success of [true, false]) {
+  test(`删除等待期间模型完成：${success ? '成功则不再保存' : '失败则保留会话并正常保存'}`, async () => {
+    const modelEntered = deferred()
+    const streamGate = deferred()
+    const deletionGate = deferred()
+    let callbacks
+    let signal
+    const view = await mount({
+      deleteConversation: () => deletionGate.promise,
+      chatStream: async (_query, _history, ownedSignal, handlers) => {
+        callbacks = handlers
+        signal = ownedSignal
+        modelEntered.resolve()
+        await streamGate.promise
+      },
+    })
+    try {
+      view.state.currentConvId = 'A'
+      view.state.input = '原问题'
+      const sending = view.state.sendText()
+      await modelEntered.promise
+      const deleting = view.state.handleDeleteConv('A')
+      view.state.resolveConfirm(true)
+      await nextTick()
+      callbacks.onToken('完整回复')
+      const completing = callbacks.onDone({})
+      await nextTick()
+      assert.equal(view.writes.length, 0)
+      assert.equal(view.state.deletingConvIds.has('A'), true)
+      if (success) deletionGate.resolve()
+      else deletionGate.reject(new Error('删除服务失败'))
+      await deleting
+      await completing
+      streamGate.resolve()
+      await sending
+      assert.equal(view.writes.length, success ? 0 : 1)
+      assert.equal(signal.aborted, success)
+      assert.equal(view.state.deletingConvIds.size, 0)
+      if (!success) {
+        assert.equal(view.state.currentConvId, 'A')
+        assert.equal(view.state.messages.at(-1).content, '完整回复')
+        assert.match(view.notices[0].options.message, /删除未获确认/)
+      }
+    } finally {
+      deletionGate.resolve()
+      streamGate.resolve()
+      view.close()
+    }
+  })
+}
+
+test('取消删除不会中止请求或清理会话和草稿', async () => {
+  const deleted = []
+  const view = await mount({ deleteConversation: async (id) => deleted.push(id) })
+  try {
+    await view.state.loadConversation('A')
+    view.state.input = '保留草稿'
+    const owned = view.state.messages
+    const deleting = view.state.handleDeleteConv('A')
+    view.state.resolveConfirm(false)
+    await deleting
+    assert.deepEqual(deleted, [])
+    assert.equal(view.state.currentConvId, 'A')
+    assert.equal(view.state.messages, owned)
+    assert.equal(view.state.input, '保留草稿')
+  } finally {
+    view.close()
+  }
+})
+
+test('删除准备阶段的请求不恢复旧草稿或启动模型，当前页恢复之前的新对话草稿', async () => {
+  const titleGate = deferred()
+  const titleEntered = deferred()
+  const view = await mount({
+    deleteConversation: async () => {},
+    updateConvTitle: () => {
+      titleEntered.resolve()
+      return titleGate.promise
+    },
+  })
+  try {
+    const file = new File(['新对话附件'], '新草稿.txt')
+    view.state.input = '新对话草稿'
+    view.state.pendingFile = file
+    await view.state.loadConversation('A')
+    view.state.messages = []
+    view.state.input = '即将删除的原问题'
+    const sending = view.state.sendText()
+    await titleEntered.promise
+    const deleting = view.state.handleDeleteConv('A')
+    view.state.resolveConfirm(true)
+    await deleting
+    titleGate.resolve()
+    await sending
+    assert.equal(view.state.input, '新对话草稿')
+    assert.equal(view.state.pendingFile, file)
+    assert.equal(view.state.messages.length, 0)
+    assert.equal(view.streams.length, 0)
+    assert.equal(view.writes.length, 0)
+    assert.equal(view.notices.length, 0)
+  } finally {
+    titleGate.resolve()
+    view.close()
+  }
+})
+
+test('删除等待期间阻止同会话新发送，但不锁住其他会话', async () => {
+  const deletionGate = deferred()
+  const view = await mount({ deleteConversation: () => deletionGate.promise })
+  try {
+    await view.state.loadConversation('A')
+    const count = view.state.messages.length
+    const deleting = view.state.handleDeleteConv('A')
+    view.state.resolveConfirm(true)
+    await nextTick()
+    view.state.input = 'A不能重发'
+    assert.equal(view.state.canSend, false)
+    await view.state.sendText()
+    assert.equal(view.state.messages.length, count)
+    assert.equal(view.state.input, 'A不能重发')
+    await view.state.loadConversation('B')
+    view.state.input = 'B可以发送'
+    await view.state.sendText()
+    assert.equal(view.writes[0][0], 'B')
+    deletionGate.resolve()
+    await deleting
+    assert.equal(view.state.currentConvId, 'B')
+  } finally {
+    deletionGate.resolve()
+    view.close()
+  }
+})
+
+test('删除正在重跑的合同会失效独立控制器，迟到过程和收尾不能复活未保存缓存', async () => {
+  const entered = deferred()
+  const gate = deferred()
+  let signal
+  const view = await mount({
+    deleteConversation: async () => {},
+    regenerateContractStream: async (_cid, _id, _revision, ownedSignal, callbacks) => {
+      signal = ownedSignal
+      callbacks.onThinking('原工具')
+      entered.resolve()
+      await gate.promise
+      callbacks.onThinking('迟到工具')
+      callbacks.onDone({ aborted: true })
+    },
+  })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [
+      { role: 'user', content: '上传合同', file: { name: '历史.txt' } },
+      {
+        id: 10,
+        revision: 'a'.repeat(64),
+        role: 'assistant',
+        content: '原报告',
+        contractData: { raw_text: '原合同', chat_reply: '原报告', risk_points: [] },
+        saveFailed: true,
+      },
+    ]
+    const running = view.state.regenerateMessage(1)
+    await entered.promise
+    const deleting = view.state.handleDeleteConv('A')
+    view.state.resolveConfirm(true)
+    await deleting
+    assert.equal(signal.aborted, true)
+    gate.resolve()
+    await running
+    assert.equal(view.state.streamMessageCache.A, undefined)
+    assert.equal(view.state.loadingConvIds.has('A'), false)
+    assert.equal(view.state.messages.length, 0)
+    assert.equal(view.notices.length, 0)
+  } finally {
+    gate.resolve()
+    view.close()
+  }
+})
+
+test('迟到的历史和列表响应不能恢复已删除会话，也不能抢占当前其他会话', async () => {
+  const historyGate = deferred()
+  const listGate = deferred()
+  let staleList = false
+  const view = await mount({
+    deleteConversation: async () => {},
+    getConversation: (id) =>
+      id === 'A' ? historyGate.promise : Promise.resolve({ id, messages: [] }),
+    listConversations: () => (staleList ? listGate.promise : Promise.resolve([])),
+  })
+  try {
+    await view.state.loadConversation('B')
+    const loading = view.state.loadConversation('A')
+    staleList = true
+    const refreshing = view.state.refreshConvList()
+    const deleting = view.state.handleDeleteConv('A')
+    view.state.resolveConfirm(true)
+    await nextTick()
+    historyGate.resolve({ id: 'A', messages: [{ role: 'user', content: '不能恢复的旧内容' }] })
+    listGate.resolve([
+      { id: 'A', title: '旧会话' },
+      { id: 'B', title: '保留会话' },
+    ])
+    await Promise.all([loading, refreshing, deleting])
+    assert.equal(view.state.currentConvId, 'B')
+    assert.deepEqual(
+      view.state.conversations.map((conv) => conv.id),
+      ['B'],
+    )
+    assert.equal(view.state.messages.length, 0)
+    assert.equal(view.state.historyLoading, false)
+    await view.state.loadConversation('A')
+    assert.equal(view.state.currentConvId, 'B')
+  } finally {
+    historyGate.resolve({ id: 'A', messages: [] })
+    listGate.resolve([])
+    view.close()
+  }
+})
+
+for (const saveFails of [false, true]) {
+  test(`保存已在途时删除会话，迟到的${saveFails ? '失败' : '成功'}不恢复缓存或弹出保存警告`, async () => {
+    const entered = deferred()
+    const saveGate = deferred()
+    const view = await mount({
+      deleteConversation: async () => {},
+      saveMessages: async () => {
+        entered.resolve()
+        await saveGate.promise
+      },
+    })
+    try {
+      view.state.currentConvId = 'A'
+      view.state.input = '原问题'
+      const sending = view.state.sendText()
+      await entered.promise
+      const deleting = view.state.handleDeleteConv('A')
+      view.state.resolveConfirm(true)
+      await deleting
+      if (saveFails) saveGate.reject(new Error('会话已被删除'))
+      else saveGate.resolve()
+      await sending
+      assert.equal(view.state.streamMessageCache.A, undefined)
+      assert.equal(view.state.messages.length, 0)
+      assert.equal(view.notices.length, 0)
+    } finally {
+      saveGate.resolve()
+      view.close()
+    }
+  })
+}
+
 test('创建会话等待期间连续打开新对话，逆序返回也不抢占新页面', async () => {
   const firstCreate = deferred()
   const secondCreate = deferred()
