@@ -50,6 +50,23 @@ test('已经停止的准备请求不会进入 HTTP 适配器', async () => {
   assert.equal(calls.length, 0)
 })
 
+test('单条删除只提交会话、消息身份和版本，不上传整段历史', async () => {
+  calls.length = 0
+  const revision = 'a'.repeat(64)
+  await api.deleteSavedMessage('A/测试', 123, revision, true)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].method, 'delete')
+  assert.equal(calls[0].url, '/conversations/A%2F%E6%B5%8B%E8%AF%95/messages/123')
+  assert.deepEqual(JSON.parse(calls[0].data), {
+    expected_revision: revision,
+    preserve_empty_conversation: true,
+  })
+})
+
+test('普通保存向调用方返回身份回执', async () => {
+  assert.deepEqual(await api.saveMessages('A', '提问', '回复'), { id: 'test' })
+})
+
 for (const instruction of ['', ' \n\t ', '  重点审查乙方责任\n检查押金  ']) {
   test(`普通审查表单支持${instruction.trim() ? '多行指令' : '空白或省略指令'}`, async () => {
     calls.length = 0

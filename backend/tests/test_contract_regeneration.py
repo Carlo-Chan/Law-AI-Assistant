@@ -175,7 +175,9 @@ def test_invalid_result_is_not_saved(client, stored_report, monkeypatch, result)
     assert _detail(client, stored_report) == stored_report["before"]
 
 
-@pytest.mark.parametrize("operation", ["edit", "rebuild", "delete", "another_result"])
+@pytest.mark.parametrize(
+    "operation", ["edit", "rebuild", "delete", "delete_message", "another_result"]
+)
 def test_concurrent_change_is_not_overwritten(client, stored_report, monkeypatch, operation):
     """模型等待期间目标发生变更时，旧请求不能覆盖较新的编辑或重跑结果。"""
     expected = None
@@ -194,6 +196,12 @@ def test_concurrent_change_is_not_overwritten(client, stored_report, monkeypatch
             )
         elif operation == "delete":
             history.delete_conversation(stored_report["conv_id"])
+        elif operation == "delete_message":
+            history.delete_message(
+                stored_report["conv_id"],
+                stored_report["target"]["id"],
+                stored_report["target"]["revision"],
+            )
         else:
             original = history.get_message(stored_report["conv_id"], stored_report["target"]["id"])
             history.replace_contract_report(

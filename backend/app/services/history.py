@@ -13,7 +13,13 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from app.core.errors import CONVERSATION_NOT_FOUND, REPORT_CHANGED, PublicError
+from app.core.errors import (
+    CONVERSATION_NOT_FOUND,
+    MESSAGE_CHANGED,
+    MESSAGE_NOT_FOUND,
+    REPORT_CHANGED,
+    PublicError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +155,36 @@ def get_message(conv_id: str, message_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def delete_message(
+    conv_id: str, message_id: int, expected_revision: str, preserve_empty_conversation: bool = False
+) -> dict:
+    """在写锁内校验归属和版本，只删除目标；空会话也在同一事务中清理。"""
+    with _get_conn() as conn:
+        cursor = conn.execute(
+            "UPDATE conversations SET updated_at=? WHERE id=?",
+            (datetime.now().isoformat(), conv_id),
+        )
+        if cursor.rowcount != 1:
+            raise PublicError(CONVERSATION_NOT_FOUND)
+        row = conn.execute(
+            "SELECT * FROM messages WHERE conversation_id=? AND id=?", (conv_id, message_id)
+        ).fetchone()
+        if row is None:
+            raise PublicError(MESSAGE_NOT_FOUND)
+        if message_revision(dict(row)) != expected_revision:
+            raise PublicError(MESSAGE_CHANGED)
+        conn.execute("DELETE FROM messages WHERE conversation_id=? AND id=?", (conv_id, message_id))
+        remaining = conn.execute(
+            "SELECT 1 FROM messages WHERE conversation_id=? LIMIT 1", (conv_id,)
+        ).fetchone()
+        # 客户端仍有未落库的其他消息时暂留会话，避免中断无关的在途回复。
+        conversation_deleted = remaining is None and not preserve_empty_conversation
+        if conversation_deleted:
+            conn.execute("DELETE FROM conversations WHERE id=?", (conv_id,))
+    logger.debug("单条消息删除完成：已清理空会话=%s", conversation_deleted)
+    return {"message_id": message_id, "conversation_deleted": conversation_deleted}
+
+
 def replace_contract_report(original: dict, contract_data: dict, thinking_chain: list) -> str:
     """完整结果生成后定点替换；版本冲突或事务失败时不覆盖原记录。"""
     content = contract_data["chat_reply"]
@@ -191,30 +227,52 @@ def _insert_messages(conn, conv_id, messages, now):
     cursor = conn.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
     if cursor.rowcount != 1:
         raise PublicError(CONVERSATION_NOT_FOUND)
+    saved = []
     for message in messages:
-        conn.execute(
+        encoded_contract = (
+            json.dumps(message["contract_data"], ensure_ascii=False)
+            if message.get("contract_data")
+            else None
+        )
+        encoded_thinking = (
+            json.dumps(message["thinking_chain"], ensure_ascii=False)
+            if message.get("thinking_chain")
+            else None
+        )
+        cursor = conn.execute(
             "INSERT INTO messages (conversation_id, role, content, file_name, contract_data, thinking_chain, created_at) VALUES (?,?,?,?,?,?,?)",
             (
                 conv_id,
                 message.get("role", ""),
                 message.get("content", ""),
                 message.get("file_name"),
-                json.dumps(message["contract_data"], ensure_ascii=False)
-                if message.get("contract_data")
-                else None,
-                json.dumps(message["thinking_chain"], ensure_ascii=False)
-                if message.get("thinking_chain")
-                else None,
+                encoded_contract,
+                encoded_thinking,
                 now,
             ),
         )
+        saved.append(
+            {
+                "id": cursor.lastrowid,
+                "role": message.get("role", ""),
+                "revision": message_revision(
+                    {
+                        "content": message.get("content", ""),
+                        "contract_data": encoded_contract,
+                        "thinking_chain": encoded_thinking,
+                    }
+                ),
+            }
+        )
+    return saved
 
 
 def add_messages(conv_id: str, messages: list[dict]):
     """在同一事务中保存一组消息，任一写入失败则整组回滚。"""
     with _get_conn() as conn:
-        _insert_messages(conn, conv_id, messages, datetime.now().isoformat())
+        saved = _insert_messages(conn, conv_id, messages, datetime.now().isoformat())
     logger.debug("会话消息保存完成：消息数=%d", len(messages))
+    return saved
 
 
 def add_message(

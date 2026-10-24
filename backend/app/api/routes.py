@@ -7,7 +7,7 @@ import logging
 from contextlib import aclosing
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Path, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
@@ -188,6 +188,22 @@ class RegenerateContractRequest(BaseModel):
     expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class DeleteMessageRequest(BaseModel):
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    preserve_empty_conversation: bool = False
+
+
+@router.delete("/conversations/{conv_id}/messages/{message_id}", response_model=ConvResponse)
+async def delete_message(
+    conv_id: str, message_id: Annotated[int, Path(gt=0)], request: DeleteMessageRequest
+):
+    """按稳定身份删除一条已保存消息，版本冲突时不修改其他消息。"""
+    result = history.delete_message(
+        conv_id, message_id, request.expected_revision, request.preserve_empty_conversation
+    )
+    return ConvResponse(code=200, data=result)
+
+
 @router.post("/conversations/{conv_id}/messages/{message_id}/regenerate_contract/stream")
 async def regenerate_contract(conv_id: str, message_id: int, request: RegenerateContractRequest):
     """使用目标报告的原文重新审查，成功后原子替换，失败保留历史记录。"""
@@ -273,7 +289,7 @@ class SaveMessagesRequest(BaseModel):
 @router.post("/conversations/{conv_id}/messages", response_model=ConvResponse)
 async def save_messages(conv_id: str, req: SaveMessagesRequest):
     _require_conversation(conv_id)
-    history.add_messages(
+    saved = history.add_messages(
         conv_id,
         [
             {"role": "user", "content": req.user_content, "file_name": req.file_name},
@@ -285,4 +301,4 @@ async def save_messages(conv_id: str, req: SaveMessagesRequest):
             },
         ],
     )
-    return ConvResponse(code=200, data={"ok": True})
+    return ConvResponse(code=200, data={"ok": True, "messages": saved})

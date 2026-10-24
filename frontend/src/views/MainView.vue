@@ -423,6 +423,7 @@ import {
   analyzeContractStream,
   regenerateContractStream,
   rebuildMessages,
+  deleteSavedMessage,
 } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
 import { getHighlightRect, isSameHighlight, setHighlightPinned } from '../utils/highlightSelection'
@@ -432,6 +433,11 @@ import { appendToTypewriter, flushTypewriter } from '../composables/useTypewrite
 import { toExportable } from '../composables/messageExport'
 import { createConversationRequests, LOADING_DOTS } from '../composables/conversationRequests'
 import { createDraftRecovery } from '../composables/draftRecovery'
+import {
+  assignSavedMessageIdentities,
+  hasMessageIdentity,
+  resolveSavedMessage,
+} from '../composables/messageIdentity'
 import { pinyinMatch, fuzzyMatch } from '../composables/useSearch'
 import { stripMarkdown, cleanFences, renderMd } from '../composables/useTextTools'
 import {
@@ -485,9 +491,22 @@ const deletingConvIds = ref(new Set())
 const pendingConversationDeletions = new Map()
 // 页面生命周期内记住已确认删除的身份，阻止迟到的历史或列表响应重新显示它。
 const deletedConvIds = new Set()
+const deletedMessageIds = new Map()
+const pendingMessageDeletions = ref(new Set())
+const contractRegenerationTasks = new WeakMap()
+
+// 只锁住所属页面的新增与改写，不能让一个会话的删除阻止其他会话生成。
+function messageMutationBlocksCurrent() {
+  return [...pendingMessageDeletions.value].some(
+    (operation) =>
+      operation.messages === messages.value ||
+      (currentConvId.value &&
+        (operation.request?.convId || operation.convId) === currentConvId.value),
+  )
+}
 const requests = createConversationRequests({
-  currentKey: () =>
-    historyLoading.value || deletingConvIds.value.has(pageKey()) ? null : pageKey(),
+  currentKey: () => (historyLoading.value ? null : pageKey()),
+  canBegin: () => !deletingConvIds.value.has(pageKey()) && !messageMutationBlocksCurrent(),
   messages,
   thinkingSteps,
   loadingIds: loadingConvIds,
@@ -589,6 +608,7 @@ const canSend = computed(
     (input.value.trim() || pendingFile.value) &&
     !historyLoading.value &&
     !deletingConvIds.value.has(pageKey()) &&
+    !messageMutationBlocksCurrent() &&
     !loadingConvIds.value.has(pageKey()),
 )
 
@@ -690,31 +710,33 @@ async function loadConversation(id) {
     currentConvId.value = id
     pendingFile.value = draftFiles[id] || null
     input.value = draftInputs[id] || ''
-    const msgs = conv.messages.map((m) => {
-      const msg = { id: m.id, revision: m.revision, role: m.role, content: m.content }
-      if (m.file_name) msg.file = { name: m.file_name }
-      if (m.thinking_chain) {
-        try {
-          msg.thinkingChain =
-            typeof m.thinking_chain === 'string' ? JSON.parse(m.thinking_chain) : m.thinking_chain
-          msg.thinkingExpanded = false
-        } catch (error) {
-          console.warn('解析历史思维链失败', error)
+    const msgs = conv.messages
+      .filter((message) => !deletedMessageIds.get(id)?.has(message.id))
+      .map((m) => {
+        const msg = { id: m.id, revision: m.revision, role: m.role, content: m.content }
+        if (m.file_name) msg.file = { name: m.file_name }
+        if (m.thinking_chain) {
+          try {
+            msg.thinkingChain =
+              typeof m.thinking_chain === 'string' ? JSON.parse(m.thinking_chain) : m.thinking_chain
+            msg.thinkingExpanded = false
+          } catch (error) {
+            console.warn('解析历史思维链失败', error)
+          }
         }
-      }
-      if (m.contract_data) {
-        try {
-          const cd =
-            typeof m.contract_data === 'string' ? JSON.parse(m.contract_data) : m.contract_data
-          msg.contractData = cd
-          msg.contractRawText = cd.raw_text || ''
-          msg.contractRiskPoints = cd.risk_points || []
-        } catch (error) {
-          console.warn('解析历史合同审查数据失败', error)
+        if (m.contract_data) {
+          try {
+            const cd =
+              typeof m.contract_data === 'string' ? JSON.parse(m.contract_data) : m.contract_data
+            msg.contractData = cd
+            msg.contractRawText = cd.raw_text || ''
+            msg.contractRiskPoints = cd.risk_points || []
+          } catch (error) {
+            console.warn('解析历史合同审查数据失败', error)
+          }
         }
-      }
-      return msg
-    })
+        return msg
+      })
     // 跳过以问候语作为首条消息的旧数据（向后兼容）
     if (msgs.length && msgs[0].content && msgs[0].content.includes('AI 法律助手')) {
       msgs.shift()
@@ -764,6 +786,31 @@ function cancelRename() {
 }
 
 // 删除对话：若为当前对话则清空界面
+function forgetConversation(id) {
+  deletedConvIds.add(id)
+  deletedMessageIds.delete(id)
+  const ownedMessages = requests.invalidate(id)
+  for (const message of ownedMessages) flushTypewriter(message)
+  conversations.value = conversations.value.filter((conv) => conv.id !== id)
+  delete draftInputs[id]
+  delete draftFiles[id]
+  draftRecovery.forget(id)
+  if (currentConvId.value === id) {
+    // 不取消其他历史加载，也不覆盖新对话草稿。
+    currentConvId.value = null
+    draftKey.value = `__draft_${++nextDraftId}`
+    messages.value = []
+    thinkingSteps.value = []
+    input.value = draftInputs.__new__ || ''
+    pendingFile.value = draftFiles.__new__ || null
+    editingIndex.value = -1
+    editingText.value = ''
+    showScrollBtn.value = false
+    showPreview.value = false
+    previewData.value = null
+  }
+}
+
 async function handleDeleteConv(id) {
   if (deletedConvIds.has(id) || deletingConvIds.value.has(id) || confirmState.visible) return
   const ok = await showConfirm('删除后不可恢复', { okText: '删除', cancelText: '取消' })
@@ -778,27 +825,7 @@ async function handleDeleteConv(id) {
   try {
     await deleteConversation(id)
     deleted = true
-    deletedConvIds.add(id)
-    const ownedMessages = requests.invalidate(id)
-    for (const message of ownedMessages) flushTypewriter(message)
-    conversations.value = conversations.value.filter((conv) => conv.id !== id)
-    delete draftInputs[id]
-    delete draftFiles[id]
-    draftRecovery.forget(id)
-    if (currentConvId.value === id) {
-      // 只清理被删除的当前页，不取消用户已发起的其他历史加载，也不覆盖新对话草稿。
-      currentConvId.value = null
-      draftKey.value = `__draft_${++nextDraftId}`
-      messages.value = []
-      thinkingSteps.value = []
-      input.value = draftInputs.__new__ || ''
-      pendingFile.value = draftFiles.__new__ || null
-      editingIndex.value = -1
-      editingText.value = ''
-      showScrollBtn.value = false
-      showPreview.value = false
-      previewData.value = null
-    }
+    forgetConversation(id)
   } catch (error) {
     console.warn('删除历史对话未获确认，异常类型：', error.name)
     showContractWarning('删除未获确认，页面暂保留原对话，请刷新确认后再操作。')
@@ -831,13 +858,27 @@ async function doSaveMessages(
 ) {
   const _cid = overrideConvId
   if (!_cid) return
-  await saveMessages(_cid, userContent, assistantContent, fileName, contractData, thinkingChain)
+  const result = await saveMessages(
+    _cid,
+    userContent,
+    assistantContent,
+    fileName,
+    contractData,
+    thinkingChain,
+  )
   await refreshConvList()
+  return result
 }
 
 // 发送与停止入口分开，旧发送按钮上的连续点击不能被误判为停止。
 function handleSend(event) {
-  if (historyLoading.value || deletingConvIds.value.has(pageKey()) || event?.isComposing) return
+  if (
+    historyLoading.value ||
+    deletingConvIds.value.has(pageKey()) ||
+    messageMutationBlocksCurrent() ||
+    event?.isComposing
+  )
+    return
   const _key = pageKey()
   if (loadingConvIds.value.has(_key)) return
   if (pendingFile.value) {
@@ -862,44 +903,112 @@ async function copyMessage(idx, asMarkdown = false) {
   }
 }
 
-// 删除单条消息（用户消息连带删除对应 LLM 回复）
+// 固定确认时的消息身份，等所属生成保存后只删除目标，不重建整段历史。
 async function deleteMessage(idx) {
-  const msg = messages.value[idx]
-  if (!msg) return
-  const ok = await showConfirm('删除后不可恢复', { okText: '删除', cancelText: '取消' })
-  if (!ok) return
-  messages.value.splice(idx, 1)
-  // 所有消息删除后自动清理对话
-  if (!messages.value.length && currentConvId.value) {
-    try {
-      await deleteConversation(currentConvId.value)
-    } catch (error) {
-      console.warn('删除空对话失败', error)
-    }
-    currentConvId.value = null
-    messages.value = []
-    await refreshConvList()
+  const ownedMessages = messages.value
+  const target = ownedMessages[idx]
+  if (
+    !target ||
+    confirmState.visible ||
+    messageMutationBlocksCurrent() ||
+    deletingConvIds.value.has(pageKey())
+  )
     return
+  const operation = {
+    messages: ownedMessages,
+    target,
+    convId: currentConvId.value,
+    request: requests.findMessage(target),
   }
-  // 同步到后端数据库
-  if (currentConvId.value) {
-    try {
-      await rebuildMessages(currentConvId.value, toExportable(messages.value))
-    } catch (error) {
-      console.warn('同步消息删除结果失败', error)
+  const originalIdentity = hasMessageIdentity(target)
+    ? { id: target.id, revision: target.revision }
+    : null
+  const prompt = operation.request
+    ? target.role === 'assistant'
+      ? '删除这条回复会停止本轮生成，你的问题和附件消息将保留。删除后不可恢复。'
+      : '删除这条问题会停止本轮生成，已收到的回复将保留。删除后不可恢复。'
+    : target.regenerating
+      ? '删除这条报告会停止重新审查，其他消息将保留。删除后不可恢复。'
+      : '删除后不可恢复'
+  const ok = await showConfirm(prompt, { okText: '删除', cancelText: '取消' })
+  if (!ok) return
+  pendingMessageDeletions.value.add(operation)
+  try {
+    const request = operation.request
+    if (request) {
+      request.stopForDeletion = true
+      if (request.modelStarted) request.controller.abort()
+      await request.task
+      if (request.invalidated) return
     }
+    const convId = request?.convId || operation.convId
+    if (!convId || deletedConvIds.has(convId) || !ownedMessages.includes(target)) return
+    const regeneration = contractRegenerationTasks.get(target)
+    if (regeneration) {
+      abortControllers.value[convId]?.abort()
+      await regeneration
+    }
+    const deletion = pendingConversationDeletions.get(convId)
+    if (deletion) await deletion
+    if (deletedConvIds.has(convId)) return
+    const identity =
+      originalIdentity ||
+      (await resolveSavedMessage(convId, target, ownedMessages, getConversation))
+    const relatedArrays = [ownedMessages, streamMessageCache.value[convId]?.messages]
+    if (currentConvId.value === convId) relatedArrays.push(messages.value)
+    const preserveEmpty = relatedArrays.some((array) =>
+      array?.some(
+        (message) =>
+          message !== target && message.id !== identity.id && !hasMessageIdentity(message),
+      ),
+    )
+    const result = await deleteSavedMessage(convId, identity.id, identity.revision, preserveEmpty)
+    if (result?.message_id !== identity.id || typeof result.conversation_deleted !== 'boolean') {
+      throw new Error('删除结果缺少有效确认')
+    }
+    if (!deletedMessageIds.has(convId)) deletedMessageIds.set(convId, new Set())
+    deletedMessageIds.get(convId).add(identity.id)
+    // 同时清理所属缓存及可能重新加载的同一页面，绝不沿用旧下标删除其他消息。
+    const arrays = new Set([ownedMessages, streamMessageCache.value[convId]?.messages])
+    if (currentConvId.value === convId) arrays.add(messages.value)
+    for (const array of arrays) {
+      if (!array) continue
+      const index = array.findIndex((message) => message === target || message.id === identity.id)
+      if (index >= 0) array.splice(index, 1)
+    }
+    if (currentConvId.value === convId) {
+      cancelEdit()
+      if (target.contractData && previewData.value === target.contractData) {
+        showPreview.value = false
+        previewData.value = null
+      }
+    }
+    if (result.conversation_deleted) forgetConversation(convId)
+    await refreshConvList()
+  } catch (error) {
+    console.warn('删除消息未获确认，异常类型：', error.name)
+    showContractWarning('删除未获确认，页面暂保留原消息，请刷新会话确认后再操作。', 6500)
+  } finally {
+    pendingMessageDeletions.value.delete(operation)
   }
 }
 
 // 合同走安全替换流程，普通文本仍沿用原有重新生成逻辑。
 async function regenerateMessage(idx) {
+  if (messageMutationBlocksCurrent()) return
   const msg = messages.value[idx]
   if (!msg || msg.role !== 'assistant') return
   // 查找对应的上一条用户消息
   if (idx > 0 && messages.value[idx - 1].role === 'user') {
     const userMsg = messages.value[idx - 1]
     if (userMsg.file || msg.contractData || msg.contractRawText) {
-      await regenerateContractMessage(msg)
+      const task = regenerateContractMessage(msg)
+      contractRegenerationTasks.set(msg, task)
+      try {
+        await task
+      } finally {
+        contractRegenerationTasks.delete(msg)
+      }
       return
     }
     // 移除该对消息
@@ -961,7 +1070,9 @@ async function regenerateContractMessage(target) {
         previewData.value = target.contractData
       }
       await refreshConvList()
-    } else {
+    } else if (
+      ![...pendingMessageDeletions.value].some((operation) => operation.target === target)
+    ) {
       showContractWarning('已停止重新审查，页面保留原报告；可刷新会话确认最新结果。')
     }
   } catch (error) {
@@ -990,6 +1101,7 @@ async function regenerateContractMessage(target) {
 
 // 进入消息编辑模式：将原内容填入输入框
 function editMessage(idx) {
+  if (messageMutationBlocksCurrent()) return
   const msg = messages.value[idx]
   if (!msg || msg.role !== 'user') return
   editingIndex.value = idx
@@ -997,6 +1109,7 @@ function editMessage(idx) {
 }
 // 保存编辑后的用户消息并同步到后端
 async function saveEdit(idx) {
+  if (messageMutationBlocksCurrent()) return
   const msg = messages.value[idx]
   if (!msg) return
   msg.content = editingText.value
@@ -1061,7 +1174,12 @@ function recoverPreparation(request, draft) {
 }
 
 // 文本和合同共用归属与清理流程，只有模型接口和报告附件不同。
-async function runMessageRequest(
+function runMessageRequest(request, context) {
+  request.task = executeMessageRequest(request, context)
+  return request.task
+}
+
+async function executeMessageRequest(
   request,
   { userContent, title, file = null, draft, instruction = '' },
 ) {
@@ -1129,7 +1247,7 @@ async function runMessageRequest(
     publish()
     if (request.convId) {
       try {
-        await doSaveMessages(
+        const saved = await doSaveMessages(
           request.convId,
           userContent,
           assistant.content,
@@ -1138,6 +1256,7 @@ async function runMessageRequest(
           assistant.thinkingChain,
         )
         if (request.invalidated) return
+        assignSavedMessageIdentities(request, saved)
         assistant.saveFailed = false
       } catch (error) {
         const deletion = pendingConversationDeletions.get(request.convId)
@@ -1169,6 +1288,10 @@ async function runMessageRequest(
       return
     }
     await ensureConversation(request)
+    if (request.stopForDeletion && !request.invalidated) {
+      await settle({ aborted: true })
+      return
+    }
     if (request.controller.signal.aborted) {
       restoreDraft = true
       return
@@ -1242,7 +1365,12 @@ async function runMessageRequest(
         return settle({}, message)
       },
     }
+    if (request.stopForDeletion) {
+      await settle({ aborted: true })
+      return
+    }
     modelStarted = true
+    request.modelStarted = true
     if (file) {
       await analyzeContractStream(file, request.controller.signal, callbacks, instruction)
     } else {

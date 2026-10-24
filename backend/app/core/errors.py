@@ -56,6 +56,10 @@ CONTRACT_INSTRUCTION_TOO_LONG = ErrorInfo(
 )
 REPORT_NOT_FOUND = ErrorInfo("report_not_found", "目标合同报告不存在，请刷新会话后重试。", 404)
 CONVERSATION_NOT_FOUND = ErrorInfo("conversation_not_found", "会话不存在", 404)
+MESSAGE_NOT_FOUND = ErrorInfo("message_not_found", "目标消息不存在，请刷新会话后重试。", 404)
+MESSAGE_CHANGED = ErrorInfo(
+    "message_changed", "目标消息已变更，请刷新会话后重试；本次未删除任何记录。", 409
+)
 REPORT_CHANGED = ErrorInfo(
     "report_changed", "原报告已变更或被删除，请刷新会话后重试；本次结果未覆盖原记录。", 409
 )

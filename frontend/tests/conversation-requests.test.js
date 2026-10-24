@@ -53,7 +53,7 @@ test('没有活动请求的历史缓存与独立重跑控制器也能完整失�
   assert.equal(state.controllers.value.A, undefined)
   assert.equal(state.loadingIds.value.size, 0)
 })
-function fixture(key = 'A') {
+function fixture(key = 'A', canBegin = () => true) {
   const current = ref(key)
   const messages = ref([{ role: 'user', content: 'A之前的问题' }])
   const thinkingSteps = ref([])
@@ -69,6 +69,7 @@ function fixture(key = 'A') {
     cache,
     requests: createConversationRequests({
       currentKey: () => current.value,
+      canBegin,
       messages,
       thinkingSteps,
       loadingIds,
@@ -77,6 +78,22 @@ function fixture(key = 'A') {
     }),
   }
 }
+
+test('新增入口的删除锁不改变已有请求的活动归属和过程发布', () => {
+  let blocked = false
+  const state = fixture('A', () => !blocked)
+  const request = state.requests.begin('A', { role: 'user', content: '问题' })
+  assert.equal(state.requests.findMessage(request.userMessage), request)
+  assert.equal(state.requests.findMessage(request.assistant), request)
+  assert.equal(state.requests.findMessage(state.messages.value[0]), undefined)
+  state.requests.finish(request)
+  blocked = true
+  assert.equal(state.requests.begin('A', { role: 'user', content: '不能新增' }), null)
+  request.steps.push({ type: 'tool', label: '仍显示的过程' })
+  state.requests.publish(request)
+  assert.equal(state.requests.isActive(request), true)
+  assert.equal(state.thinkingSteps.value[0].label, '仍显示的过程')
+})
 
 test('首次等待前固定历史、消息对象和占位回复', () => {
   const state = fixture()

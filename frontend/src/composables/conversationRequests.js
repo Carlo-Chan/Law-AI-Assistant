@@ -10,6 +10,7 @@ export function createConversationRequests({
   loadingIds,
   controllers,
   cache,
+  canBegin = () => true,
 }) {
   const pending = new Map()
   const isActive = (request) => !request.invalidated && currentKey() === request.key
@@ -25,7 +26,7 @@ export function createConversationRequests({
 
   function begin(convId, userMessage) {
     const key = currentKey()
-    if (!key || loadingIds.value.has(key)) return null
+    if (!key || loadingIds.value.has(key) || !canBegin()) return null
     loadingIds.value.add(key)
     const ownedMessages = messages.value
     const request = {
@@ -113,5 +114,10 @@ export function createConversationRequests({
     return ownedMessages
   }
 
-  return { begin, bind, publish, finish, discard, invalidate, isActive }
+  const findMessage = (message) =>
+    [...pending.values()].find(
+      (request) => request.userMessage === message || request.assistant === message,
+    )
+
+  return { begin, bind, publish, finish, discard, invalidate, isActive, findMessage }
 }

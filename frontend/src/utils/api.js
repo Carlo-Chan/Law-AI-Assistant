@@ -64,13 +64,25 @@ export async function saveMessages(
   contractData = null,
   thinkingChain = null,
 ) {
-  await api.post(`/conversations/${convId}/messages`, {
+  const { data } = await api.post(`/conversations/${convId}/messages`, {
     user_content: userContent,
     assistant_content: assistantContent,
     file_name: fileName,
     contract_data: contractData,
     thinking_chain: thinkingChain,
   })
+  return data.data
+}
+
+/** 按稳定身份删除一条消息，不重建其余历史记录。 */
+export async function deleteSavedMessage(convId, messageId, revision, preserveEmpty = false) {
+  const { data } = await api.delete(
+    `/conversations/${encodeURIComponent(convId)}/messages/${messageId}`,
+    {
+      data: { expected_revision: revision, preserve_empty_conversation: preserveEmpty },
+    },
+  )
+  return data.data
 }
 
 /** 更新会话标题 */
@@ -78,7 +90,7 @@ export async function updateConvTitle(convId, title, signal) {
   await api.post(`/conversations/${convId}/title`, { title }, { signal })
 }
 
-/** 重建会话消息（用于删除单条消息后同步） */
+/** 重建会话消息（当前仍用于编辑和普通问答重新生成） */
 export async function rebuildMessages(convId, messages) {
   await api.post(`/conversations/${convId}/rebuild`, { messages })
 }
