@@ -199,7 +199,10 @@
                   </div>
                 </div>
               </div>
-              <div class="message-content" v-html="renderMd(msg.content)" />
+              <div
+                class="message-content"
+                v-html="renderMd(msg.regenerationDraft?.content ?? msg.content)"
+              />
             </template>
             <transition name="contract-card-pop">
               <div
@@ -435,7 +438,7 @@ import {
   chatStream,
   analyzeContractStream,
   regenerateContractStream,
-  rebuildMessages,
+  regenerateChatStream,
   deleteSavedMessage,
   editSavedMessage,
 } from '../utils/api'
@@ -444,7 +447,6 @@ import { getHighlightRect, isSameHighlight, setHighlightPinned } from '../utils/
 import { getContractUploadError } from '../utils/upload'
 import { normalizeContractInstruction } from '../utils/contractInstruction'
 import { appendToTypewriter, flushTypewriter } from '../composables/useTypewriter'
-import { toExportable } from '../composables/messageExport'
 import { createConversationRequests, LOADING_DOTS } from '../composables/conversationRequests'
 import { createDraftRecovery } from '../composables/draftRecovery'
 import {
@@ -453,6 +455,7 @@ import {
   resolveSavedMessage,
 } from '../composables/messageIdentity'
 import { MessageEditError, saveUserMessageEdit } from '../composables/messageEditing'
+import { ChatRegenerationError, regenerateChatReply } from '../composables/chatRegeneration'
 import { pinyinMatch, fuzzyMatch } from '../composables/useSearch'
 import { stripMarkdown, cleanFences, renderMd } from '../composables/useTextTools'
 import {
@@ -525,7 +528,7 @@ const deletedMessageIds = new Map()
 const confirmedMessageEdits = new Map()
 let messageEditVersion = 0
 const pendingMessageDeletions = ref(new Set())
-const contractRegenerationTasks = new WeakMap()
+const regenerationTasks = new WeakMap()
 
 // 只锁住所属页面的新增与改写，不阻止已有生成继续，也不影响其他会话。
 function messageMutationBlocksCurrent() {
@@ -753,10 +756,11 @@ async function loadConversation(id) {
         const saved = edited?.version > editVersion ? edited : m
         const msg = { id: m.id, revision: saved.revision, role: m.role, content: saved.content }
         if (m.file_name) msg.file = { name: m.file_name }
-        if (m.thinking_chain) {
+        const persistedSteps = saved.thinkingChain ?? m.thinking_chain
+        if (persistedSteps) {
           try {
             msg.thinkingChain =
-              typeof m.thinking_chain === 'string' ? JSON.parse(m.thinking_chain) : m.thinking_chain
+              typeof persistedSteps === 'string' ? JSON.parse(persistedSteps) : persistedSteps
             msg.thinkingExpanded = false
           } catch (error) {
             console.warn('解析历史思维链失败', error)
@@ -936,8 +940,10 @@ function handleSend(event) {
 // 复制消息内容到剪贴板（支持纯文本 / Markdown 两种格式）
 async function copyMessage(idx, asMarkdown = false) {
   const msg = messages.value[idx]
-  if (!msg || !msg.content) return
-  const raw = typeof msg.content === 'string' ? msg.content : ''
+  if (!msg) return
+  const preview = msg.regenerationDraft?.content ?? msg.content
+  if (!preview) return
+  const raw = typeof preview === 'string' ? preview : ''
   const text = asMarkdown ? raw : stripMarkdown(raw)
   try {
     await navigator.clipboard.writeText(text)
@@ -963,6 +969,7 @@ async function deleteMessage(idx) {
     target,
     convId: currentConvId.value,
     request: requests.findMessage(target),
+    regenerationTarget: target.role === 'assistant' ? target : ownedMessages[idx + 1],
   }
   const originalIdentity = hasMessageIdentity(target)
     ? { id: target.id, revision: target.revision }
@@ -971,8 +978,8 @@ async function deleteMessage(idx) {
     ? target.role === 'assistant'
       ? '删除这条回复会停止本轮生成，你的问题和附件消息将保留。删除后不可恢复。'
       : '删除这条问题会停止本轮生成，已收到的回复将保留。删除后不可恢复。'
-    : target.regenerating
-      ? '删除这条报告会停止重新审查，其他消息将保留。删除后不可恢复。'
+    : operation.regenerationTarget?.regenerating
+      ? '删除这条消息会停止本轮重新生成，其他消息将保留。删除后不可恢复。'
       : '删除后不可恢复'
   const ok = await showConfirm(prompt, { okText: '删除', cancelText: '取消' })
   if (!ok) return
@@ -987,7 +994,7 @@ async function deleteMessage(idx) {
     }
     const convId = request?.convId || operation.convId
     if (!convId || deletedConvIds.has(convId) || !ownedMessages.includes(target)) return
-    const regeneration = contractRegenerationTasks.get(target)
+    const regeneration = regenerationTasks.get(operation.regenerationTarget)
     if (regeneration) {
       abortControllers.value[convId]?.abort()
       await regeneration
@@ -1047,40 +1054,39 @@ async function deleteMessage(idx) {
   }
 }
 
-// 合同走安全替换流程，普通文本仍沿用原有重新生成逻辑。
+// 两种模式都固定目标并等待保存确认，不删除问答、不占用输入草稿。
 async function regenerateMessage(idx) {
-  if (messageMutationBlocksCurrent()) return
+  if (
+    historyLoading.value ||
+    loading.value ||
+    deletingConvIds.value.has(pageKey()) ||
+    messageMutationBlocksCurrent()
+  )
+    return
   const msg = messages.value[idx]
   if (!msg || msg.role !== 'assistant') return
-  // 查找对应的上一条用户消息
-  if (idx > 0 && messages.value[idx - 1].role === 'user') {
-    const userMsg = messages.value[idx - 1]
-    if (userMsg.file || msg.contractData || msg.contractRawText) {
-      const task = regenerateContractMessage(msg)
-      contractRegenerationTasks.set(msg, task)
-      try {
-        await task
-      } finally {
-        contractRegenerationTasks.delete(msg)
-      }
-      return
-    }
-    // 移除该对消息
-    messages.value.splice(idx - 1, 2)
-    // 重新生成前先同步删除到后端
-    if (currentConvId.value) {
-      try {
-        await rebuildMessages(currentConvId.value, toExportable(messages.value))
-      } catch (error) {
-        console.warn('同步重新生成前的消息列表失败', error)
-      }
-    }
-    input.value = userMsg.content
-    sendText()
+  const user = messages.value[idx - 1]
+  if (user?.role !== 'user') {
+    showContractWarning('此回复缺少对应问题，原回复已保留，无法重新生成。')
+    return
+  }
+  const task =
+    user.file || msg.contractData || msg.contractRawText
+      ? regenerateContractMessage(msg)
+      : regenerateSavedReply(msg, false)
+  regenerationTasks.set(msg, task)
+  try {
+    await task
+  } finally {
+    regenerationTasks.delete(msg)
   }
 }
 
-async function regenerateContractMessage(target) {
+function regenerateContractMessage(target) {
+  return regenerateSavedReply(target, true)
+}
+
+async function regenerateSavedReply(target, contract) {
   const convId = currentConvId.value
   if (!convId || loadingConvIds.value.has(convId) || deletingConvIds.value.has(convId)) return
   const ownedMessages = messages.value
@@ -1092,6 +1098,8 @@ async function regenerateContractMessage(target) {
   loadingConvIds.value.add(convId)
   abortControllers.value[convId] = controller
   target.regenerating = true
+  const draft = contract ? null : reactive({ content: LOADING_DOTS })
+  if (draft) target.regenerationDraft = draft
   target.thinkingExpanded = false
   streamMessageCache.value = {
     ...streamMessageCache.value,
@@ -1099,13 +1107,25 @@ async function regenerateContractMessage(target) {
   }
   thinkingSteps.value = []
   try {
-    const result = await regenerateContractReport({
+    const result = await (contract ? regenerateContractReport : regenerateChatReply)({
       convId,
       target,
       messages: ownedMessages,
       getConversation,
-      stream: regenerateContractStream,
+      stream: contract ? regenerateContractStream : regenerateChatStream,
       signal: controller.signal,
+      onToken(chunk) {
+        if (!draft || abortControllers.value[convId] !== controller) return
+        const active = () =>
+          currentConvId.value === convId && abortControllers.value[convId] === controller
+        if (active()) appendToTypewriter(draft, chunk, active, scrollToBottom)
+        else {
+          flushTypewriter(draft)
+          if (draft.content === LOADING_DOTS) draft.content = ''
+          draft.fullContent = (draft.fullContent ?? draft.content) + chunk
+          draft.content = draft.fullContent
+        }
+      },
       onSteps(steps) {
         if (abortControllers.value[convId] !== controller) return
         const cache = streamMessageCache.value[convId]
@@ -1119,25 +1139,45 @@ async function regenerateContractMessage(target) {
     if (abortControllers.value[convId] !== controller) return
     completed = result.status === 'completed'
     if (completed) {
-      if (currentConvId.value === convId && previewData.value === previousData) {
+      if (!contract) {
+        if (!confirmedMessageEdits.has(convId)) confirmedMessageEdits.set(convId, new Map())
+        for (const message of [target, result.user])
+          confirmedMessageEdits.get(convId).set(message.id, {
+            content: message.content,
+            revision: message.revision,
+            thinkingChain: message.thinkingChain,
+            version: ++messageEditVersion,
+          })
+      }
+      if (contract && currentConvId.value === convId && previewData.value === previousData) {
         clearContractSelection()
         previewData.value = target.contractData
       }
       await refreshConvList()
     } else if (
-      ![...pendingMessageDeletions.value].some((operation) => operation.target === target)
+      ![...pendingMessageDeletions.value].some(
+        (operation) => operation.regenerationTarget === target,
+      )
     ) {
-      showContractWarning('已停止重新审查，页面保留原报告；可刷新会话确认最新结果。')
+      showContractWarning(
+        contract
+          ? '已停止重新审查，页面保留原报告；可刷新会话确认最新结果。'
+          : '已停止重新生成，原回复已保留；可重新读取会话确认最新结果。',
+      )
     }
   } catch (error) {
     if (abortControllers.value[convId] !== controller) return
-    console.warn('合同重新审查未完成，异常类型：', error.name)
+    console.warn('重新生成未完成，异常类型：', error.name)
     showContractWarning(
-      error instanceof ContractRegenerationError
+      error instanceof ContractRegenerationError || error instanceof ChatRegenerationError
         ? error.message
-        : '重新审查未完成，页面暂保留原报告；请刷新确认最新结果。',
+        : contract
+          ? '重新审查未完成，页面暂保留原报告；请刷新确认最新结果。'
+          : '重新生成未完成，原回复已保留；请重新读取会话确认最新结果。',
     )
   } finally {
+    if (draft) flushTypewriter(draft)
+    delete target.regenerationDraft
     target.regenerating = false
     if (!completed) target.thinkingExpanded = previousExpanded
     if (abortControllers.value[convId] === controller) {

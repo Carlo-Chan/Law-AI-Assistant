@@ -12,6 +12,7 @@ from app.core.errors import (
 )
 from app.services import history
 from app.services.contract_instructions import normalize_contract_instruction
+from app.services.generation_progress import record_generation_step
 
 
 def load_contract_source(conv_id: str, message_id: int, revision: str) -> tuple[dict, str, str]:
@@ -30,29 +31,6 @@ def load_contract_source(conv_id: str, message_id: int, revision: str) -> tuple[
         raise PublicError(CONTRACT_SOURCE_MISSING)
     instruction = normalize_contract_instruction(data.get("instruction", ""))
     return original, raw_text, instruction
-
-
-def _record_step(steps: list, event: dict):
-    """保存与前端现有工具轨迹一致的过程数据，不将旧报告过程混入新报告。"""
-    kind = event["type"]
-    if kind == "thinking":
-        steps.append({"type": "tool", "label": event["label"]})
-    elif kind in ("thinking_reasoning", "thinking_reasoning_token"):
-        if not steps or steps[-1]["type"] != "reasoning":
-            steps.append({"type": "reasoning", "label": ""})
-        if kind == "thinking_reasoning":
-            steps[-1]["label"] = event["content"]
-        else:
-            steps[-1]["label"] += event["content"]
-    elif kind == "tool_result":
-        steps.append({"type": "done", "label": event["tool"] + " 完成", "snippet": event["output"]})
-    elif kind == "tool_result_chunk":
-        if event.get("first"):
-            steps.append(
-                {"type": "done", "label": event["tool"] + " 完成", "snippet": event["content"]}
-            )
-        elif steps and steps[-1]["type"] == "done":
-            steps[-1]["snippet"] += event["content"]
 
 
 async def regenerate_report(original: dict, events, validate_result):
@@ -75,6 +53,6 @@ async def regenerate_report(original: dict, events, validate_result):
                     "saved": True,
                 }
                 return
-            _record_step(steps, event)
+            record_generation_step(steps, event)
             yield event
     raise PublicError(INVALID_REPORT)

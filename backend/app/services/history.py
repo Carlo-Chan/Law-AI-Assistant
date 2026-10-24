@@ -18,6 +18,7 @@ from app.core.errors import (
     MESSAGE_CHANGED,
     MESSAGE_NOT_EDITABLE,
     MESSAGE_NOT_FOUND,
+    REPLY_CHANGED,
     REPORT_CHANGED,
     PublicError,
 )
@@ -248,6 +249,50 @@ def replace_contract_report(original: dict, contract_data: dict, thinking_chain:
             "thinking_chain": encoded_thinking,
         }
     )
+
+
+def get_message_prefix(conv_id: str, message_id: int) -> list[dict]:
+    """单次查询读取目标及此前记录，避免多次查询混用不同时间的上下文。"""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM messages WHERE conversation_id=? AND id<=? ORDER BY id",
+            (conv_id, message_id),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _prefix_versions(messages: list[dict]) -> list[tuple]:
+    return [
+        (message["id"], message["role"], message.get("file_name"), message_revision(message))
+        for message in messages
+    ]
+
+
+def replace_chat_reply(original_prefix: list[dict], content: str, thinking_chain: list) -> str:
+    """回复及其输入上下文均未改变时才定点替换，允许后续轮次并发追加。"""
+    original = original_prefix[-1]
+    conv_id = original["conversation_id"]
+    encoded_thinking = json.dumps(thinking_chain, ensure_ascii=False) if thinking_chain else None
+    with _get_conn() as conn:
+        cursor = conn.execute(
+            "UPDATE conversations SET updated_at=? WHERE id=?",
+            (datetime.now().isoformat(), conv_id),
+        )
+        if cursor.rowcount != 1:
+            raise PublicError(REPLY_CHANGED)
+        current = conn.execute(
+            "SELECT * FROM messages WHERE conversation_id=? AND id<=? ORDER BY id",
+            (conv_id, original["id"]),
+        ).fetchall()
+        if _prefix_versions([dict(row) for row in current]) != _prefix_versions(original_prefix):
+            raise PublicError(REPLY_CHANGED)
+        cursor = conn.execute(
+            "UPDATE messages SET content=?, thinking_chain=? WHERE conversation_id=? AND id=? AND role='assistant'",
+            (content, encoded_thinking, conv_id, original["id"]),
+        )
+        if cursor.rowcount != 1:
+            raise PublicError(REPLY_CHANGED)
+    return message_revision({**original, "content": content, "thinking_chain": encoded_thinking})
 
 
 def _insert_messages(conn, conv_id, messages, now):

@@ -31,6 +31,7 @@ const apiNames = [
   'chatStream',
   'analyzeContractStream',
   'regenerateContractStream',
+  'regenerateChatStream',
   'rebuildMessages',
 ]
 const apiModule =
@@ -289,6 +290,246 @@ const editAck = (id, content) => ({
   content,
   revision: 'b'.repeat(64),
   saved: true,
+})
+
+function chatRegenerationDone(content = '新的完整回复') {
+  return {
+    saved: true,
+    message_id: 2,
+    revision: 'b'.repeat(64),
+    source_message_id: 1,
+    source_revision: messageRevision,
+    query: '原问题',
+    chat_reply: content,
+    thinking_chain: [{ type: 'tool', label: '新工具' }],
+  }
+}
+
+function seedChatRegeneration(state) {
+  state.currentConvId = 'A'
+  state.messages = [
+    savedBubble(1, 'user', '原问题'),
+    { ...savedBubble(2), thinkingChain: [{ type: 'tool', label: '旧工具' }] },
+    savedBubble(3, 'user', '后续问题'),
+    savedBubble(4, 'assistant', '后续回复'),
+  ]
+}
+
+test('普通重生成只替换目标，流式预览不先删问答且保留草稿和待发附件', async () => {
+  const gate = deferred()
+  const entered = deferred()
+  let calls = 0
+  const view = await mount({
+    regenerateChatStream: async (cid, id, version, _signal, callbacks) => {
+      calls++
+      assert.deepEqual([cid, id, version], ['A', 2, messageRevision])
+      callbacks.onThinking('新工具')
+      callbacks.onToken('生成中的预览')
+      entered.resolve()
+      await gate.promise
+      callbacks.onDone(chatRegenerationDone())
+    },
+    rebuildMessages: () => assert.fail('不能重建历史'),
+    saveMessages: () => assert.fail('不能追加问答'),
+    chatStream: () => assert.fail('不能当作新问题发送'),
+    analyzeContractStream: () => assert.fail('不能误传待发附件'),
+  })
+  try {
+    seedChatRegeneration(view.state)
+    view.state.input = '另一个待发问题'
+    const file = new File(['合同'], '待发合同.txt')
+    view.state.pendingFile = file
+    const running = view.state.regenerateMessage(1)
+    await entered.promise
+    for (let index = 0; index < 20; index++) view.state.regenerateMessage(1)
+    assert.equal(calls, 1)
+    assert.equal(view.state.messages.length, 4)
+    assert.equal(view.state.messages[1].content, '原回复')
+    assert.equal(view.state.messages[1].regenerationDraft.fullContent, '生成中的预览')
+    gate.resolve()
+    await running
+    assert.equal(view.state.messages[1].content, '新的完整回复')
+    assert.equal(view.state.messages[1].id, 2)
+    assert.equal(view.state.messages[2].content, '后续问题')
+    assert.equal(view.state.messages[3].content, '后续回复')
+    assert.equal(view.state.input, '另一个待发问题')
+    assert.equal(view.state.pendingFile, file)
+    assert.equal(view.state.messages[1].regenerationDraft, undefined)
+    assert.equal(view.state.loadingConvIds.size, 0)
+  } finally {
+    gate.resolve()
+    view.close()
+  }
+})
+
+for (const failure of ['error', 'eof', 'abort', 'unconfirmed']) {
+  test(`普通重生成 ${failure} 时恢复旧回复和旧过程，不保存部分预览`, async () => {
+    const view = await mount({
+      regenerateChatStream: async (_cid, _id, _rev, signal, callbacks) => {
+        callbacks.onThinking('新工具')
+        callbacks.onToken('部分预览')
+        if (failure === 'error') callbacks.onError('服务暂不可用。')
+        if (failure === 'abort') {
+          view.state.stopGeneration()
+          assert.equal(signal.aborted, true)
+          callbacks.onDone({ aborted: true })
+        }
+        if (failure === 'unconfirmed') callbacks.onDone({ chat_reply: '未确认的新回复' })
+      },
+    })
+    try {
+      seedChatRegeneration(view.state)
+      const before = view.state.messages.map((message) => JSON.parse(JSON.stringify(message)))
+      await view.state.regenerateMessage(1)
+      assert.equal(view.state.messages[1].content, before[1].content)
+      assert.deepEqual(view.state.messages[1].thinkingChain, before[1].thinkingChain)
+      assert.equal(view.state.messages[1].regenerationDraft, undefined)
+      assert.equal(view.state.messages.length, 4)
+      assert.equal(view.state.streamMessageCache.A, undefined)
+      assert.equal(view.state.loadingConvIds.size, 0)
+      assert.equal(view.writes.length, 0)
+      assert.match(view.notices.at(-1).options.message, /原回复|重新生成/)
+    } finally {
+      view.close()
+    }
+  })
+}
+
+test('普通重生成首个等待前切换会话，预览和保存结果不串入新页面', async () => {
+  const gate = deferred()
+  const entered = deferred()
+  const view = await mount({
+    regenerateChatStream: async (_cid, _id, _rev, _signal, callbacks) => {
+      entered.resolve()
+      await gate.promise
+      callbacks.onToken('A预览')
+      callbacks.onDone(chatRegenerationDone('A新回复'))
+    },
+  })
+  try {
+    seedChatRegeneration(view.state)
+    const owned = view.state.messages
+    const running = view.state.regenerateMessage(1)
+    await view.state.loadConversation('B')
+    await entered.promise
+    view.state.input = 'B草稿'
+    gate.resolve()
+    await running
+    assert.equal(owned[1].content, 'A新回复')
+    assert.equal(view.state.currentConvId, 'B')
+    assert.equal(view.state.messages[1].content, 'B原回复')
+    assert.equal(view.state.input, 'B草稿')
+    assert.equal(view.state.thinkingSteps.length, 0)
+  } finally {
+    gate.resolve()
+    view.close()
+  }
+})
+
+test('后台普通重生成不阻塞另一会话发送，旧收尾不清理新请求', async () => {
+  const gate = deferred()
+  const entered = deferred()
+  const view = await mount({
+    regenerateChatStream: async (_cid, _id, _rev, signal, callbacks) => {
+      entered.resolve()
+      await gate.promise
+      assert.equal(signal.aborted, false)
+      callbacks.onDone(chatRegenerationDone())
+    },
+  })
+  try {
+    seedChatRegeneration(view.state)
+    const running = view.state.regenerateMessage(1)
+    await entered.promise
+    await view.state.loadConversation('B')
+    view.state.input = 'B问题'
+    await view.state.sendText()
+    gate.resolve()
+    await running
+    assert.equal(view.state.messages.at(-1).content, 'B问题回复')
+    assert.equal(view.writes.length, 1)
+    assert.equal(view.writes[0][0], 'B')
+  } finally {
+    gate.resolve()
+    view.close()
+  }
+})
+
+for (const role of ['assistant', 'user']) {
+  test(`删除普通重生成中的 ${role} 只停止所属重跑并删除所点气泡`, async () => {
+    const entered = deferred()
+    const deletes = []
+    const view = await mount({
+      regenerateChatStream: async (_cid, _id, _rev, signal, callbacks) => {
+        entered.resolve()
+        await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
+        callbacks.onDone({ aborted: true })
+      },
+      deleteSavedMessage: async (...args) => {
+        deletes.push(args)
+        return { message_id: args[1], conversation_deleted: false }
+      },
+    })
+    try {
+      seedChatRegeneration(view.state)
+      const running = view.state.regenerateMessage(1)
+      await entered.promise
+      const deleting = view.state.deleteMessage(role === 'assistant' ? 1 : 0)
+      view.state.resolveConfirm(true)
+      await Promise.all([running, deleting])
+      assert.equal(deletes.length, 1)
+      assert.equal(deletes[0][1], role === 'assistant' ? 2 : 1)
+      assert.equal(view.state.messages.length, 3)
+      assert.equal(view.state.messages[0].content, role === 'assistant' ? '原问题' : '原回复')
+      assert.equal(view.notices.length, 0)
+    } finally {
+      view.close()
+    }
+  })
+}
+
+test('删除整个会话后，普通重生成迟到的正文或完成不恢复缓存', async () => {
+  const gate = deferred()
+  const entered = deferred()
+  const view = await mount({
+    deleteConversation: async () => {},
+    regenerateChatStream: async (_cid, _id, _rev, _signal, callbacks) => {
+      entered.resolve()
+      await gate.promise
+      callbacks.onToken('不能复活')
+      callbacks.onDone(chatRegenerationDone())
+    },
+  })
+  try {
+    seedChatRegeneration(view.state)
+    const running = view.state.regenerateMessage(1)
+    await entered.promise
+    const deleting = view.state.handleDeleteConv('A')
+    view.state.resolveConfirm(true)
+    await deleting
+    gate.resolve()
+    await running
+    assert.equal(view.state.messages.length, 0)
+    assert.equal(view.state.streamMessageCache.A, undefined)
+    assert.equal(view.state.loadingConvIds.size, 0)
+    assert.equal(view.notices.length, 0)
+  } finally {
+    gate.resolve()
+    view.close()
+  }
+})
+
+test('缺少对应问题时不删旧回复，不创建新请求', async () => {
+  const view = await mount({ regenerateChatStream: () => assert.fail('不能重跑') })
+  try {
+    view.state.currentConvId = 'A'
+    view.state.messages = [savedBubble(2)]
+    await view.state.regenerateMessage(0)
+    assert.equal(view.state.messages.length, 1)
+    assert.match(view.notices[0].options.message, /缺少对应问题/)
+  } finally {
+    view.close()
+  }
 })
 const editConflict = () =>
   Object.assign(new Error('message_changed'), {

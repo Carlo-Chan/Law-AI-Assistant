@@ -20,6 +20,7 @@ from app.agent.chain import (
 from app.api.errors import ErrorResponse, SafeAPIRoute
 from app.core.errors import INVALID_DOCUMENT, INVALID_REPORT, PublicError, describe_error
 from app.services import history
+from app.services.chat_regeneration import load_chat_source, regenerate_chat_reply
 from app.services.contract_instructions import normalize_contract_instruction
 from app.services.contract_regeneration import load_contract_source, regenerate_report
 from app.services.parser import DocumentParser
@@ -188,6 +189,10 @@ class RegenerateContractRequest(BaseModel):
     expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class RegenerateChatRequest(BaseModel):
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class DeleteMessageRequest(BaseModel):
     expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
     preserve_empty_conversation: bool = False
@@ -250,6 +255,27 @@ async def regenerate_contract(conv_id: str, message_id: int, request: Regenerate
         except Exception as error:
             info = describe_error(error)
             logger.exception("合同原文重跑失败：错误代码=%s", info.code)
+            yield f"data: {json.dumps(info.stream_event(), ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.post("/conversations/{conv_id}/messages/{message_id}/regenerate_chat/stream")
+async def regenerate_chat(
+    conv_id: str, message_id: Annotated[int, Path(gt=0)], request: RegenerateChatRequest
+):
+    """使用已保存问题重跑普通咨询，只在完整结果提交后替换目标回复。"""
+    prefix, query, context = load_chat_source(conv_id, message_id, request.expected_revision)
+
+    async def generate():
+        try:
+            events = run_chat_stream(query, context)
+            async with aclosing(regenerate_chat_reply(prefix, events)) as stream:
+                async for event in stream:
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as error:
+            info = describe_error(error)
+            logger.exception("咨询回复重新生成失败：错误代码=%s", info.code)
             yield f"data: {json.dumps(info.stream_event(), ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

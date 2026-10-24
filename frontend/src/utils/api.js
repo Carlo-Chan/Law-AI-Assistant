@@ -102,7 +102,7 @@ export async function updateConvTitle(convId, title, signal) {
   await api.post(`/conversations/${convId}/title`, { title }, { signal })
 }
 
-/** 重建会话消息（当前仍用于普通问答重新生成） */
+/** 保留旧重建接口的兼容封装，当前页面消息操作不再调用。 */
 export async function rebuildMessages(convId, messages) {
   await api.post(`/conversations/${convId}/rebuild`, { messages })
 }
@@ -142,6 +142,20 @@ export async function analyzeContractStream(file, signal, callbacks, instruction
 export async function regenerateContractStream(convId, messageId, revision, signal, callbacks) {
   return readSSEStream(
     `/api/conversations/${encodeURIComponent(convId)}/messages/${messageId}/regenerate_contract/stream`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expected_revision: revision }),
+    },
+    signal,
+    callbacks,
+  )
+}
+
+/** 普通咨询重跑由服务端读取历史并保存，只提交目标身份及预期版本。 */
+export async function regenerateChatStream(convId, messageId, revision, signal, callbacks) {
+  return readSSEStream(
+    `/api/conversations/${encodeURIComponent(convId)}/messages/${messageId}/regenerate_chat/stream`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -1,3 +1,5 @@
+import { createRegenerationProgress } from './regenerationProgress.js'
+
 /** 合同重跑只在收到保存确认后更新目标对象，不操作当前页面的草稿或消息数组。 */
 export class ContractRegenerationError extends Error {
   constructor(message) {
@@ -101,40 +103,9 @@ export async function regenerateContractReport({
     contractInstruction(target) === instruction
   if (!unchanged()) throw new ContractRegenerationError('页面中的原报告已变更，请刷新后重试。')
 
-  const steps = []
-  let terminal = null
-  let failure = ''
-  await stream(convId, identity.id, identity.revision, signal, {
-    onThinking(label) {
-      steps.push({ type: 'tool', label })
-      onSteps([...steps])
-    },
-    onReasoning(text) {
-      if (steps.at(-1)?.type === 'reasoning') steps.at(-1).label = text
-      else steps.push({ type: 'reasoning', label: text })
-      onSteps([...steps])
-    },
-    onReasoningToken(text) {
-      if (steps.at(-1)?.type !== 'reasoning') steps.push({ type: 'reasoning', label: '' })
-      steps.at(-1).label += text
-      onSteps([...steps])
-    },
-    onToolChunk(tool, text, first) {
-      if (first) steps.push({ type: 'done', label: tool + ' 完成', snippet: text })
-      else if (steps.at(-1)?.type === 'done') steps.at(-1).snippet += text
-      onSteps([...steps])
-    },
-    onToolResult(tool, output) {
-      steps.push({ type: 'done', label: tool + ' 完成', snippet: output })
-      onSteps([...steps])
-    },
-    onDone(event) {
-      if (!terminal && !failure) terminal = event
-    },
-    onError(message) {
-      if (!terminal && !failure) failure = typeof message === 'string' ? message : '重新审查失败。'
-    },
-  })
+  const progress = createRegenerationProgress({ onSteps })
+  await stream(convId, identity.id, identity.revision, signal, progress.callbacks)
+  const { terminal, failure } = progress
   if (terminal?.aborted || (!terminal && signal?.aborted)) return { status: 'aborted' }
   if (failure) {
     throw new ContractRegenerationError(failure + ' 页面暂保留原报告，可刷新会话确认最新结果。')

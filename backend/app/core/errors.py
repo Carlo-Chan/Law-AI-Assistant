@@ -61,6 +61,16 @@ MESSAGE_CHANGED = ErrorInfo(
     "message_changed", "目标消息已变更，请刷新会话后重试；本次未修改任何记录。", 409
 )
 MESSAGE_NOT_EDITABLE = ErrorInfo("message_not_editable", "仅支持编辑用户消息。", 400)
+REPLY_CHANGED = ErrorInfo(
+    "reply_changed", "原回复或生成上下文已变更，请重新读取会话；本次结果未覆盖原记录。", 409
+)
+REPLY_SOURCE_MISSING = ErrorInfo(
+    "reply_source_missing", "此回复缺少可用的对应问题，无法重新生成；原回复已保留。", 400
+)
+REPLY_NOT_SUPPORTED = ErrorInfo(
+    "reply_not_supported", "此记录属于合同审查，请使用合同重新审查；原记录未修改。", 400
+)
+INVALID_REPLY = ErrorInfo("invalid_reply", "未收到完整咨询回复，原回复已保留，请重试。", 502)
 REPORT_CHANGED = ErrorInfo(
     "report_changed", "原报告已变更或被删除，请刷新会话后重试；本次结果未覆盖原记录。", 409
 )
