@@ -20,3 +20,7 @@ export function contractInstruction(message) {
   const instruction = contractData(message)?.instruction
   return typeof instruction === 'string' ? instruction : ''
 }
+
+export function contractBlocks(message) {
+  return contractData(message)?.document_blocks ?? null
+}

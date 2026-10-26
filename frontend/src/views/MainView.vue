@@ -323,7 +323,7 @@
                     :auto-upload="false"
                     :show-file-list="false"
                     :on-change="handleFileChange"
-                    accept=".pdf,.doc,.docx,.txt"
+                    :accept="CONTRACT_FILE_ACCEPT"
                   >
                     <el-button
                       text
@@ -446,7 +446,7 @@ import {
 } from '../utils/api'
 import { renderHighlightedContract } from '../utils/highlight'
 import { getHighlightRect, isSameHighlight, setHighlightPinned } from '../utils/highlightSelection'
-import { getContractUploadError } from '../utils/upload'
+import { CONTRACT_FILE_ACCEPT, getContractUploadError } from '../utils/upload'
 import { normalizeContractInstruction } from '../utils/contractInstruction'
 import { createTypewriterScope } from '../composables/useTypewriter'
 import { createConversationRequests, LOADING_DOTS } from '../composables/conversationRequests'
@@ -670,6 +670,7 @@ function checkNarrow() {
   const needForSidebar = 260 + 400 + (showPreview.value && !isNarrow.value ? 280 : 0)
   sidebarFits.value = window.innerWidth >= needForSidebar
   if (!isNarrow.value && wasNarrow) forceSidebar.value = false
+  nextTick(updatePinnedBubble)
 }
 let tooltipEl = null
 let pinnedMark = null
@@ -688,7 +689,11 @@ const canSend = computed(
 
 const highlightedContract = computed(() => {
   if (!previewData.value) return ''
-  return renderHighlightedContract(previewData.value.raw_text, previewData.value.risk_points)
+  return renderHighlightedContract(
+    previewData.value.raw_text,
+    previewData.value.risk_points,
+    previewData.value.document_blocks,
+  )
 })
 
 // ---- 滚动 ----
@@ -1555,6 +1560,9 @@ async function executeMessageRequest(
             chat_reply: data.chat_reply,
             risk_points: data.risk_points,
             ...(instruction ? { instruction } : {}),
+            ...(Array.isArray(data.document_blocks)
+              ? { document_blocks: data.document_blocks }
+              : {}),
           }
         : null
     if (contractData) {
@@ -1811,7 +1819,7 @@ function clearContractSelection() {
     tooltipEl.style.opacity = '0'
     tooltipEl.style.pointerEvents = 'none'
   }
-  pinnedScrollElement?.removeEventListener('scroll', pinnedScrollHandler)
+  pinnedScrollElement?.removeEventListener('scroll', pinnedScrollHandler, true)
   pinnedScrollHandler = null
   pinnedScrollElement = null
 }
@@ -1830,7 +1838,10 @@ function onContractClick(e) {
     tooltipEl.style.pointerEvents = 'auto'
     pinnedScrollHandler = () => updatePinnedBubble()
     pinnedScrollElement = mark.closest('.preview-body')
-    pinnedScrollElement?.addEventListener('scroll', pinnedScrollHandler, { passive: true })
+    pinnedScrollElement?.addEventListener('scroll', pinnedScrollHandler, {
+      passive: true,
+      capture: true,
+    })
   }
 }
 
@@ -2856,6 +2867,30 @@ function openContractPreview(msg) {
   cursor: pointer;
   transition: background 0.2s;
   position: relative;
+}
+.contract-text :deep(.contract-paragraph) {
+  margin: 0 0 0.5em;
+}
+.contract-text :deep(.contract-table-wrap) {
+  overflow-x: auto;
+  max-width: 100%;
+  margin: 10px 0;
+  border-radius: 10px;
+}
+.contract-text :deep(.contract-table) {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: inherit;
+  line-height: inherit;
+}
+.contract-text :deep(.contract-table td) {
+  border: 1px solid #dfe3e9;
+  padding: 8px 12px;
+  min-width: 7em;
+  vertical-align: top;
+}
+.contract-text :deep(.contract-table td > :last-child) {
+  margin-bottom: 0;
 }
 .contract-text :deep(mark.risk-high) {
   background: #eb9e9e;

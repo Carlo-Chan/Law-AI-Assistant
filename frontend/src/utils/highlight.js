@@ -2,15 +2,32 @@
  * 合同原文高亮匹配工具
  *
  * 核心问题：LLM 返回的 quote 可能与原文有细微差异（标点、空格）
- * 解决策略：忽略所有非汉字字符，仅按汉字序列模糊匹配
+ * 先保留数字和英文精确定位，再对不含数字及英文的引文作汉字模糊回退。
  */
 import { escapeHtml } from './html.js'
+import { renderContractDocument } from './contractDocument.js'
 
 /**
  * 提取字符串中的纯汉字序列（去除标点、空格、数字、英文）
  */
 function extractChinese(str) {
   return str.replace(/[^\u4e00-\u9fa5]/g, '')
+}
+
+function literalOffset(text, quote) {
+  let offset = text.indexOf(quote)
+  while (offset >= 0) {
+    const before = text[offset - 1] || ''
+    const after = text[offset + quote.length] || ''
+    // 金额不能命中更长数字的尾部，5% 也不能命中 0.5% 的一部分。
+    if (!(
+      (/^\p{N}/u.test(quote) && /[\p{N}.+\-−]/u.test(before)) ||
+      (/\p{N}$/u.test(quote) && /[\p{N}.]/u.test(after))
+    ))
+      return offset
+    offset = text.indexOf(quote, offset + 1)
+  }
+  return -1
 }
 
 /**
@@ -20,6 +37,23 @@ function extractChinese(str) {
  * @returns {{ start: number, end: number } | null}
  */
 export function fuzzyFind(rawText, quote) {
+  if (!quote.trim()) return null
+  const exact = literalOffset(rawText, quote)
+  if (exact >= 0) return { start: exact, end: exact + quote.length }
+  // 表格列分隔与模型空白可能不同，但不能丢弃金额、编号、百分号或英文。
+  const positions = []
+  let normalized = ''
+  for (let index = 0; index < rawText.length; index++) {
+    if (!/\s/.test(rawText[index])) {
+      normalized += rawText[index]
+      positions.push(index)
+    }
+  }
+  const query = quote.replace(/\s/g, '')
+  const matched = literalOffset(normalized, query)
+  if (matched >= 0)
+    return { start: positions[matched], end: positions[matched + query.length - 1] + 1 }
+  if (/[\p{N}\p{Script=Latin}]/u.test(quote)) return null
   const quoteChinese = extractChinese(quote)
   if (!quoteChinese) return null
   const textChinese = extractChinese(rawText)
@@ -101,16 +135,30 @@ export function getRiskClass(level) {
  * @param {Array} riskPoints  [{ quote, level, bubble_text }]
  * @returns {string} HTML 字符串
  */
-export function renderHighlightedContract(rawText, riskPoints) {
+export function renderHighlightedContract(rawText, riskPoints, documentBlocks = null) {
   const matches = riskPoints
     .map((rp, index) => {
       const q = rp.quote || rp.key_phrase || ''
       const pos = fuzzyFind(rawText, q)
-      if (!pos) console.warn('[highlight] match failed:', q.slice(0, 40))
+      if (!pos) console.warn('合同风险引文未匹配，保留原文。')
       return pos ? { ...rp, pos, index } : null
     })
     .filter(Boolean)
 
+  const renderRange = (start, end) => renderHighlightedRange(rawText, matches, start, end)
+  return (
+    renderContractDocument(rawText, documentBlocks, renderRange) ?? renderRange(0, rawText.length)
+  )
+}
+
+function renderHighlightedRange(rawText, matches, start, end) {
+  // 截断的是显示片段而非逻辑风险身份，跨格风险仍可统一悬停及钉住。
+  matches = matches
+    .filter((point) => point.pos.start < end && point.pos.end > start)
+    .map((point) => ({
+      ...point,
+      pos: { start: Math.max(start, point.pos.start), end: Math.min(end, point.pos.end) },
+    }))
   // 始终按原文坐标分段，转义后的字符长度不再参与定位。
   const boundaries = new Map()
   for (const point of matches) {
@@ -126,7 +174,7 @@ export function renderHighlightedContract(rawText, riskPoints) {
   const parts = []
   const active = new Set()
   let stack = []
-  let previous = 0
+  let previous = start
   for (const offset of [...boundaries.keys()].sort((left, right) => left - right)) {
     parts.push(escapeHtml(rawText.slice(previous, offset)).replace(/\n/g, '<br>'))
     for (const { point, opening } of boundaries.get(offset)) {
@@ -151,7 +199,7 @@ export function renderHighlightedContract(rawText, riskPoints) {
     stack = nextStack
     previous = offset
   }
-  parts.push(escapeHtml(rawText.slice(previous)).replace(/\n/g, '<br>'))
+  parts.push(escapeHtml(rawText.slice(previous, end)).replace(/\n/g, '<br>'))
   // 标签与属性名均为应用常量，外部文本全部转义；气泡仍按纯文本读取。
   return parts.join('')
 }

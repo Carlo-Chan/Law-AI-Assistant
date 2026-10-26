@@ -61,7 +61,7 @@ def test_upload_delivers_instruction_and_returns_canonical_metadata(client, monk
 def test_oversized_instruction_is_rejected_before_parsing_or_model(client, monkeypatch, streaming):
     parser = Mock(side_effect=AssertionError("指令超限不应解析附件"))
     agent = AsyncMock()
-    monkeypatch.setattr(routes.DocumentParser, "parse", parser)
+    monkeypatch.setattr(routes.DocumentParser, "parse_document", parser)
     monkeypatch.setattr(routes, "run_contract_analysis", agent)
     monkeypatch.setattr(routes, "run_contract_analysis_stream", agent)
     response = client.post(

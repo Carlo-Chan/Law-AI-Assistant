@@ -76,7 +76,7 @@ def _detail(client, stored_report):
 def test_regeneration_commits_target_only_after_complete_result(client, stored_report, monkeypatch):
     """直接读取保存的原文，不重新解析附件，完成帧必须晚于数据库提交。"""
     parser = Mock(side_effect=AssertionError("重跑不应调用文档解析器"))
-    monkeypatch.setattr(routes.DocumentParser, "parse", parser)
+    monkeypatch.setattr(routes.DocumentParser, "parse_document", parser)
     before_row = history.get_message(stored_report["conv_id"], stored_report["target"]["id"])
     other_id = client.post("/api/conversations").json()["data"]["id"]
     history.add_message(other_id, "user", "其他会话")

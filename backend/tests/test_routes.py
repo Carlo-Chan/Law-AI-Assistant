@@ -240,7 +240,7 @@ def test_contract_requires_uploaded_file(client, endpoint):
 
 
 @pytest.mark.parametrize("endpoint", ["/api/analyze_contract", "/api/analyze_contract/stream"])
-@pytest.mark.parametrize("filename", ["合同.doc", "程序.exe"])
+@pytest.mark.parametrize("filename", ["合同.rtf", "程序.exe"])
 def test_contract_invalid_format_does_not_call_agent(client, monkeypatch, endpoint, filename):
     """不支持的文件格式在调用 AI 前返回 400。"""
     agent = AsyncMock()

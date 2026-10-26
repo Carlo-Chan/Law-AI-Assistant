@@ -10,6 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, HTTPException, Path, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from app.agent.chain import (
     run_chat,
@@ -56,6 +57,7 @@ class ContractAnalysisData(BaseModel):
     risk_points: list[RiskPoint]
     chat_reply: str
     instruction: str | None = None
+    document_blocks: list[dict] | None = None
 
 
 class ContractAnalysisResponse(BaseModel):
@@ -89,11 +91,11 @@ async def chat_stream(request: ChatRequest):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-async def _parse_contract_upload(file: UploadFile) -> str:
+async def _parse_contract_upload(file: UploadFile) -> dict:
     """只向客户端公开应用声明的格式提示，第三方解析异常统一转换。"""
     raw_bytes = await read_contract_upload(file)
     try:
-        return DocumentParser.parse(raw_bytes, file.filename)
+        return await run_in_threadpool(DocumentParser.parse_document, raw_bytes, file.filename)
     except PublicError:
         raise
     except Exception as error:
@@ -111,7 +113,8 @@ async def analyze_contract(
 ):
     """合同审查：上传文件 -> 解析文本 -> AI 分析"""
     instruction = normalize_contract_instruction(instruction)
-    raw_text = await _parse_contract_upload(file)
+    document = await _parse_contract_upload(file)
+    raw_text = document["raw_text"]
 
     # 调用 AI 审查
     result = await run_contract_analysis(raw_text, instruction)
@@ -120,10 +123,11 @@ async def analyze_contract(
     return ContractAnalysisResponse(
         code=200,
         data=ContractAnalysisData(
-            raw_text=result["raw_text"],
+            raw_text=raw_text,
             risk_points=[RiskPoint(**rp) for rp in result["risk_points"]],
             chat_reply=result["chat_reply"],
             instruction=instruction or None,
+            document_blocks=document.get("document_blocks"),
         ),
     )
 
@@ -136,14 +140,22 @@ async def analyze_contract_stream(
     ] = "",
 ):
     instruction = normalize_contract_instruction(instruction)
-    raw_text = await _parse_contract_upload(file)
+    document = await _parse_contract_upload(file)
+    raw_text = document["raw_text"]
 
     async def generate():
         try:
             async for event in run_contract_analysis_stream(raw_text, instruction):
                 if event["type"] == "done":
                     # 元数据来自本次请求，而非采信模型自行回显的指令。
-                    event = {key: value for key, value in event.items() if key != "instruction"}
+                    event = {
+                        key: value
+                        for key, value in event.items()
+                        if key not in {"instruction", "document_blocks"}
+                    }
+                    event["raw_text"] = raw_text
+                    if "document_blocks" in document:
+                        event["document_blocks"] = document["document_blocks"]
                     if instruction:
                         event["instruction"] = instruction
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -238,7 +250,11 @@ async def regenerate_contract(conv_id: str, message_id: int, request: Regenerate
     def validate_result(event):
         try:
             data = ContractAnalysisData.model_validate(
-                {**event, "instruction": instruction or None}
+                {
+                    **event,
+                    "instruction": instruction or None,
+                    "document_blocks": json.loads(original["contract_data"]).get("document_blocks"),
+                }
             )
         except ValidationError as error:
             raise PublicError(INVALID_REPORT) from error

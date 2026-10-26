@@ -48,16 +48,32 @@ def test_parse_empty_docx_returns_empty_text():
 
 
 @pytest.mark.parametrize("filename", ["合同.doc", "合同.DOC"])
-def test_parse_legacy_doc_explains_conversion(filename):
-    """旧版 Word 格式提示用户转换为 DOCX。"""
-    with pytest.raises(ValueError, match=r"不支持旧版 \.doc 格式，请转换为 \.docx 后重试"):
-        DocumentParser.parse(b"", filename)
+def test_parse_doc_uses_shared_docx_structure(filename, monkeypatch):
+    """DOC 转换后复用 DOCX 解析器，不另写一套表格和坐标逻辑。"""
+    from app.services import parser
+
+    document = Document()
+    document.add_paragraph("转换后的合同")
+    document.add_table(rows=1, cols=1).cell(0, 0).text = "押金2000元"
+    buffer = io.BytesIO()
+    document.save(buffer)
+    received = []
+
+    def convert(content):
+        received.append(content)
+        return buffer.getvalue()
+
+    monkeypatch.setattr(parser, "convert_doc_to_docx", convert)
+    assert DocumentParser.parse_document(
+        b"synthetic DOC", filename
+    ) == DocumentParser.parse_document(buffer.getvalue(), "合同.docx")
+    assert received == [b"synthetic DOC"]
 
 
 @pytest.mark.parametrize("filename", ["程序.exe", "说明.md", "无扩展名"])
 def test_parse_unsupported_format_explains_supported_types(filename):
     """不支持的扩展名或无扩展名时给出可操作的格式提示。"""
-    with pytest.raises(ValueError, match="不支持的文件格式.*仅支持 PDF / DOCX / TXT"):
+    with pytest.raises(ValueError, match="不支持的文件格式.*仅支持 PDF / DOC / DOCX / TXT"):
         DocumentParser.parse(b"example", filename)
 
 

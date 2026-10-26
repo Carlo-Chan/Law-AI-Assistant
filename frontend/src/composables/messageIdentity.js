@@ -1,4 +1,4 @@
-import { contractSource, contractInstruction } from '../utils/contractMetadata.js'
+import { contractSource, contractInstruction, contractBlocks } from '../utils/contractMetadata.js'
 
 function hasMessageId(message) {
   return Number.isInteger(message?.id) && message.id > 0
@@ -33,6 +33,7 @@ export function messageSnapshot(message) {
     fileName: message.role === 'user' ? message.file?.name || message.file_name || null : null,
     source: contractSource(message),
     instruction: contractInstruction(message),
+    documentBlocks: contractBlocks(message),
   }
 }
 

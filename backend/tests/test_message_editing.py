@@ -222,7 +222,7 @@ def test_edit_does_not_run_model_or_parse_attachment(client, history_store, stor
         "run_contract_analysis_stream",
     ):
         monkeypatch.setattr(routes, name, forbidden)
-    monkeypatch.setattr(routes.DocumentParser, "parse", forbidden)
+    monkeypatch.setattr(routes.DocumentParser, "parse_document", forbidden)
     assert edit(client, stored["id"], stored["messages"][0]).status_code == 200
     assert history_store.get_conversation(stored["id"])["messages"][1:] == stored["messages"][1:]
 

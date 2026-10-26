@@ -47,9 +47,27 @@ INVALID_DOCUMENT = ErrorInfo(
     400,
 )
 UNSUPPORTED_DOCUMENT = ErrorInfo(
-    "unsupported_document", "不支持的文件格式，仅支持 PDF / DOCX / TXT。", 400
+    "unsupported_document", "不支持的文件格式，仅支持 PDF / DOC / DOCX / TXT。", 400
 )
-LEGACY_DOCUMENT = ErrorInfo("legacy_document", "不支持旧版 .doc 格式，请转换为 .docx 后重试", 400)
+PDF_OCR_REQUIRED = ErrorInfo(
+    "pdf_ocr_required",
+    "PDF 包含无法提取文字的图片页面，暂不支持扫描件 OCR，请上传可选中文字的 PDF 或 DOCX / TXT。",
+    400,
+)
+DOCUMENT_CONVERTER_UNAVAILABLE = ErrorInfo(
+    "document_converter_unavailable",
+    "DOC 转换服务暂不可用，请联系管理员，或改用 DOCX / PDF / TXT 上传。",
+    503,
+)
+DOCUMENT_CONVERTER_BUSY = ErrorInfo(
+    "document_converter_busy", "DOC 转换任务较多，请稍后重试。", 503
+)
+DOCUMENT_CONVERSION_TIMEOUT = ErrorInfo(
+    "document_conversion_timeout", "DOC 转换超时，请稍后重试，或改用 DOCX / PDF / TXT 上传。", 504
+)
+CONVERTED_DOCUMENT_TOO_LARGE = ErrorInfo(
+    "converted_document_too_large", "转换后的文档过大，请拆分合同，或改用 PDF / TXT 上传。", 413
+)
 INVALID_REQUEST = ErrorInfo("invalid_request", "请求参数不正确，请检查后重试。", 422)
 CONTRACT_INSTRUCTION_TOO_LONG = ErrorInfo(
     "contract_instruction_too_long", "附加审查指令不能超过 4000 字，请缩短后重试。", 422

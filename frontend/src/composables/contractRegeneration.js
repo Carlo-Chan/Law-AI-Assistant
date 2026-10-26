@@ -1,6 +1,6 @@
 import { createRegenerationProgress } from './regenerationProgress.js'
 import { hasMessageIdentity, resolveSavedMessage } from './messageIdentity.js'
-import { contractSource, contractInstruction } from '../utils/contractMetadata.js'
+import { contractSource, contractInstruction, contractBlocks } from '../utils/contractMetadata.js'
 
 /** 合同重跑只在收到保存确认后更新目标对象，不操作当前页面的草稿或消息数组。 */
 export class ContractRegenerationError extends Error {
@@ -21,6 +21,8 @@ export async function regenerateContractReport({
 }) {
   const source = contractSource(target)
   const instruction = contractInstruction(target)
+  const blocks = contractBlocks(target)
+  const blockSnapshot = JSON.stringify(blocks)
   if (!source.trim()) {
     throw new ContractRegenerationError('此记录未保存合同原文，请重新上传原文件；原报告已保留。')
   }
@@ -50,7 +52,8 @@ export async function regenerateContractReport({
     target.revision === originalIdentity.revision &&
     target.content === content &&
     contractSource(target) === source &&
-    contractInstruction(target) === instruction
+    contractInstruction(target) === instruction &&
+    JSON.stringify(contractBlocks(target)) === blockSnapshot
   if (!unchanged()) throw new ContractRegenerationError('页面中的原报告已变更，请刷新后重试。')
 
   const progress = createRegenerationProgress({ onSteps })
@@ -69,6 +72,7 @@ export async function regenerateContractReport({
     }) ||
     terminal.raw_text !== source ||
     (terminal.instruction ?? '') !== instruction ||
+    JSON.stringify(terminal.document_blocks ?? null) !== blockSnapshot ||
     typeof terminal.chat_reply !== 'string' ||
     !terminal.chat_reply.trim() ||
     !Array.isArray(terminal.risk_points) ||
@@ -88,6 +92,7 @@ export async function regenerateContractReport({
     chat_reply: terminal.chat_reply,
     risk_points: terminal.risk_points,
     ...(instruction ? { instruction } : {}),
+    ...(blocks !== null ? { document_blocks: blocks } : {}),
   }
   Object.assign(target, {
     id: terminal.message_id,

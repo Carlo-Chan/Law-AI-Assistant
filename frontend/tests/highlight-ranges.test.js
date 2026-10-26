@@ -37,6 +37,24 @@ function textFor(root, bubble) {
 
 // 用短文本穷举子串作为独立参照，不复制生产代码的动态规划实现。
 function referenceFind(raw, quote) {
+  if (!quote.trim()) return null
+  function literal(text, query) {
+    for (let offset = 0; offset <= text.length - query.length; offset++) {
+      if (text.slice(offset, offset + query.length) !== query) continue
+      if (/^\p{N}/u.test(query) && /[\p{N}.+\-−]/u.test(text[offset - 1] || '')) continue
+      if (/\p{N}$/u.test(query) && /[\p{N}.]/u.test(text[offset + query.length] || '')) continue
+      return offset
+    }
+    return -1
+  }
+  const exact = literal(raw, quote)
+  if (exact >= 0) return { start: exact, end: exact + quote.length }
+  const compact = [...raw.matchAll(/\S/g)]
+  const normalized = quote.replace(/\s/g, '')
+  const found = literal(compact.map((match) => match[0]).join(''), normalized)
+  if (found >= 0)
+    return { start: compact[found].index, end: compact[found + normalized.length - 1].index + 1 }
+  if (/[\p{N}\p{Script=Latin}]/u.test(quote)) return null
   const positions = [...raw.matchAll(/[一-龥]/g)]
   const text = positions.map((match) => match[0]).join('')
   const query = quote.replace(/[^一-龥]/g, '')

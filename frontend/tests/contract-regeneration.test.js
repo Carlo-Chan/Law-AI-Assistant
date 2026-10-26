@@ -42,6 +42,55 @@ function options(state, stream) {
   return { convId: 'conversation-A', ...state, stream, getConversation: mock.fn() }
 }
 
+test('结构化合同重跑确认后仍保留原解析结构', async () => {
+  const state = fixture()
+  const blocks = [{ type: 'paragraph', start: 0, end: source.length }]
+  state.target.contractData.document_blocks = blocks
+  state.done.document_blocks = structuredClone(blocks)
+  await regenerateContractReport(
+    options(state, async (_cid, _id, _rev, _signal, callbacks) => {
+      callbacks.onDone(state.done)
+    }),
+  )
+  assert.deepEqual(state.target.contractData.document_blocks, blocks)
+})
+
+for (const missing of [false, true]) {
+  test(`结构化重跑回执${missing ? '丢失' : '篡改'}结构时不覆盖原报告`, async () => {
+    const state = fixture()
+    state.target.contractData.document_blocks = [
+      { type: 'paragraph', start: 0, end: source.length },
+    ]
+    if (!missing) state.done.document_blocks = []
+    const original = structuredClone(state.target)
+    await assert.rejects(
+      regenerateContractReport(
+        options(state, async (_cid, _id, _rev, _signal, callbacks) => {
+          callbacks.onDone(state.done)
+        }),
+      ),
+      ContractRegenerationError,
+    )
+    assert.deepEqual(state.target, original)
+  })
+}
+
+test('重跑期间原结构变更，迟到结果不覆盖本地新结构', async () => {
+  const state = fixture()
+  state.target.contractData.document_blocks = [{ type: 'paragraph', start: 0, end: source.length }]
+  state.done.document_blocks = structuredClone(state.target.contractData.document_blocks)
+  await assert.rejects(
+    regenerateContractReport(
+      options(state, async (_cid, _id, _rev, _signal, callbacks) => {
+        state.target.contractData.document_blocks = []
+        callbacks.onDone(state.done)
+      }),
+    ),
+    ContractRegenerationError,
+  )
+  assert.equal(state.target.content, '旧审查报告')
+})
+
 test('历史元数据附件无需上传，保存确认后仅替换目标报告', async () => {
   const state = fixture()
   const original = structuredClone(state)

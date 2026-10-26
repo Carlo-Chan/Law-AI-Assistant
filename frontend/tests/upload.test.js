@@ -37,3 +37,34 @@ test('真实文件超过大小上限时仍返回原有超限提示', () => {
   const file = new File([new ArrayBuffer(MAX_CONTRACT_FILE_BYTES + 1)], '合同.pdf')
   assert.equal(getContractUploadError(file), '合同文件不能超过 10 MiB，请压缩或拆分后重试。')
 })
+
+for (const name of [
+  '合同.rtf',
+  '合同.DoCm',
+  '合同.exe',
+  '合同.pdf.exe',
+  '合同',
+  '',
+  '.pdf',
+  '合同.pdf.',
+  '合同.md',
+  '合同.docx ',
+]) {
+  test(`真实附件格式无效时提前提示：${JSON.stringify(name)}`, () => {
+    const file = new File(['合同'], name, { type: 'application/pdf' })
+    assert.equal(getContractUploadError(file), '不支持的文件格式，仅支持 PDF / DOC / DOCX / TXT。')
+  })
+}
+
+for (const name of ['合同.PDF', '合同.doc', '合同.DoC', '合同.DoCx', '合同.TXT', '合同.终稿.pdf']) {
+  test(`按后端规则识别末尾扩展名，大小写及缺失 MIME 不影响有效格式：${name}`, () => {
+    for (const type of ['', 'application/octet-stream']) {
+      assert.equal(getContractUploadError(new File(['合同'], name, { type })), '')
+    }
+  })
+}
+
+test('超限且格式无效时仍优先显示原有大小提示', () => {
+  const file = new File([new ArrayBuffer(MAX_CONTRACT_FILE_BYTES + 1)], '合同.rtf')
+  assert.equal(getContractUploadError(file), '合同文件不能超过 10 MiB，请压缩或拆分后重试。')
+})

@@ -151,7 +151,7 @@ def test_http_and_sse_share_safe_errors(client, monkeypatch, mode, stream, error
 def test_parser_exceptions_are_not_trusted_public_messages(client, monkeypatch, stream, error):
     """第三方 ValueError 不能像应用自己的格式提示一样直接返回。"""
     parser = Mock(side_effect=error)
-    monkeypatch.setattr(routes.DocumentParser, "parse", parser)
+    monkeypatch.setattr(routes.DocumentParser, "parse_document", parser)
     agent = AsyncMock()
     monkeypatch.setattr(routes, "run_contract_analysis", agent)
     monkeypatch.setattr(routes, "run_contract_analysis_stream", agent)
@@ -168,7 +168,7 @@ def test_parser_exceptions_are_not_trusted_public_messages(client, monkeypatch, 
 
 
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("filename", ["损坏.pdf", "损坏.docx", "合同.sk-private-key"])
+@pytest.mark.parametrize("filename", ["损坏.pdf", "损坏.doc", "损坏.docx", "合同.sk-private-key"])
 def test_real_invalid_document_returns_safe_http_error(client, stream, filename):
     """损坏文件与异常扩展名不暴露解析器详情或文件名，SSE 开始前即可拒绝。"""
     response = client.post(

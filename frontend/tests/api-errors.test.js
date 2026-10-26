@@ -4,6 +4,25 @@ import { analyzeContractStream, chatStream } from '../src/utils/api.js'
 
 const privateMessage = 'sk-private-key 敏感合同正文 E:/private/config.py'
 
+test('图片 PDF 在建立 SSE 前被拒绝时显示 OCR 提示，不伪造审查报告', async (context) => {
+  const message =
+    'PDF 包含无法提取文字的图片页面，暂不支持扫描件 OCR，请上传可选中文字的 PDF 或 DOCX / TXT。'
+  context.mock.method(
+    globalThis,
+    'fetch',
+    async () =>
+      new Response(JSON.stringify({ code: 'pdf_ocr_required', detail: message }), { status: 400 }),
+  )
+  const onError = mock.fn()
+  const onDone = mock.fn()
+  await analyzeContractStream(new File(['合成图片 PDF'], '合同.pdf'), undefined, {
+    onError,
+    onDone,
+  })
+  assert.equal(onError.mock.calls[0].arguments[0], message)
+  assert.equal(onDone.mock.callCount(), 0)
+})
+
 for (const mode of ['chat', 'contract']) {
   async function send(callbacks) {
     if (mode === 'chat') return chatStream('咨询问题', [], undefined, callbacks)

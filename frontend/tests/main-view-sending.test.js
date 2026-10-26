@@ -20,6 +20,9 @@ const { createApp, h, nextTick, compile } = await import('vue')
 const { renderHighlightedContract } = await import('../src/utils/highlight.js')
 const sourceUrl = new URL('../src/views/MainView.vue', import.meta.url)
 const source = await readFile(sourceUrl, 'utf8')
+const wordDocument = JSON.parse(
+  await readFile(new URL('../../tests/fixtures/word-contract.json', import.meta.url), 'utf8'),
+)
 const { descriptor } = parse(source)
 const compiled = compileScript(descriptor, { id: 'sending-regression' }).content
 const apiNames = [
@@ -1069,6 +1072,88 @@ const editConflict = () =>
   Object.assign(new Error('message_changed'), {
     response: { status: 409, data: { code: 'message_changed' } },
   })
+
+test('结构化合同从首次接收到保存、刷新读取和预览保持同一原文及表格', async () => {
+  const report = {
+    ...structuredClone(wordDocument),
+    chat_reply: '表格审查报告',
+    risk_points: [{ quote: '3000元', level: 'high', bubble_text: '金额风险' }],
+  }
+  const view = await mount({
+    analyzeContractStream: async (_file, _signal, callbacks) => callbacks.onDone(report),
+    getConversation: async (id) => ({
+      id,
+      messages: [
+        { ...savedBubble(101, 'user', '📄 上传合同：合同.docx'), file_name: '合同.docx' },
+        {
+          ...savedBubble(102, 'assistant', report.chat_reply),
+          contract_data: JSON.stringify(report),
+        },
+      ],
+    }),
+  })
+  try {
+    const state = view.state
+    state.currentConvId = 'A'
+    state.pendingFile = new File(['离线解析替身'], '合同.docx')
+    await state.sendFile()
+    assert.deepEqual(view.writes[0][4].document_blocks, report.document_blocks)
+    state.openContractPreview(state.messages[1])
+    const first = state.highlightedContract
+    assert.match(first, /<table/)
+    assert.match(first, /data-bubble="金额风险"[^>]*>3000元<\/mark>/)
+    await state.newChat()
+    state.input = '新对话草稿'
+    await state.loadConversation('A')
+    state.openContractPreview(state.messages[1])
+    assert.equal(state.highlightedContract, first)
+    assert.deepEqual(state.messages[1].contractData.document_blocks, report.document_blocks)
+    await state.newChat()
+    assert.equal(state.input, '新对话草稿')
+  } finally {
+    view.close()
+  }
+})
+
+test('表格内部横向滚动也更新钉住气泡，关闭预览后移除捕获监听', async () => {
+  const view = await mountHighlights()
+  const raw = wordDocument.raw_text
+  view.root.innerHTML = renderHighlightedContract(
+    raw,
+    [
+      {
+        quote: '押金\t2000元',
+        level: 'high',
+        bubble_text: '跨格风险',
+      },
+    ],
+    wordDocument.document_blocks,
+  )
+  const fragments = [...view.root.querySelectorAll('mark')]
+  let measured = 0
+  fragments.forEach((mark) => {
+    mark.getBoundingClientRect = () => {
+      measured++
+      return { left: 20, right: 60, top: 100, bottom: 120, width: 40, height: 20 }
+    }
+  })
+  try {
+    view.state.onContractClick({ target: fragments[0] })
+    assert.equal(view.root.querySelectorAll('.pinned').length, 2)
+    const before = measured
+    view.root.querySelector('.contract-table-wrap').dispatchEvent(new dom.window.Event('scroll'))
+    assert.ok(measured > before)
+    view.state.showPreview = false
+    await nextTick()
+    const closed = measured
+    view.root.querySelector('.contract-table-wrap').dispatchEvent(new dom.window.Event('scroll'))
+    assert.equal(measured, closed)
+    assert.equal(view.root.querySelectorAll('.pinned').length, 0)
+    assert.equal(view.tooltip.style.pointerEvents, 'none')
+  } finally {
+    view.close()
+  }
+})
 
 function inputTemplate(model) {
   const pending = [descriptor.template.ast]
@@ -2643,6 +2728,120 @@ test('合同发送在创建等待前固定文件，不消费另一会话的草�
     assert.equal(view.writes[0][4].instruction, 'A指令')
   } finally {
     gate.resolve({ id: 'A' })
+    view.close()
+  }
+})
+
+test('文件选择器绑定统一支持格式，不再声明旧版 DOC 为可用附件', async () => {
+  const pending = [descriptor.template.ast]
+  let binding
+  while (pending.length) {
+    const node = pending.pop()
+    if (node.tag === 'el-upload') {
+      binding = node.props.find((prop) => prop.type === 7 && prop.arg?.content === 'accept')
+      break
+    }
+    pending.push(...(node.children || []))
+  }
+  assert.equal(binding?.exp?.content, 'CONTRACT_FILE_ACCEPT')
+  const view = await mount()
+  try {
+    assert.equal(view.state.CONTRACT_FILE_ACCEPT, '.pdf,.doc,.docx,.txt')
+  } finally {
+    view.close()
+  }
+})
+
+for (const name of ['合同.rtf', '合同.pdf.exe', '无扩展名合同']) {
+  for (const previous of [false, true]) {
+    test(`选择不支持的${name}保留${previous ? '原附件及' : ''}文字，清空内部队列而不发送`, async () => {
+      const view = await mount({ createConversation: () => assert.fail('无效附件不能创建会话') })
+      let cleared = 0
+      try {
+        const state = view.state
+        const original = previous ? new File(['原合同'], '原合同.txt') : null
+        state.pendingFile = original
+        state.input = '  尚未发送的要求\n保留换行  '
+        state.fileUploadRef = { clearFiles: () => cleared++ }
+        state.handleFileChange({ raw: new File(['无效文件'], name) })
+        assert.equal(cleared, 1)
+        assert.equal(state.pendingFile, original)
+        assert.equal(state.input, '  尚未发送的要求\n保留换行  ')
+        assert.equal(state.currentConvId, null)
+        assert.equal(state.messages.length, 0)
+        assert.equal(state.loadingConvIds.size, 0)
+        assert.equal(view.streams.length, 0)
+        assert.equal(view.writes.length, 0)
+        assert.equal(view.notices.length, 1)
+        assert.equal(view.notices[0].kind, 'warning')
+        assert.match(view.notices[0].options.message, /不支持/)
+        assert.equal(view.notices[0].options.customClass, 'contract-upload-notice')
+      } finally {
+        view.close()
+      }
+    })
+  }
+
+  test(`绕过选择回调直接发送${name}也被拦截，草稿不丢失且可重新选择后发送`, async () => {
+    let creations = 0
+    const view = await mount({
+      createConversation: async () => {
+        creations++
+        return { id: 'valid-upload', title: '新对话' }
+      },
+    })
+    try {
+      const state = view.state
+      const invalid = new File(['无效文件'], name)
+      state.pendingFile = invalid
+      state.input = '审查违约责任'
+      await state.sendFile(state.input)
+      assert.equal(creations, 0)
+      assert.equal(state.pendingFile, invalid)
+      assert.equal(state.input, '审查违约责任')
+      assert.equal(state.messages.length, 0)
+      assert.equal(state.loadingConvIds.size, 0)
+      assert.deepEqual(state.abortControllers, {})
+      assert.equal(view.streams.length, 0)
+      assert.equal(view.writes.length, 0)
+      assert.match(view.notices.at(-1).options.message, /不支持/)
+      const valid = new File(['合同正文'], '有效合同.txt')
+      state.handleFileChange({ raw: valid })
+      await state.sendFile(state.input)
+      assert.equal(creations, 1)
+      assert.equal(view.streams.length, 1)
+      assert.equal(view.streams[0].file, valid)
+      assert.equal(view.streams[0].instruction, '审查违约责任')
+      assert.equal(view.writes.length, 1)
+      assert.equal(view.writes[0][0], 'valid-upload')
+    } finally {
+      view.close()
+    }
+  })
+}
+
+test('有效附件可替换原附件并连续重新选择，不清空文字或自动发送', async () => {
+  const view = await mount()
+  let cleared = 0
+  try {
+    const state = view.state
+    state.input = '保留附加要求'
+    state.pendingFile = new File(['原合同'], '原合同.txt')
+    state.fileUploadRef = { clearFiles: () => cleared++ }
+    for (const name of ['合同.PDF', '合同.DoC', '合同.DoCx', '合同.TXT']) {
+      const file = new File(['合同'], name)
+      for (let count = 0; count < 2; count++) {
+        state.handleFileChange({ raw: file })
+        assert.equal(state.pendingFile, file)
+        assert.equal(state.input, '保留附加要求')
+      }
+    }
+    assert.equal(cleared, 8)
+    assert.equal(view.notices.length, 0)
+    assert.equal(state.messages.length, 0)
+    assert.equal(view.streams.length, 0)
+    assert.equal(view.writes.length, 0)
+  } finally {
     view.close()
   }
 })

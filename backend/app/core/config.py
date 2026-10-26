@@ -5,6 +5,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,6 +22,11 @@ class Settings(BaseSettings):
     app_port: int = 8000
     app_cors_origins: str = "http://localhost:5173"
     database_url: str = "sqlite:///./data/app.db"
+
+    # --- DOC 本地转换；空路径时查找 PATH 和标准安装目录 ---
+    libreoffice_path: str = ""
+    doc_conversion_timeout_seconds: int = Field(default=45, ge=1, le=120)
+    doc_conversion_temp_dir: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

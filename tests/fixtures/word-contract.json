@@ -1,0 +1,24 @@
+{
+  "raw_text": "合同😀\n押金\t2000元\n租金\t3000元\n尾",
+  "document_blocks": [
+    { "type": "paragraph", "start": 0, "end": 4 },
+    {
+      "type": "table", "start": 5, "end": 22, "columns": 2,
+      "rows": [
+        [
+          { "column": 0, "colspan": 1, "rowspan": 1, "start": 5, "end": 7,
+            "blocks": [{ "type": "paragraph", "start": 5, "end": 7 }] },
+          { "column": 1, "colspan": 1, "rowspan": 1, "start": 8, "end": 13,
+            "blocks": [{ "type": "paragraph", "start": 8, "end": 13 }] }
+        ],
+        [
+          { "column": 0, "colspan": 1, "rowspan": 1, "start": 14, "end": 16,
+            "blocks": [{ "type": "paragraph", "start": 14, "end": 16 }] },
+          { "column": 1, "colspan": 1, "rowspan": 1, "start": 17, "end": 22,
+            "blocks": [{ "type": "paragraph", "start": 17, "end": 22 }] }
+        ]
+      ]
+    },
+    { "type": "paragraph", "start": 23, "end": 24 }
+  ]
+}

@@ -68,14 +68,14 @@ def test_contract_endpoints_enforce_limit_before_parser_and_agent(
     """真实 multipart 请求验证两端点边界，超限不进入解析器或模型，也不开始 SSE。"""
     raw_text = "测试合同原文"
     result = {"raw_text": raw_text, "chat_reply": "测试报告", "risk_points": []}
-    parser = Mock(return_value=raw_text)
+    parser = Mock(return_value={"raw_text": raw_text})
     agent = AsyncMock(return_value=result)
 
     async def generate(text, instruction=""):
         yield {"type": "done", **result}
 
     stream_agent = Mock(side_effect=generate)
-    monkeypatch.setattr(routes.DocumentParser, "parse", parser)
+    monkeypatch.setattr(routes.DocumentParser, "parse_document", parser)
     monkeypatch.setattr(routes, "run_contract_analysis", agent)
     monkeypatch.setattr(routes, "run_contract_analysis_stream", stream_agent)
     endpoint = "/api/analyze_contract" + ("/stream" if streaming else "")
