@@ -10,12 +10,12 @@ import chromadb
 import jieba
 from rank_bm25 import BM25Okapi
 
+from app.core.chroma_paths import chroma_persist_path
 from app.init_db import OllamaEmbeddingFunction
 
 logger = logging.getLogger(__name__)
 
 _db = Path(__file__).resolve().parent.parent.parent / "chroma_db"
-_rel = str(_db)
 
 _client = None
 _collection = None
@@ -35,7 +35,7 @@ def _init():
     if _client is not None:
         return
     _ef = OllamaEmbeddingFunction()
-    _client = chromadb.PersistentClient(path=_rel)
+    _client = chromadb.PersistentClient(path=chroma_persist_path(_db))
     _collection = _client.get_or_create_collection(
         name="laws",
         embedding_function=_ef,

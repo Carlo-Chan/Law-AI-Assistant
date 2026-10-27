@@ -1,0 +1,152 @@
+[
+  {
+    "name": "同名表格项不丢弃百分比",
+    "raw_text": "违约金\t0.05%\n违约金\t5%",
+    "phrase": "违约金 5%",
+    "expected": "违约金\t5%"
+  },
+  {
+    "name": "跨行跨格保留金额与单位",
+    "raw_text": "押金\t2000元\n租金\t3000元",
+    "phrase": "押金2000元 租金3000元",
+    "expected": "押金\t2000元\n租金\t3000元"
+  },
+  {
+    "name": "跨格英文原句保留制表符",
+    "raw_text": "Payment\tdue\nmonthly",
+    "phrase": "Payment due monthly",
+    "expected": "Payment\tdue\nmonthly"
+  },
+  {
+    "name": "不误命中其他金额",
+    "raw_text": "押金\t2000元",
+    "phrase": "押金3000元",
+    "expected": null
+  },
+  {
+    "name": "中文相同但英文货币不同仍拒绝",
+    "raw_text": "押金CNY\t3000元",
+    "phrase": "押金USD 3000元",
+    "expected": null
+  },
+  {
+    "name": "含金额的标点不同不只按汉字兜底",
+    "raw_text": "押金：2000元",
+    "phrase": "押金2000元",
+    "expected": null
+  },
+  {
+    "name": "精确原句优先于更早的空白近似",
+    "raw_text": "押金 2000 元，另有押金2000元",
+    "phrase": "押金2000元",
+    "expected": "押金2000元"
+  },
+  {
+    "name": "跳过更长金额继续找真正目标",
+    "raw_text": "第一项1000元，第二项100元",
+    "phrase": "100元",
+    "expected": "100元"
+  },
+  {
+    "name": "短金额不是长金额的开头",
+    "raw_text": "金额20000元",
+    "phrase": "2000",
+    "expected": null
+  },
+  {
+    "name": "短金额不是长金额的尾部",
+    "raw_text": "金额12000元",
+    "phrase": "2000元",
+    "expected": null
+  },
+  {
+    "name": "百分比不是小数的一部分",
+    "raw_text": "违约金0.05%",
+    "phrase": "5%",
+    "expected": null
+  },
+  {
+    "name": "跳过小数中的片段再匹配百分比",
+    "raw_text": "折扣0.5%，违约金5%",
+    "phrase": "5%",
+    "expected": "5%"
+  },
+  {
+    "name": "小数不是整数引用",
+    "raw_text": "金额1000.50元",
+    "phrase": "1000",
+    "expected": null
+  },
+  {
+    "name": "负数不能被正数引用命中",
+    "raw_text": "冲抵-100元",
+    "phrase": "100元",
+    "expected": null
+  },
+  {
+    "name": "Unicode负号同样保留",
+    "raw_text": "冲抵−100元",
+    "phrase": "100元",
+    "expected": null
+  },
+  {
+    "name": "显式正号不被悄悄丢弃",
+    "raw_text": "调整+100元",
+    "phrase": "100元",
+    "expected": null
+  },
+  {
+    "name": "负号与金额跨格仍可完整引用",
+    "raw_text": "冲抵\t-1000.50元",
+    "phrase": "冲抵 -1000.50元",
+    "expected": "冲抵\t-1000.50元"
+  },
+  {
+    "name": "Unicode数字也检查数字边界",
+    "raw_text": "金额２０００元",
+    "phrase": "２００",
+    "expected": null
+  },
+  {
+    "name": "英文大小写不被自动改写",
+    "raw_text": "付款USD1000",
+    "phrase": "付款usd1000",
+    "expected": null
+  },
+  {
+    "name": "拉丁字母重音不降级为汉字匹配",
+    "raw_text": "服务Cafe",
+    "phrase": "服务Café",
+    "expected": null
+  },
+  {
+    "name": "非断行空格仍是原文的一部分",
+    "raw_text": "费用\u00a02000\u3000元",
+    "phrase": "费用2000元",
+    "expected": "费用\u00a02000\u3000元"
+  },
+  {
+    "name": "BOM空白与前端规则一致",
+    "raw_text": "押金\ufeff2000元",
+    "phrase": "押金2000元",
+    "expected": "押金\ufeff2000元"
+  },
+  {
+    "name": "emoji之后的混合引用不截断字符",
+    "raw_text": "合同😀\n费用\tUSD 3000",
+    "phrase": "😀 费用 USD3000",
+    "expected": "😀\n费用\tUSD 3000"
+  },
+  {
+    "name": "纯中文仍容忍标点与空白差异",
+    "raw_text": "甲方：应当\n退还，押金。",
+    "phrase": "甲方应当退还押金",
+    "expected": "甲方：应当\n退还，押金"
+  },
+  {
+    "name": "空白引用不选中整份合同",
+    "raw_text": "合同原文",
+    "phrase": " \t\n",
+    "expected": null
+  }
+]

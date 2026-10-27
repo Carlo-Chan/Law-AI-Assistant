@@ -8,11 +8,15 @@ import re
 import shutil
 import sys
 from collections import OrderedDict
+from ipaddress import ip_address
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import chromadb
 import httpx
 from chromadb import EmbeddingFunction
+
+from app.core.chroma_paths import chroma_persist_path
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 CHROMA_DIR = Path(__file__).resolve().parent.parent / "chroma_db"
@@ -20,12 +24,23 @@ OLLAMA_URL = "http://localhost:11434"
 EMBED_MODEL = "qwen3-embedding"
 
 
+def _ollama_trust_env(base_url: str) -> bool:
+    """仅本机回环地址绕过环境代理，远程 Ollama 保留原有环境配置。"""
+    hostname = (urlsplit(base_url).hostname or "").lower().rstrip(".")
+    if hostname == "localhost":
+        return False
+    try:
+        return not ip_address(hostname).is_loopback
+    except ValueError:
+        return True
+
+
 def ollama_embed_batch(texts, model=EMBED_MODEL):
     """调用 Ollama 批量生成文本嵌入向量，带重试机制"""
     import time
 
     inputs = [t[:4000] for t in texts]
-    with httpx.Client(timeout=300) as client:
+    with httpx.Client(timeout=300, trust_env=_ollama_trust_env(OLLAMA_URL)) as client:
         for _attempt in range(5):
             try:
                 resp = client.post(
@@ -163,6 +178,7 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
                     f"{self._url}/api/embed",
                     json={"model": self._model, "input": texts},
                     timeout=120,
+                    trust_env=_ollama_trust_env(self._url),
                 )
                 if resp.status_code == 500:
                     time.sleep(3)
@@ -186,7 +202,7 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
 def main():
     print("Checking Ollama...")
     try:
-        with httpx.Client(timeout=5) as c:
+        with httpx.Client(timeout=5, trust_env=_ollama_trust_env(OLLAMA_URL)) as c:
             c.get(OLLAMA_URL + "/api/tags").raise_for_status()
         print("  Ollama running, model: " + EMBED_MODEL)
     except Exception:
@@ -225,7 +241,7 @@ def main():
     print("\nTotal chunks: " + str(len(all_chunks)))
     print("\nBuilding ChromaDB...")
     database_exists = CHROMA_DIR.exists()
-    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    client = chromadb.PersistentClient(path=chroma_persist_path(CHROMA_DIR))
     if database_exists:
         print("ChromaDB already exists. Use --force to rebuild.")
         print(f"Path: {CHROMA_DIR}")

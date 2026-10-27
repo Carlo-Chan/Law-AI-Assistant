@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import re
+import unicodedata
 
 from json_repair import repair_json
 from langchain.agents import create_agent
@@ -37,34 +38,78 @@ NL = chr(10)
 # ============================================================
 
 
-def _extract_chinese(s):
+def _extract_chinese(text):
     """提取字符串中的中文字符"""
-    return re.sub(r"[^一-龥]", "", s)
+    return re.sub(r"[^一-龥]", "", text)
+
+
+def _is_number(character):
+    """按 Unicode 数字类别判断，避免将中文数词当作阿拉伯数字边界。"""
+    return bool(character) and unicodedata.category(character).startswith("N")
+
+
+def _literal_quote_offset(text, quote):
+    """跳过金额或百分比内部的子串命中，继续查找后续完整引用。"""
+    offset = text.find(quote)
+    while offset >= 0:
+        before = text[offset - 1] if offset else ""
+        after_index = offset + len(quote)
+        after = text[after_index] if after_index < len(text) else ""
+        invalid_start = _is_number(quote[0]) and (
+            _is_number(before) or before in (".", "+", "-", "−")
+        )
+        invalid_end = _is_number(quote[-1]) and (_is_number(after) or after == ".")
+        if not invalid_start and not invalid_end:
+            return offset
+        offset = text.find(quote, offset + 1)
+    return -1
 
 
 def fuzzy_match(raw_text, key_phrase):
-    """将关键短语与原文进行模糊匹配，返回精确引用文本"""
-    if not key_phrase or not key_phrase.strip():
+    """先精确匹配再忽略空白；含数字或拉丁字母的引用不使用纯中文兜底。"""
+    if not isinstance(key_phrase, str) or not key_phrase.strip():
         return None
-    if key_phrase in raw_text:
-        return key_phrase
-    pc = _extract_chinese(key_phrase)
-    if not pc:
+    exact_offset = _literal_quote_offset(raw_text, key_phrase)
+    if exact_offset >= 0:
+        return raw_text[exact_offset : exact_offset + len(key_phrase)]
+
+    positions = [
+        index
+        for index, character in enumerate(raw_text)
+        if not character.isspace() and character != "\ufeff"
+    ]
+    normalized_text = "".join(raw_text[index] for index in positions)
+    normalized_phrase = re.sub(r"[\s\ufeff]", "", key_phrase)
+    if not normalized_phrase:
         return None
-    tc = _extract_chinese(raw_text)
-    idx = tc.find(pc)
-    if idx == -1:
+    normalized_offset = _literal_quote_offset(normalized_text, normalized_phrase)
+    if normalized_offset >= 0:
+        start = positions[normalized_offset]
+        end = positions[normalized_offset + len(normalized_phrase) - 1] + 1
+        return raw_text[start:end]
+    if any(
+        _is_number(character) or "LATIN" in unicodedata.name(character, "")
+        for character in key_phrase
+    ):
         return None
-    cnt = 0
+
+    chinese_phrase = _extract_chinese(key_phrase)
+    if not chinese_phrase:
+        return None
+    chinese_text = _extract_chinese(raw_text)
+    chinese_offset = chinese_text.find(chinese_phrase)
+    if chinese_offset == -1:
+        return None
+    chinese_count = 0
     start = end = -1
-    for i, ch in enumerate(raw_text):
-        if "一" <= ch <= "龥":
-            if cnt == idx:
-                start = i
-            if cnt == idx + len(pc) - 1:
-                end = i + 1
+    for index, character in enumerate(raw_text):
+        if "一" <= character <= "龥":
+            if chinese_count == chinese_offset:
+                start = index
+            if chinese_count == chinese_offset + len(chinese_phrase) - 1:
+                end = index + 1
                 break
-            cnt += 1
+            chinese_count += 1
     if start >= 0 and end > start:
         return raw_text[start:end]
     return None
@@ -158,18 +203,18 @@ def _parse_json_with_repair(text):
 
 
 def _post_process_risks(raw_text, risk_points, tag="contract"):
-    """后处理风险点：将 key_phrase 与原文模糊匹配，定位精确引用文本"""
+    """统一校准关键短语或已有引用，无法匹配时保留模型原值供人工核对。"""
     for rp in risk_points:
-        kp = rp.get("key_phrase", "")
-        if kp:
-            matched = fuzzy_match(raw_text, kp)
+        phrase = rp.get("key_phrase")
+        if not isinstance(phrase, str) or not phrase.strip():
+            phrase = rp.get("quote")
+        if isinstance(phrase, str) and phrase.strip():
+            matched = fuzzy_match(raw_text, phrase)
             if matched:
                 rp["quote"] = matched
             else:
-                logger.warning("风险引用未匹配原文：模式=%s，引用长度=%d", tag, len(kp))
-                rp["quote"] = kp
-        elif rp.get("quote"):
-            pass
+                logger.warning("风险引用未匹配原文：模式=%s，引用长度=%d", tag, len(phrase))
+                rp["quote"] = phrase
         else:
             rp["quote"] = ""
     return risk_points

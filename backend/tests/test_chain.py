@@ -1,6 +1,7 @@
 """合同审查文本处理测试：覆盖原文匹配、JSON 容错和报告解码。"""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -31,6 +32,89 @@ from app.agent import chain
 def test_fuzzy_match_returns_original_quote(raw_text, phrase, expected):
     """引用保留原文字符，精确匹配优先，中文引用可容忍标点及空白差异。"""
     assert chain.fuzzy_match(raw_text, phrase) == expected
+
+
+MATCHING_CASES = json.loads(
+    (Path(__file__).resolve().parents[2] / "tests/fixtures/quote-matching.json").read_text(
+        encoding="utf-8"
+    )
+)
+
+
+@pytest.mark.parametrize("case", MATCHING_CASES, ids=[case["name"] for case in MATCHING_CASES])
+def test_quote_matching_preserves_numbers_latin_and_original_whitespace(case):
+    """前后端共用风险引用样本，不能将不符的金额或英文降级成残缺汉字。"""
+    assert chain.fuzzy_match(case["raw_text"], case["phrase"]) == case["expected"]
+
+
+@pytest.mark.parametrize("field", ["key_phrase", "quote"])
+def test_risk_postprocessing_resolves_whitespace_without_losing_metadata(field):
+    raw = "违约金\t0.05%\n违约金\t5%"
+    point = {field: "违约金 5%", "level": "high", "bubble_text": "请核对违约金标准。"}
+    original = dict(point)
+    result = chain._post_process_risks(raw, [point])
+    assert result[0] == {**original, "quote": "违约金\t5%"}
+
+
+@pytest.mark.parametrize("field", ["key_phrase", "quote"])
+def test_risk_postprocessing_keeps_unmatched_amount_instead_of_rewriting_as_label(field):
+    point = {field: "押金3000元", "level": "medium", "bubble_text": "原有分析"}
+    original = dict(point)
+    result = chain._post_process_risks("押金\t2000元", [point])
+    assert result[0] == {**original, "quote": "押金3000元"}
+
+
+@pytest.mark.parametrize("phrase", [None, 3000, [], {}])
+def test_quote_matching_ignores_non_text_values(phrase):
+    """模型字段不是字符串时不抛出异常，也不将其强制转换为合同引用。"""
+    assert chain.fuzzy_match("押金3000元", phrase) is None
+
+
+@pytest.mark.parametrize("key_phrase", [None, "", " \t", 3000])
+def test_risk_postprocessing_uses_quote_when_key_phrase_is_not_usable(key_phrase):
+    """无有效关键短语时校准已有引用，不能跳过匹配或覆盖其他风险信息。"""
+    point = {"key_phrase": key_phrase, "quote": "押金2000元", "level": "low"}
+    original = dict(point)
+    assert chain._post_process_risks("押金\t2000元", [point]) == [
+        {**original, "quote": "押金\t2000元"}
+    ]
+
+
+def test_risk_postprocessing_keeps_key_phrase_precedence():
+    """两个字段均有效时沿用关键短语优先，不被另一个已存在的引用带偏。"""
+    point = {"key_phrase": "押金2000元", "quote": "租金3000元", "level": "medium"}
+    original = dict(point)
+    assert chain._post_process_risks("押金\t2000元\n租金\t3000元", [point]) == [
+        {**original, "quote": "押金\t2000元"}
+    ]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_real_contract_processing_preserves_the_target_table_quote(monkeypatch, streaming):
+    """模拟模型的真实返回路径，流式与普通审查不能在后处理时丢掉百分比。"""
+    raw_text = "违约金\t0.05%\n违约金\t5%"
+    point = {"key_phrase": "违约金 5%", "level": "high", "bubble_text": "请核对违约金标准。"}
+    reply = json.dumps({"chat_reply": "合同审查报告", "risk_points": [point]}, ensure_ascii=False)
+
+    async def generate(*args, **kwargs):
+        yield {"event": "on_chat_model_stream", "data": {"chunk": SimpleNamespace(content=reply)}}
+
+    monkeypatch.setattr(
+        chain,
+        "contract_agent",
+        SimpleNamespace(
+            ainvoke=AsyncMock(return_value={"messages": [AIMessage(content=reply)]}),
+            astream_events=generate,
+        ),
+    )
+    monkeypatch.setattr(chain.asyncio, "sleep", AsyncMock())
+    if streaming:
+        events = [event async for event in chain.run_contract_analysis_stream(raw_text)]
+        result = events[-1]
+        assert result["type"] == "done"
+    else:
+        result = await chain.run_contract_analysis(raw_text)
+    assert result["risk_points"] == [{**point, "quote": "违约金\t5%"}]
 
 
 @pytest.mark.parametrize(
