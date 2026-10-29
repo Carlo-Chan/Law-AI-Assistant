@@ -76,6 +76,7 @@
     <div class="main-area">
       <!-- 左侧：对话区 -->
       <div
+        ref="chatPanel"
         class="chat-panel"
         :class="{
           'with-preview': showPreview && !isNarrow,
@@ -99,6 +100,13 @@
           <span class="subtitle">法律咨询 · 合同审查</span>
         </div>
 
+        <transition name="fade">
+          <div v-if="fileDragActive" class="file-drop-overlay" role="status" aria-live="polite">
+            <el-icon><Document /></el-icon>
+            <strong>将合同拖到这里</strong>
+            <span>支持 PDF、DOC、DOCX、TXT，单个文件不超过 10 MiB</span>
+          </div>
+        </transition>
         <div v-if="messages.length === 0" class="welcome-screen">
           <div class="welcome-content">
             <h1>AI 法律助手</h1>
@@ -324,12 +332,9 @@
                     :show-file-list="false"
                     :on-change="handleFileChange"
                     :accept="CONTRACT_FILE_ACCEPT"
+                    :disabled="!canAttachFile"
                   >
-                    <el-button
-                      text
-                      size="small"
-                      class="upload-btn"
-                      :disabled="loading || historyLoading"
+                    <el-button text size="small" class="upload-btn" :disabled="!canAttachFile"
                       ><el-icon><Plus /></el-icon
                     ></el-button>
                   </el-upload>
@@ -454,6 +459,7 @@ import { createDraftRecovery } from '../composables/draftRecovery'
 import { createLatestRead } from '../composables/latestRead'
 import { createConversationRenaming } from '../composables/conversationRenaming'
 import { createMessageScroll } from '../composables/messageScroll'
+import { createFileDrop } from '../composables/fileDrop'
 import {
   assignSavedMessageIdentities,
   hasMessageIdentity,
@@ -477,6 +483,7 @@ const draftFiles = {} // 按对话ID记忆已选文件
 const pendingFile = ref(null)
 const fileUploadRef = ref(null)
 const chatHeader = ref(null)
+const chatPanel = ref(null)
 const loadingConvIds = ref(new Set())
 let nextDraftId = 0
 const draftKey = ref(`__draft_${nextDraftId}`)
@@ -677,6 +684,26 @@ let pinnedMark = null
 let pinnedScrollHandler = null
 let pinnedScrollElement = null
 let hoverTimer = null
+
+const canAttachFile = computed(
+  () =>
+    !loading.value &&
+    !historyLoading.value &&
+    !deletingConvIds.value.has(pageKey()) &&
+    !messageMutationBlocksCurrent() &&
+    !confirmState.visible &&
+    !frostedOverlay.value &&
+    !(isNarrow.value && showPreview.value),
+)
+const fileDrop = createFileDrop({
+  isEnabled: () => canAttachFile.value,
+  onFile: selectContractFile,
+  onWarning: showContractWarning,
+  onBlocked: warnFileSelectionBlocked,
+})
+const fileDragActive = fileDrop.active
+watch(chatPanel, (element) => fileDrop.connect(element), { flush: 'post' })
+watch([pageKey, canAttachFile], () => fileDrop.reset(), { flush: 'sync' })
 
 const canSend = computed(
   () =>
@@ -1753,8 +1780,22 @@ function showContractWarning(message, duration = 3000) {
 // 清理上传组件的内部队列，草稿仍只由 pendingFile 与 draftFiles 管理。
 function handleFileChange(file) {
   fileUploadRef.value?.clearFiles()
-  if (!file.raw || !validateContractFile(file.raw)) return
-  pendingFile.value = file.raw
+  if (file.raw) selectContractFile(file.raw)
+}
+
+function warnFileSelectionBlocked() {
+  showContractWarning('当前对话暂不能添加附件，请等待操作完成后重试。')
+}
+
+// 点击和拖放共用校验及写入入口，只修改当前草稿，不上传或自动发送。
+function selectContractFile(file) {
+  if (!canAttachFile.value) {
+    warnFileSelectionBlocked()
+    return false
+  }
+  if (!validateContractFile(file)) return false
+  pendingFile.value = file
+  return true
 }
 
 // ---- 合同审查发送 ----
@@ -1956,6 +1997,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  fileDrop.dispose()
   messageScroll.dispose()
   renaming.dispose()
   historyReads.dispose()
@@ -2031,6 +2073,37 @@ function openContractPreview(msg) {
 .chat-panel.with-preview {
   flex: 0 0 calc(var(--split-ratio) * 100%);
   min-width: 280px;
+}
+.file-drop-overlay {
+  position: absolute;
+  inset: 12px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  box-sizing: border-box;
+  border: 1px dashed #8bbbf0;
+  border-radius: 20px;
+  background: rgba(245, 249, 255, 0.96);
+  color: #606266;
+  text-align: center;
+  pointer-events: none;
+}
+.file-drop-overlay .el-icon {
+  font-size: 36px;
+  color: #5f91c9;
+}
+.file-drop-overlay strong {
+  font-size: 18px;
+  font-weight: 600;
+  color: #303133;
+}
+.file-drop-overlay > span {
+  font-size: 14px;
+  line-height: 1.6;
 }
 .chat-header {
   position: relative;

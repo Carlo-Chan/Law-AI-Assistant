@@ -455,6 +455,189 @@ async function mount(overrides = {}) {
 }
 
 const messageRevision = 'a'.repeat(64)
+
+// 拖放通过真实页面的附件入口，接口替身只记录调用，不连接模型或数据库。
+async function mountFileDrop() {
+  const view = await mount()
+  const panel = document.createElement('div')
+  panel.innerHTML = '<textarea></textarea><button>添加附件</button>'
+  document.body.append(panel)
+  view.state.chatPanel = panel
+  await nextTick()
+  return {
+    ...view,
+    panel,
+    drag(type, files = []) {
+      const event = new dom.window.Event(type, { bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'dataTransfer', {
+        value: { types: ['Files'], files, items: [], dropEffect: 'none' },
+      })
+      panel.firstChild.dispatchEvent(event)
+      return event
+    },
+    close() {
+      view.close()
+      panel.remove()
+    },
+  }
+}
+
+test('拖入文件只修改当前附件草稿，不自动创建会话、保存或发送', async () => {
+  const view = await mountFileDrop()
+  try {
+    view.state.input = '保留的附加指令'
+    const file = new File(['合成合同'], '合同.txt')
+    view.drag('dragenter')
+    assert.equal(view.state.fileDragActive, true)
+    view.drag('drop', [file])
+    assert.equal(view.state.pendingFile, file)
+    assert.equal(view.state.input, '保留的附加指令')
+    assert.equal(view.state.currentConvId, null)
+    assert.equal(view.state.messages.length, 0)
+    assert.equal(view.writes.length, 0)
+    assert.equal(view.streams.length, 0)
+    assert.equal(view.state.fileDragActive, false)
+  } finally {
+    view.close()
+  }
+})
+
+for (const reason of ['format', 'size', 'multiple']) {
+  test(`拖放 ${reason} 校验失败保留原附件和文字，提示沿用现有样式`, async () => {
+    const view = await mountFileDrop()
+    try {
+      const original = new File(['原附件'], '原合同.pdf')
+      view.state.pendingFile = original
+      view.state.input = '原草稿'
+      const files =
+        reason === 'size'
+          ? [new File([new ArrayBuffer(10 * 1024 * 1024 + 1)], '过大.pdf')]
+          : reason === 'multiple'
+            ? [new File([], '一.txt'), new File([], '二.txt')]
+            : [new File([], '不支持.exe')]
+      view.drag('drop', files)
+      assert.equal(view.state.pendingFile, original)
+      assert.equal(view.state.input, '原草稿')
+      assert.equal(view.notices.length, 1)
+      assert.equal(view.notices[0].options.customClass, 'contract-upload-notice')
+      assert.equal(view.streams.length, 0)
+      assert.equal(view.writes.length, 0)
+    } finally {
+      view.close()
+    }
+  })
+}
+
+test('点击与拖放共用入口，替换附件不会留下上传组件队列或清空指令', async () => {
+  const view = await mountFileDrop()
+  try {
+    let cleared = 0
+    view.state.fileUploadRef = { clearFiles: () => cleared++ }
+    view.state.input = '审查指令'
+    const first = new File(['一'], '一.docx')
+    view.state.handleFileChange({ raw: first })
+    assert.equal(view.state.pendingFile, first)
+    const second = new File(['二'], '二.pdf')
+    view.drag('drop', [second])
+    assert.equal(view.state.pendingFile, second)
+    assert.equal(view.state.input, '审查指令')
+    assert.equal(cleared, 1)
+    view.state.handleFileChange({ raw: new File([], '拒绝.exe') })
+    assert.equal(view.state.pendingFile, second)
+    assert.equal(cleared, 2)
+  } finally {
+    view.close()
+  }
+})
+
+test('新对话及两条历史会话分别保留拖放附件，返回新对话恢复原草稿', async () => {
+  const view = await mountFileDrop()
+  try {
+    const newFile = new File(['新'], '新.txt')
+    const first = new File(['甲'], '甲.pdf')
+    const second = new File(['乙'], '乙.docx')
+    view.state.input = '新对话草稿'
+    view.drag('drop', [newFile])
+    await view.state.loadConversation('A')
+    view.drag('drop', [first])
+    view.state.input = '甲草稿'
+    await view.state.loadConversation('B')
+    view.drag('drop', [second])
+    view.state.input = '乙草稿'
+    await view.state.loadConversation('A')
+    assert.equal(view.state.pendingFile, first)
+    assert.equal(view.state.input, '甲草稿')
+    await view.state.newChat()
+    assert.equal(view.state.pendingFile, newFile)
+    assert.equal(view.state.input, '新对话草稿')
+    await view.state.loadConversation('B')
+    assert.equal(view.state.pendingFile, second)
+    assert.equal(view.state.input, '乙草稿')
+  } finally {
+    view.close()
+  }
+})
+
+for (const reason of ['loading', 'history', 'confirm', 'deleting', 'narrowPreview', 'sidebar']) {
+  test(`当前页 ${reason} 时拦截拖放和迟到的文件选择，不改写草稿`, async () => {
+    const view = await mountFileDrop()
+    try {
+      const original = new File([], '原.txt')
+      view.state.currentConvId = 'A'
+      view.state.pendingFile = original
+      view.drag('dragenter')
+      if (reason === 'loading') view.state.loadingConvIds.add('A')
+      if (reason === 'history') view.state.historyLoading = true
+      if (reason === 'confirm') view.state.confirmState.visible = true
+      if (reason === 'deleting') view.state.deletingConvIds.add('A')
+      if (reason === 'narrowPreview') {
+        view.state.isNarrow = true
+        view.state.showPreview = true
+      }
+      if (reason === 'sidebar') {
+        view.state.isNarrow = true
+        view.state.openSidebar()
+      }
+      assert.equal(view.state.canAttachFile, false)
+      assert.equal(view.state.fileDragActive, false)
+      view.drag('drop', [new File([], '新.txt')])
+      view.state.handleFileChange({ raw: new File([], '点击.txt') })
+      assert.equal(view.state.pendingFile, original)
+      assert.equal(view.notices.length, 2)
+      assert.equal(view.streams.length, 0)
+    } finally {
+      view.close()
+    }
+  })
+}
+
+test('其他会话生成不阻止当前页添加附件，切换时清理旧拖放提示', async () => {
+  const view = await mountFileDrop()
+  try {
+    view.state.loadingConvIds.add('background')
+    view.drag('dragenter')
+    assert.equal(view.state.fileDragActive, true)
+    await view.state.loadConversation('A')
+    assert.equal(view.state.fileDragActive, false)
+    assert.equal(view.state.canAttachFile, true)
+    const file = new File([], '当前.txt')
+    view.drag('drop', [file])
+    assert.equal(view.state.pendingFile, file)
+    assert.equal(view.state.loadingConvIds.has('background'), true)
+  } finally {
+    view.close()
+  }
+})
+
+test('拖放组件卸载后不再拦截事件或写入附件', async () => {
+  const view = await mountFileDrop()
+  view.drag('dragenter')
+  view.close()
+  const event = view.drag('drop', [new File([], '卸载后.txt')])
+  assert.equal(event.defaultPrevented, false)
+  assert.equal(view.state.pendingFile, null)
+})
+
 function savedBubble(id, role = 'assistant', content = '原回复') {
   return { id, role, content, revision: messageRevision }
 }
