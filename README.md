@@ -38,6 +38,8 @@ Law-AI-Assistant/
 │   │   ├── init_db.py           # ChromaDB 法律向量库初始化
 │   │   ├── agent/
 │   │   │   ├── chain.py         # LangChain Agent 编排，流式对话 / 合同审查链
+│   │   │   ├── model_factory.py # DeepSeek 配置快照及模型创建
+│   │   │   ├── model_content.py # 标准正文提取及最终助手消息校验
 │   │   │   ├── retriever.py     # ChromaDB 向量检索 + BM25 + ArticleMap 精确匹配
 │   │   │   └── tools.py         # 4 个 LangChain @tool 定义
 │   │   ├── api/
@@ -112,6 +114,21 @@ DEEPSEEK_API_KEY=sk-xxxxxxxx
 TAVILY_API_KEY=tvly-xxxxxxxx
 YUANDIAN_API_KEY=xxxxxxxx
 ```
+
+生成参数也可由部署者在 `backend/.env` 设置；不填写时与原默认行为一致：
+
+| 变量 | 默认值 | 校验 |
+| --- | --- | --- |
+| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | 名称不能为空，去掉两端空白 |
+| `DEEPSEEK_TEMPERATURE` | `0.3` | 0—2 之间的有限数值 |
+| `DEEPSEEK_TIMEOUT_SECONDS` | `120` | 大于 0 的有限数值，单位秒 |
+| `DEEPSEEK_MAX_TOKENS` | `16384` | 大于 0 的整数，实际可用上限由模型决定 |
+
+配置在后端启动时校验并复制为不可变快照，修改后需要重启后端；不提供运行中热切换或用户设置接口。模型创建集中在 `model_factory.py`，当前仍只使用已验证的 DeepSeek 非思考模式，保留 `thinking.type=disabled` 及原有工具绑定、流式与合同报告处理。空 Key 会在创建客户端前明确拒绝；快照的默认对象表示不输出 Key 或服务地址。不要在日志中输出完整 `Settings` 或配置内容。
+
+更换模型名称或 Base URL 不等于完成其他厂商适配：工具调用、结构化报告及返回内容格式仍需独立验证，也不自动读取供应商的原生推理字段。该配置仅面向服务端部署者，不是公开的任意地址转发或多用户自带 Key 功能。当前实现没有修改生成提示词、embedding 服务或向量库。[LangChain 兼容范围](https://docs.langchain.com/oss/python/integrations/chat/openai)、[DeepSeek 非思考模式参数](https://api-docs.deepseek.com/guides/thinking_mode/)。
+
+普通及流式回复统一读取字符串、字符串列表和标准 `type: "text"` 内容块；按原顺序拼接，保留空白，不插入换行或改写 JSON 分片。推理、图片、工具参数和文本注解等非正文块不会被序列化为回复，也不读取 `reasoning_content` 作为展示过程。工具消息中的标准正文沿用现有工具结果事件，只有非正文块时仍发送工具完成事件。供应商原生块须先有明确适配，不能将任意 `text` 字段猜测成正文；这不是多模态支持或新增厂商兼容。[LangChain 内容格式说明](https://docs.langchain.com/oss/python/langchain/messages#message-content)。
 
 ### 3. 启动后端
 
@@ -199,12 +216,15 @@ API 不直接返回异常正文。已知异常按类型和上游 HTTP 状态映�
 | 上游服务错误或拒绝请求 | 502 | 稍后重试，或缩短输入后重试 |
 | 任务达到处理步骤上限 | 503 | 缩小问题范围后重试，不改变原有调用上限 |
 | 审查报告无法解析 | 502 | 重试审查，持续失败时联系管理员 |
+| 咨询没有可展示的最终正文 | 502 | 重试，持续失败时联系管理员；不回传较早的过程文字或历史答案 |
 | 文件解析失败 / 不支持的格式 | 400 | 检查文件是否损坏或加密，转换为支持的格式 |
 | 未知内部异常 | 500 | 稍后重试，由管理员查看服务端日志 |
 
 新分类的普通错误响应保持字符串 `detail`，并附带稳定 `code`；参数校验失败返回 422，不再回显原始输入，OpenAPI 文档同步使用该结构。原有“会话不存在”404 和文件超限 413 提示保持不变。
 
 SSE 开始后的失败无法再修改 HTTP 状态，因此仍通过 `type: "error"`、`message` 和 `code` 报告，不追加正常 `done` 帧。前端继续通过原有错误回调展示及保存失败气泡；主动停止不当作网络错误。浏览器连接失败使用固定中文提示，而不是异常原文。
+
+模型只返回非正文块、空白内容或没有最终助手回复时，咨询使用 `invalid_model_reply` 固定提示“未收到可显示的回复，请重试；若持续失败，请联系管理员。”；合同审查沿用 `invalid_report`。不会把旧答案、工具结果或待执行的工具调用当作本轮完成回复，也不以空白内容返回成功。正文归一不会伪造工具过程或供应商推理内容。
 
 工具调用异常返回明确的“未完成”提示，不把服务故障伪装成“查无结果”；专业法律检索在补充路径失败时保留已有法条。错误响应不携带供应商正文、API Keys 或内部路径，服务端应用日志保留错误类别和脱敏调用栈用于定位。第三方库自身日志、正常业务内容及旧数据库中已经保存的原始错误不在本次自动清洗范围内。
 

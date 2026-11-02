@@ -41,6 +41,9 @@ PROCESSING_LIMIT = ErrorInfo(
 INVALID_REPORT = ErrorInfo(
     "invalid_report", "审查报告格式异常，请重试；若持续失败，请联系管理员。", 502
 )
+INVALID_MODEL_REPLY = ErrorInfo(
+    "invalid_model_reply", "未收到可显示的回复，请重试；若持续失败，请联系管理员。", 502
+)
 INVALID_DOCUMENT = ErrorInfo(
     "invalid_document",
     "文件解析失败，请确认文件未损坏、未加密，或转换为 PDF / DOCX / TXT 后重试。",

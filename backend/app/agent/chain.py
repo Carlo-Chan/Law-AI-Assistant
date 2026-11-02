@@ -22,11 +22,12 @@ import unicodedata
 from json_repair import repair_json
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_openai import ChatOpenAI
 
+from app.agent.model_content import extract_final_reply, extract_text_content
+from app.agent.model_factory import DeepSeekModelConfig, create_deepseek_model
 from app.agent.tools import AGENT_TOOLS
 from app.core.config import get_settings
-from app.core.errors import INVALID_REPORT, PublicError
+from app.core.errors import INVALID_MODEL_REPLY, INVALID_REPORT, PublicError
 from app.services.contract_instructions import build_contract_query, normalize_contract_instruction
 
 settings = get_settings()
@@ -270,15 +271,8 @@ def _normalize_chat_reply(text):
 # LLM 与 Agent 初始化
 # ============================================================
 
-llm = ChatOpenAI(
-    model="deepseek-v4-flash",
-    api_key=settings.deepseek_api_key,
-    base_url=settings.deepseek_base_url,
-    temperature=0.3,
-    timeout=120,
-    max_tokens=16384,
-    extra_body={"thinking": {"type": "disabled"}},
-)
+generation_config = DeepSeekModelConfig.from_settings(settings)
+llm = create_deepseek_model(generation_config)
 
 LEGAL_SYSTEM_PROMPT = (
     "你是专业法律AI助手。用户会提出法律问题，你必须先调用工具检索相关法条，再基于检索结果回答。"
@@ -360,14 +354,16 @@ async def run_chat(query: str, history: list | None = None) -> dict:
 
     _log_tool_traces(all_msgs)
 
-    reply = ""
+    reply = extract_final_reply(all_msgs)
+    if not reply.strip():
+        raise PublicError(INVALID_MODEL_REPLY)
     sources = []
     for m in all_msgs:
-        if isinstance(m, AIMessage) and m.content:
-            reply = m.content
         name = getattr(m, "name", "")
-        if name and hasattr(m, "content") and m.content:
-            sources.append({"tool": name, "snippet": str(m.content)[:200]})
+        if name and hasattr(m, "content"):
+            text = extract_text_content(m.content)
+            if text:
+                sources.append({"tool": name, "snippet": text[:200]})
 
     logger.info("法律咨询完成：回复长度=%d，来源数=%d", len(reply), len(sources[:5]))
     return {"reply": reply, "sources": sources[:5]}
@@ -386,10 +382,7 @@ async def run_contract_analysis(raw_text: str, instruction: str = "") -> dict:
 
     _log_tool_traces(all_msgs)
 
-    reply = ""
-    for m in all_msgs:
-        if isinstance(m, AIMessage) and m.content:
-            reply = m.content
+    reply = extract_final_reply(all_msgs)
 
     data, _ = _parse_json_with_repair(reply)
     if data is None:
@@ -436,7 +429,7 @@ async def run_chat_stream(query, history=None):
             tool_name = event.get("name", "unknown")
             output = event["data"].get("output", "")
             if hasattr(output, "content"):
-                output = str(output.content)
+                output = extract_text_content(output.content)
             else:
                 output = str(output)
             async for evt in _stream_tool_result(tool_name, output):
@@ -444,14 +437,15 @@ async def run_chat_stream(query, history=None):
 
         elif kind == "on_chat_model_stream":
             chunk = event["data"]["chunk"]
-            if chunk.content:
-                pending += chunk.content
+            pending += extract_text_content(chunk.content)
 
     # 将最终回复分批输出，产生打字机效果
-    if pending.strip():
-        logger.debug("开始输出最终咨询回复，长度=%d", len(pending))
-        async for evt in _batch_yield(pending, batch_size=8, delay=0.03):
-            yield evt
+    if not pending.strip():
+        yield INVALID_MODEL_REPLY.stream_event()
+        return
+    logger.debug("开始输出最终咨询回复，长度=%d", len(pending))
+    async for evt in _batch_yield(pending, batch_size=8, delay=0.03):
+        yield evt
     logger.info("流式法律咨询完成：回复长度=%d", len(pending))
     yield {"type": "done"}
 
@@ -489,7 +483,7 @@ async def run_contract_analysis_stream(raw_text: str, instruction: str = ""):
             tool_name = event.get("name", "unknown")
             output = event["data"].get("output", "")
             if hasattr(output, "content"):
-                output = str(output.content)
+                output = extract_text_content(output.content)
             else:
                 output = str(output)
             async for evt in _stream_tool_result(tool_name, output):
@@ -497,12 +491,13 @@ async def run_contract_analysis_stream(raw_text: str, instruction: str = ""):
 
         elif kind == "on_chat_model_stream":
             chunk = event["data"]["chunk"]
-            if chunk.content:
-                full_reply += chunk.content
-                pending += chunk.content
+            text = extract_text_content(chunk.content)
+            if text:
+                full_reply += text
+                pending += text
                 # 流式输出推理思考文字，除非 JSON 已经开始
                 if not (re.search(r'\{\s*"', full_reply) or full_reply.rstrip().endswith("{")):
-                    for ch in chunk.content:
+                    for ch in text:
                         yield {"type": "thinking_reasoning_token", "content": ch}
                         await asyncio.sleep(0.01)
 
